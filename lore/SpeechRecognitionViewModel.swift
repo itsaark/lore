@@ -21,6 +21,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     @Published var isAuthorized = false
     @Published var currentWord = ""
     @Published var wordOpacity: Double = 0.0
+    @Published var recordings: [Recording] = []
     
     // MARK: - Private Properties
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -31,11 +32,13 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var lastWordTime = Date()
     private var previousWordCount = 0
     private var fadeTimer: Timer?
+    private var recordingStartTime: Date?
     
     // MARK: - Initialization
     init() {
         Task {
             await requestPermissions()
+            loadRecordings()
         }
     }
     
@@ -60,6 +63,28 @@ class SpeechRecognitionViewModel: ObservableObject {
         fadeTimer = nil
     }
     
+    /// Saves recordings to UserDefaults
+    private func saveRecordings() {
+        do {
+            let data = try JSONEncoder().encode(recordings)
+            UserDefaults.standard.set(data, forKey: "SavedRecordings")
+        } catch {
+            print("Failed to save recordings: \(error)")
+        }
+    }
+    
+    /// Loads recordings from UserDefaults
+    private func loadRecordings() {
+        guard let data = UserDefaults.standard.data(forKey: "SavedRecordings") else { return }
+        
+        do {
+            recordings = try JSONDecoder().decode([Recording].self, from: data)
+        } catch {
+            print("Failed to load recordings: \(error)")
+            recordings = []
+        }
+    }
+
     // MARK: - Private Methods
     
     /// Requests both speech recognition and microphone permissions
@@ -156,6 +181,9 @@ class SpeechRecognitionViewModel: ObservableObject {
     
     /// Sets up and starts the speech recognition process
     private func startSpeechRecognition() throws {
+        // Record start time for duration calculation
+        recordingStartTime = Date()
+        
         // Create recognition request
         recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
         guard let recognitionRequest = recognitionRequest else {
@@ -282,6 +310,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         // Set flag to indicate this is intentional
         isStoppedByUser = true
         
+        // Save the current recording if there's text
+        saveCurrentRecording()
+        
         // Clean up word display
         fadeTimer?.invalidate()
         fadeTimer = nil
@@ -312,6 +343,30 @@ class SpeechRecognitionViewModel: ObservableObject {
             errorMessage.lowercased().contains("canceled")) {
             self.errorMessage = nil
         }
+    }
+    
+    /// Saves the current recording session
+    private func saveCurrentRecording() {
+        guard let startTime = recordingStartTime else { return }
+        
+        let duration = Date().timeIntervalSince(startTime)
+        let recording = Recording(
+            text: transcribedText,
+            date: startTime,
+            duration: duration
+        )
+        
+        recordings.append(recording)
+        saveRecordings()
+        
+        let displayText = recording.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 
+                         "No voice found in recording" : 
+                         String(recording.text.prefix(50)) + (recording.text.count > 50 ? "..." : "")
+        print("💾 Recording saved: \(recording.formattedDuration) - \(displayText)")
+        
+        // Reset for next recording
+        transcribedText = ""
+        recordingStartTime = nil
     }
     
     /// Sets error message and logs it

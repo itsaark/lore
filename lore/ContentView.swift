@@ -1,4 +1,4 @@
-//
+// 
 //  ContentView.swift
 //  lore
 //
@@ -9,16 +9,14 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var speechRecognizer = SpeechRecognitionViewModel()
+    @State private var showingRecordings = false
     
     var body: some View {
         NavigationView {
             VStack(spacing: 20) {
                 // Top Navigation Bar
                 HStack {
-                    Button(action: {
-                        // Folder/Archive action - placeholder for now
-                        print("Folder tapped")
-                    }) {
+                    NavigationLink(destination: RecordingsView(speechRecognizer: speechRecognizer)) {
                         Image(systemName: "folder")
                             .font(.title2)
                             .foregroundColor(.primary)
@@ -197,6 +195,9 @@ struct ContentView: View {
             }
             .padding()
             .navigationBarHidden(true)
+        }
+        .sheet(isPresented: $showingRecordings) {
+            RecordingsView(speechRecognizer: speechRecognizer)
         }
     }
 }
