@@ -98,46 +98,6 @@ struct ContentView: View {
                 }
                 .padding(.horizontal)
                 
-                // Transcription Display
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        Text("Transcription:")
-                            .font(.headline)
-                            .foregroundColor(.primary)
-                        
-                        Spacer()
-                        
-                        if !speechRecognizer.transcribedText.isEmpty {
-                            Button("Clear") {
-                                speechRecognizer.clearText()
-                            }
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                        }
-                    }
-                    
-                    ScrollView {
-                        Text(speechRecognizer.transcribedText.isEmpty ? 
-                             "Your speech will appear here in real-time..." : 
-                             speechRecognizer.transcribedText)
-                            .font(.body)
-                            .foregroundColor(speechRecognizer.transcribedText.isEmpty ? .secondary : .primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
-                            .animation(.easeInOut(duration: 0.3), value: speechRecognizer.transcribedText)
-                    }
-                    .frame(minHeight: 120)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color(.systemGray6))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(speechRecognizer.isRecording ? Color.red : Color.clear, lineWidth: 2)
-                            )
-                    )
-                }
-                .padding(.horizontal)
-                
                 // Control Buttons
                 VStack(spacing: 15) {
                     // Main Record Button
