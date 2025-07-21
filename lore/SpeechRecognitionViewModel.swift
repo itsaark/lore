@@ -10,7 +10,7 @@ import Speech
 import AVFoundation
 import SwiftUI
 
-/// ViewModel for handling speech recognition functionality with comprehensive error handling
+/// ViewModel for handling speech recognition functionality with word-by-word display
 @MainActor
 class SpeechRecognitionViewModel: ObservableObject {
     
@@ -19,13 +19,18 @@ class SpeechRecognitionViewModel: ObservableObject {
     @Published var isRecording = false
     @Published var errorMessage: String?
     @Published var isAuthorized = false
+    @Published var currentWord = ""
+    @Published var wordOpacity: Double = 0.0
     
     // MARK: - Private Properties
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
-    private var isStoppedByUser = false  // Track if we're intentionally stopping
+    private var isStoppedByUser = false
+    private var lastWordTime = Date()
+    private var previousWordCount = 0
+    private var fadeTimer: Timer?
     
     // MARK: - Initialization
     init() {
@@ -48,7 +53,11 @@ class SpeechRecognitionViewModel: ObservableObject {
     /// Clears transcribed text and any error messages
     func clearText() {
         transcribedText = ""
+        currentWord = ""
+        wordOpacity = 0.0
         errorMessage = nil
+        fadeTimer?.invalidate()
+        fadeTimer = nil
     }
     
     // MARK: - Private Methods
@@ -60,27 +69,27 @@ class SpeechRecognitionViewModel: ObservableObject {
             SFSpeechRecognizer.requestAuthorization { [weak self] authStatus in
                 DispatchQueue.main.async {
                     switch authStatus {
-                    case .authorized:
-                        self?.isAuthorized = true
-                        self?.errorMessage = nil
-                        print("✅ Speech recognition authorized")
-                    case .denied:
-                        self?.isAuthorized = false
-                        self?.errorMessage = "Speech recognition access denied. Please enable in Settings > Privacy & Security > Speech Recognition."
-                        print("❌ Speech recognition denied")
-                    case .restricted:
-                        self?.isAuthorized = false
-                        self?.errorMessage = "Speech recognition is restricted on this device."
-                        print("⚠️ Speech recognition restricted")
-                    case .notDetermined:
-                        self?.isAuthorized = false
-                        self?.errorMessage = "Speech recognition permission not determined."
-                        print("⏳ Speech recognition not determined")
-                    @unknown default:
-                        self?.isAuthorized = false
-                        self?.errorMessage = "Unknown speech recognition authorization status."
-                        print("❓ Unknown speech recognition status")
-                    }
+                case .authorized:
+                    self?.isAuthorized = true
+                    self?.errorMessage = nil
+                    print("✅ Speech recognition authorized")
+                case .denied:
+                    self?.isAuthorized = false
+                    self?.errorMessage = "Speech recognition access denied. Please enable in Settings > Privacy & Security > Speech Recognition."
+                    print("❌ Speech recognition denied")
+                case .restricted:
+                    self?.isAuthorized = false
+                    self?.errorMessage = "Speech recognition is restricted on this device."
+                    print("⚠️ Speech recognition restricted")
+                case .notDetermined:
+                    self?.isAuthorized = false
+                    self?.errorMessage = "Speech recognition permission not determined."
+                    print("⏳ Speech recognition not determined")
+                @unknown default:
+                    self?.isAuthorized = false
+                    self?.errorMessage = "Unknown speech recognition authorization status."
+                    print("❓ Unknown speech recognition status")
+                }
                     continuation.resume()
                 }
             }
@@ -109,7 +118,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         // Reset any previous state
         stopRecording()
         clearText()
-        isStoppedByUser = false  // Reset the flag
+        isStoppedByUser = false
         
         // Validate prerequisites
         guard isAuthorized else {
@@ -154,7 +163,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
         
         recognitionRequest.shouldReportPartialResults = true
-        recognitionRequest.requiresOnDeviceRecognition = false // Use server-based for better accuracy
+        recognitionRequest.requiresOnDeviceRecognition = false
         
         // Get audio input node
         let inputNode = audioEngine.inputNode
@@ -165,8 +174,9 @@ class SpeechRecognitionViewModel: ObservableObject {
                 guard let self = self else { return }
                 
                 if let result = result {
-                    self.transcribedText = result.bestTranscription.formattedString
-                    print("📝 Transcribed: \(result.bestTranscription.formattedString)")
+                    let newText = result.bestTranscription.formattedString
+                    self.transcribedText = newText
+                    self.processNewWords(newText)
                     
                     // Auto-stop if final result (only if not stopped by user)
                     if result.isFinal && !self.isStoppedByUser {
@@ -179,12 +189,10 @@ class SpeechRecognitionViewModel: ObservableObject {
                     // Check if this is just a cancellation error from user stopping
                     let nsError = error as NSError
                     if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 216 {
-                        // This is a cancellation error, which is normal when user stops recording
                         print("ℹ️ Recognition task was cancelled (normal when stopping)")
                         return
                     }
                     
-                    // Check for other common "normal" cancellation scenarios
                     if nsError.localizedDescription.lowercased().contains("cancelled") ||
                        nsError.localizedDescription.lowercased().contains("canceled") {
                         if self.isStoppedByUser {
@@ -193,7 +201,6 @@ class SpeechRecognitionViewModel: ObservableObject {
                         }
                     }
                     
-                    // This is a real error we should show to the user
                     self.setError("Recognition error: \(error.localizedDescription)")
                     print("❌ Recognition error: \(error)")
                     self.stopRecording()
@@ -215,12 +222,72 @@ class SpeechRecognitionViewModel: ObservableObject {
         print("🎤 Audio engine started, recording in progress")
     }
     
+    /// Processes new words and updates the display
+    private func processNewWords(_ text: String) {
+        let words = text.split(separator: " ").map(String.init)
+        let currentWordCount = words.count
+        
+        // Check if we have a new word
+        if currentWordCount > previousWordCount {
+            let newWord = words.last ?? ""
+            displayNewWord(newWord)
+            previousWordCount = currentWordCount
+        }
+    }
+    
+    /// Displays a new word with appropriate fade timing
+    private func displayNewWord(_ word: String) {
+        // Cancel any existing fade timer
+        fadeTimer?.invalidate()
+        
+        // Calculate time since last word for fade duration
+        let timeSinceLastWord = Date().timeIntervalSince(lastWordTime)
+        lastWordTime = Date()
+        
+        // Set the new word and show it immediately
+        currentWord = word
+        wordOpacity = 1.0
+        
+        // Calculate fade duration based on speech speed
+        // Faster speech (shorter intervals) = faster fade
+        // Slower speech (longer intervals) = slower fade
+        let baseFadeDuration: TimeInterval = 1.5
+        let speedMultiplier = min(max(timeSinceLastWord / 2.0, 0.3), 3.0) // Clamp between 0.3x and 3x
+        let fadeDuration = baseFadeDuration * speedMultiplier
+        
+        print("📝 New word: '\(word)', fade duration: \(fadeDuration)s")
+        
+        // Start fade timer
+        fadeTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
+            
+            // Gradual fade over the calculated duration
+            let fadeStep = 0.1 / fadeDuration
+            self.wordOpacity = max(0.0, self.wordOpacity - fadeStep)
+            
+            if self.wordOpacity <= 0.0 {
+                timer.invalidate()
+                self.fadeTimer = nil
+            }
+        }
+    }
+    
     /// Stops recording and cleans up resources
     private func stopRecording() {
         print("🛑 Stopping recording...")
         
         // Set flag to indicate this is intentional
         isStoppedByUser = true
+        
+        // Clean up word display
+        fadeTimer?.invalidate()
+        fadeTimer = nil
+        currentWord = ""
+        wordOpacity = 0.0
+        previousWordCount = 0
         
         // Stop audio engine
         if audioEngine.isRunning {

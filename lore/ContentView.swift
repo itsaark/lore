@@ -13,6 +13,31 @@ struct ContentView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 20) {
+                // Top Navigation Bar
+                HStack {
+                    Button(action: {
+                        // Folder/Archive action - placeholder for now
+                        print("Folder tapped")
+                    }) {
+                        Image(systemName: "folder")
+                            .font(.title2)
+                            .foregroundColor(.primary)
+                    }
+                    
+                    Spacer()
+                    
+                    Button(action: {
+                        // Settings action - placeholder for now
+                        print("Settings tapped")
+                    }) {
+                        Image(systemName: "gearshape")
+                            .font(.title2)
+                            .foregroundColor(.primary)
+                    }
+                }
+                .padding(.horizontal)
+                .padding(.top, 10)
+                
                 // Header
                 VStack(spacing: 10) {
                     Text("Speech to Text")
@@ -41,6 +66,39 @@ struct ContentView: View {
                     }
                 }
                 .padding(.vertical)
+                
+                // Dynamic Word Display
+                VStack {
+                    Text("Words")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+                    
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color(.systemGray6))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(speechRecognizer.isRecording ? Color.red : Color.clear, lineWidth: 2)
+                            )
+                            .frame(height: 120)
+                        
+                        if speechRecognizer.isRecording && !speechRecognizer.currentWord.isEmpty {
+                            Text(speechRecognizer.currentWord)
+                                .font(.title)
+                                .fontWeight(.semibold)
+                                .foregroundColor(.primary)
+                                .opacity(speechRecognizer.wordOpacity)
+                                .animation(.easeInOut(duration: 0.1), value: speechRecognizer.wordOpacity)
+                        } else if !speechRecognizer.isRecording {
+                            Text("Start speaking to see words appear here...")
+                                .font(.body)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding()
+                        }
+                    }
+                }
+                .padding(.horizontal)
                 
                 // Transcription Display
                 VStack(alignment: .leading, spacing: 10) {
