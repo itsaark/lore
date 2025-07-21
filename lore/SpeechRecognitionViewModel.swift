@@ -22,6 +22,9 @@ class SpeechRecognitionViewModel: ObservableObject {
     @Published var currentWord = ""
     @Published var wordOpacity: Double = 0.0
     @Published var recordings: [Recording] = []
+    @Published var speechConfidence: Float = 0.0
+    @Published var streamingText = ""
+    @Published var isProcessingAudio = false
     
     // MARK: - Private Properties
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -56,8 +59,11 @@ class SpeechRecognitionViewModel: ObservableObject {
     /// Clears transcribed text and any error messages
     func clearText() {
         transcribedText = ""
+        streamingText = ""
         currentWord = ""
         wordOpacity = 0.0
+        speechConfidence = 0.0
+        isProcessingAudio = false
         errorMessage = nil
         fadeTimer?.invalidate()
         fadeTimer = nil
@@ -208,20 +214,38 @@ class SpeechRecognitionViewModel: ObservableObject {
         // Get audio input node
         let inputNode = audioEngine.inputNode
         
-        // Create recognition task
+        // Create recognition task with enhanced streaming support
         recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
                 
                 if let result = result {
                     let newText = result.bestTranscription.formattedString
+                    
+                    // Update both regular text and streaming text
                     self.transcribedText = newText
+                    self.streamingText = newText
+                    
+                    // Extract confidence from segments
+                    if let lastSegment = result.bestTranscription.segments.last {
+                        self.speechConfidence = lastSegment.confidence
+                        self.isProcessingAudio = true
+                    }
+                    
+                    // Process words for legacy display (keeping for compatibility)
                     self.processNewWords(newText)
                     
                     // Auto-stop if final result (only if not stopped by user)
                     if result.isFinal && !self.isStoppedByUser {
                         print("✅ Recognition completed naturally")
                         self.stopRecording()
+                    }
+                } else {
+                    // No result means silence or processing pause
+                    self.isProcessingAudio = false
+                    if self.speechConfidence > 0 {
+                        // Gradually decrease confidence during silence
+                        self.speechConfidence = max(0, self.speechConfidence - 0.1)
                     }
                 }
                 
@@ -248,10 +272,15 @@ class SpeechRecognitionViewModel: ObservableObject {
             }
         }
         
-        // Configure audio tap
+        // Configure audio tap with enhanced buffer processing
         let recordingFormat = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak recognitionRequest] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self, weak recognitionRequest] buffer, _ in
             recognitionRequest?.append(buffer)
+            
+            // Update audio processing state on main thread
+            DispatchQueue.main.async {
+                self?.isProcessingAudio = true
+            }
         }
         
         // Start audio engine
@@ -325,12 +354,14 @@ class SpeechRecognitionViewModel: ObservableObject {
         // Save the current recording if there's text
         saveCurrentRecording()
         
-        // Clean up word display
+        // Clean up word display and streaming state
         fadeTimer?.invalidate()
         fadeTimer = nil
         currentWord = ""
         wordOpacity = 0.0
         previousWordCount = 0
+        speechConfidence = 0.0
+        isProcessingAudio = false
         
         // Stop audio engine
         if audioEngine.isRunning {

@@ -1,4 +1,4 @@
-// 
+//
 //  ContentView.swift
 //  lore
 //
@@ -13,12 +13,12 @@ struct ContentView: View {
     
     var body: some View {
         NavigationView {
-            VStack(spacing: 20) {
+            VStack(spacing: 0) {
                 // Top Navigation Bar
                 HStack {
                     NavigationLink(destination: RecordingsView(speechRecognizer: speechRecognizer)) {
-                        Image(systemName: "folder")
-                            .font(.title2)
+                        Image(systemName: "doc.text")
+                            .font(.title3)
                             .foregroundColor(.primary)
                     }
                     
@@ -29,131 +29,93 @@ struct ContentView: View {
                         print("Settings tapped")
                     }) {
                         Image(systemName: "gearshape")
-                            .font(.title2)
+                            .font(.title3)
                             .foregroundColor(.primary)
                     }
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 20)
                 .padding(.top, 10)
                 
-                // Header
-                VStack(spacing: 10) {
-                    Text("Speech to Text")
-                        .font(.largeTitle)
-                        .fontWeight(.bold)
-                    
-                    Text("Powered by iOS Speech Recognition")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.top)
+                Spacer()
                 
-                // Microphone Visual Indicator
-                VStack {
-                    Image(systemName: speechRecognizer.isRecording ? "mic.fill" : "mic")
-                        .font(.system(size: 80))
-                        .foregroundColor(speechRecognizer.isRecording ? .red : .blue)
-                        .scaleEffect(speechRecognizer.isRecording ? 1.1 : 1.0)
-                        .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: speechRecognizer.isRecording)
-                    
-                    if speechRecognizer.isRecording {
-                        Text("Listening...")
-                            .font(.headline)
-                            .foregroundColor(.red)
-                            .padding(.top, 5)
-                    }
-                }
-                .padding(.vertical)
-                
-                // Dynamic Word Display
-                VStack {
-                    Text("Words")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color(.systemGray6))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(speechRecognizer.isRecording ? Color.red : Color.clear, lineWidth: 2)
-                            )
-                            .frame(height: 120)
-                        
-                        if speechRecognizer.isRecording && !speechRecognizer.currentWord.isEmpty {
-                            Text(speechRecognizer.currentWord)
-                                .font(.title)
-                                .fontWeight(.semibold)
+                // Main Content
+                VStack(spacing: 40) {
+                    // Header - only show when not recording
+                    if !speechRecognizer.isRecording {
+                        VStack(spacing: 8) {
+                            Text("Speak your story ")
+                                .font(.largeTitle)
+                                .fontWeight(.medium)
                                 .foregroundColor(.primary)
-                                .opacity(speechRecognizer.wordOpacity)
-                                .animation(.easeInOut(duration: 0.1), value: speechRecognizer.wordOpacity)
-                        } else if !speechRecognizer.isRecording {
-                            Text("Start speaking to see words appear here...")
-                                .font(.body)
-                                .foregroundColor(.secondary)
-                                .multilineTextAlignment(.center)
-                                .padding()
                         }
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                     }
+                    
+                    // Streaming Text Display
+                    StreamingTextView(
+                        text: speechRecognizer.streamingText,
+                        isRecording: speechRecognizer.isRecording,
+                        speechConfidence: speechRecognizer.speechConfidence
+                    )
+                    .animation(.easeInOut(duration: 0.3), value: speechRecognizer.isRecording)
                 }
-                .padding(.horizontal)
+                .padding(.horizontal, 20)
                 
-                // Control Buttons
-                VStack(spacing: 15) {
+                Spacer()
+                
+                // Bottom Controls
+                VStack(spacing: 20) {
                     // Main Record Button
                     Button(action: {
                         speechRecognizer.toggleRecording()
                     }) {
-                        HStack {
-                            Image(systemName: speechRecognizer.isRecording ? "stop.circle.fill" : "play.circle.fill")
+                        HStack(spacing: 12) {
+                            Image(systemName: speechRecognizer.isRecording ? "stop.fill" : "mic.fill")
                                 .font(.title2)
-                            Text(speechRecognizer.isRecording ? "Stop Recording" : "Start Recording")
-                                .font(.title2)
-                                .fontWeight(.semibold)
+                            Text(speechRecognizer.isRecording ? "Stop" : "Start Recording")
+                                .font(.title3)
+                                .fontWeight(.medium)
                         }
                         .foregroundColor(.white)
-                        .padding(.horizontal, 30)
-                        .padding(.vertical, 15)
+                        .padding(.horizontal, 32)
+                        .padding(.vertical, 16)
                         .background(
                             speechRecognizer.isRecording ? 
-                            Color.red : (speechRecognizer.isAuthorized ? Color.blue : Color.gray)
+                            Color.red : (speechRecognizer.isAuthorized ? Color.black : Color.gray)
                         )
-                        .cornerRadius(25)
+                        .clipShape(Capsule())
                     }
                     .disabled(!speechRecognizer.isAuthorized)
-                    .animation(.easeInOut(duration: 0.2), value: speechRecognizer.isRecording)
+                    .scaleEffect(speechRecognizer.isRecording ? 1.05 : 1.0)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.6), value: speechRecognizer.isRecording)
                     
-                    // Authorization Status
-                    HStack {
-                        Image(systemName: speechRecognizer.isAuthorized ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                            .foregroundColor(speechRecognizer.isAuthorized ? .green : .orange)
-                        
-                        Text(speechRecognizer.isAuthorized ? 
-                             "Speech Recognition Authorized" : 
-                             "Please authorize Speech Recognition in Settings")
+                    // Authorization Status - only show if not authorized
+                    if !speechRecognizer.isAuthorized {
+                        Text("Please authorize Speech Recognition in Settings")
                             .font(.caption)
-                            .foregroundColor(speechRecognizer.isAuthorized ? .green : .orange)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                    }
+                    
+                    // Error Display
+                    if let errorMessage = speechRecognizer.errorMessage {
+                        Text(errorMessage)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(Color.red.opacity(0.1))
+                            )
                     }
                 }
-                .padding(.horizontal)
-                
-                // Error Display
-                if let errorMessage = speechRecognizer.errorMessage {
-                    Text(errorMessage)
-                        .font(.caption)
-                        .foregroundColor(.red)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.red.opacity(0.1))
-                        )
-                }
-                
-                Spacer()
+                .padding(.horizontal, 20)
+                .padding(.bottom, 40)
             }
-            .padding()
+            .background(Color(.systemBackground))
             .navigationBarHidden(true)
         }
         .sheet(isPresented: $showingRecordings) {
