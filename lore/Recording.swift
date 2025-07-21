@@ -1,16 +1,9 @@
-//
-//  Recording.swift
-//  lore
-//
-//  Created by AI Assistant
-//
-
 import Foundation
 
 /// Model representing a single recording entry
-struct Recording: Identifiable, Codable {
+struct Recording: Identifiable, Codable, Equatable {
     let id = UUID()
-    let text: String
+    var text: String
     let date: Date
     let duration: TimeInterval // in seconds
     
@@ -31,5 +24,10 @@ struct Recording: Identifiable, Codable {
         } else {
             return "\(seconds)s"
         }
+    }
+    
+    /// Equatable implementation to compare recordings
+    static func == (lhs: Recording, rhs: Recording) -> Bool {
+        return lhs.id == rhs.id
     }
 }

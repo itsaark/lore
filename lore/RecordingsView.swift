@@ -36,7 +36,7 @@ struct RecordingsView: View {
                 // Recordings list
                 List {
                     ForEach(speechRecognizer.recordings.reversed()) { recording in
-                        NavigationLink(destination: RecordingDetailView(recording: recording)) {
+                        NavigationLink(destination: RecordingDetailView(recording: recording, speechRecognizer: speechRecognizer)) {
                             RecordingRowView(recording: recording)
                         }
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))

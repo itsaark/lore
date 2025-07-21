@@ -63,6 +63,18 @@ class SpeechRecognitionViewModel: ObservableObject {
         fadeTimer = nil
     }
     
+    /// Updates the text of an existing recording
+    func updateRecording(_ recording: Recording, withText newText: String) {
+        guard let index = recordings.firstIndex(where: { $0.id == recording.id }) else {
+            print("❌ Recording not found for update")
+            return
+        }
+        
+        recordings[index].text = newText
+        saveRecordings()
+        print("✅ Recording updated successfully")
+    }
+    
     /// Saves recordings to UserDefaults
     private func saveRecordings() {
         do {
