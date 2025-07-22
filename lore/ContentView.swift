@@ -52,12 +52,12 @@ struct ContentView: View {
                     }
                     
                     // Streaming Text Display
-                    StreamingTextView(
+                    /*StreamingTextView(
                         text: speechRecognizer.streamingText,
                         isRecording: speechRecognizer.isRecording,
                         speechConfidence: speechRecognizer.speechConfidence
                     )
-                    .animation(.easeInOut(duration: 0.3), value: speechRecognizer.isRecording)
+                    .animation(.easeInOut(duration: 0.3), value: speechRecognizer.isRecording)*/
                 }
                 .padding(.horizontal, 20)
                 
@@ -72,9 +72,11 @@ struct ContentView: View {
                         HStack(spacing: 12) {
                             Image(systemName: speechRecognizer.isRecording ? "stop.fill" : "mic.fill")
                                 .font(.title2)
+                                .contentTransition(.symbolEffect(.replace))
                             Text(speechRecognizer.isRecording ? "Stop" : "Start Recording")
                                 .font(.title3)
                                 .fontWeight(.medium)
+                                .contentTransition(.opacity)
                         }
                         .foregroundColor(.white)
                         .padding(.horizontal, 32)
@@ -85,9 +87,11 @@ struct ContentView: View {
                         )
                         .clipShape(Capsule())
                     }
+                    .buttonStyle(.plain)
                     .disabled(!speechRecognizer.isAuthorized)
-                    .scaleEffect(speechRecognizer.isRecording ? 1.05 : 1.0)
-                    .animation(.spring(response: 0.3, dampingFraction: 0.6), value: speechRecognizer.isRecording)
+                    .scaleEffect(speechRecognizer.isRecording ? 1.02 : 1.0)
+                    .animation(.smooth(duration: 0.3), value: speechRecognizer.isRecording)
+                    .sensoryFeedback(.impact(weight: .medium), trigger: speechRecognizer.isRecording)
                     
                     // Authorization Status - only show if not authorized
                     if !speechRecognizer.isAuthorized {
