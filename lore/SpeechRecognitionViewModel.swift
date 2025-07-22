@@ -9,6 +9,7 @@ import Foundation
 import Speech
 import AVFoundation
 import SwiftUI
+import Accelerate
 
 /// ViewModel for handling speech recognition functionality with word-by-word display
 @MainActor
@@ -25,6 +26,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     @Published var speechConfidence: Float = 0.0
     @Published var streamingText = ""
     @Published var isProcessingAudio = false
+    @Published var currentAudioLevel: Float = 0.0
     
     // MARK: - Private Properties
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -32,10 +34,12 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
     private var isStoppedByUser = false
-    private var lastWordTime = Date()
+    private var lastWordTime: Date?
     private var previousWordCount = 0
     private var fadeTimer: Timer?
     private var recordingStartTime: Date?
+    private var audioLevelTimer: Timer?
+    private var audioLevelBuffer: [Float] = []
     
     // MARK: - Initialization
     init() {
@@ -67,6 +71,8 @@ class SpeechRecognitionViewModel: ObservableObject {
         errorMessage = nil
         fadeTimer?.invalidate()
         fadeTimer = nil
+        currentAudioLevel = 0.0
+        stopAudioLevelTimer()
     }
     
     /// Updates the text of an existing recording
@@ -272,10 +278,13 @@ class SpeechRecognitionViewModel: ObservableObject {
             }
         }
         
-        // Configure audio tap with enhanced buffer processing
+        // Configure audio tap with enhanced buffer processing for audio level detection
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self, weak recognitionRequest] buffer, _ in
             recognitionRequest?.append(buffer)
+            
+            // Calculate audio level from buffer
+            self?.processAudioBuffer(buffer)
             
             // Update audio processing state on main thread
             DispatchQueue.main.async {
@@ -286,6 +295,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         // Start audio engine
         audioEngine.prepare()
         try audioEngine.start()
+        
+        // Start audio level monitoring
+        startAudioLevelTimer()
         
         isRecording = true
         print("🎤 Audio engine started, recording in progress")
@@ -310,7 +322,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         fadeTimer?.invalidate()
         
         // Calculate time since last word for fade duration
-        let timeSinceLastWord = Date().timeIntervalSince(lastWordTime)
+        let timeSinceLastWord = Date().timeIntervalSince(lastWordTime ?? Date())
         lastWordTime = Date()
         
         // Set the new word and show it immediately
@@ -344,6 +356,49 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
     }
     
+    /// Process the audio buffer and update the currentAudioLevel
+    private func processAudioBuffer(_ buffer: AVAudioPCMBuffer) {
+        guard let channelData = buffer.floatChannelData?[0] else { return }
+        let frameLength = Int(buffer.frameLength)
+        
+        // Calculate RMS (Root Mean Square) for audio level
+        var rms: Float = 0.0
+        vDSP_rmsqv(channelData, 1, &rms, vDSP_Length(frameLength))
+        
+        // Convert to decibels and normalize to 0-1 range
+        let decibels = 20 * log10(rms + Float.leastNonzeroMagnitude) // Avoid log(0)
+        let normalizedLevel = max(0.0, min(1.0, (decibels + 80) / 80)) // Map -80dB to 0dB → 0.0 to 1.0
+        
+        // Add to buffer for smoothing
+        audioLevelBuffer.append(normalizedLevel)
+        if audioLevelBuffer.count > 10 {
+            audioLevelBuffer.removeFirst()
+        }
+    }
+    
+    /// Starts audio level monitoring timer
+    private func startAudioLevelTimer() {
+        audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            
+            // Calculate smoothed audio level
+            if !self.audioLevelBuffer.isEmpty {
+                let smoothedLevel = self.audioLevelBuffer.reduce(0, +) / Float(self.audioLevelBuffer.count)
+                
+                DispatchQueue.main.async {
+                    self.currentAudioLevel = smoothedLevel
+                }
+            }
+        }
+    }
+    
+    /// Stops audio level monitoring timer
+    private func stopAudioLevelTimer() {
+        audioLevelTimer?.invalidate()
+        audioLevelTimer = nil
+        audioLevelBuffer.removeAll()
+    }
+    
     /// Stops recording and cleans up resources
     private func stopRecording() {
         print("🛑 Stopping recording...")
@@ -362,6 +417,8 @@ class SpeechRecognitionViewModel: ObservableObject {
         previousWordCount = 0
         speechConfidence = 0.0
         isProcessingAudio = false
+        currentAudioLevel = 0.0
+        stopAudioLevelTimer()
         
         // Stop audio engine
         if audioEngine.isRunning {
@@ -372,6 +429,16 @@ class SpeechRecognitionViewModel: ObservableObject {
         // End recognition request gracefully
         recognitionRequest?.endAudio()
         recognitionTask?.cancel()
+        
+        speechConfidence = 0.0
+        isProcessingAudio = false
+        
+        // Stop audio level monitoring
+        stopAudioLevelTimer()
+        currentAudioLevel = 0.0
+        
+        // Stop audio engine
+        audioEngine.stop()
         
         // Clean up
         recognitionRequest = nil
