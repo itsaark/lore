@@ -1,19 +1,24 @@
 import Foundation
+import SwiftData
 
-struct UserProfile: Codable, Equatable {
+@Model
+final class UserProfile {
+    @Attribute(.unique) var id: UUID
     var name: String
     var hometown: String
     var birthYear: Int
-    let createdAt: Date
+    var createdAt: Date
     var updatedAt: Date
 
     init(
+        id: UUID = UUID(),
         name: String,
         hometown: String,
         birthYear: Int,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
+        self.id = id
         self.name = name
         self.hometown = hometown
         self.birthYear = birthYear
@@ -22,22 +27,8 @@ struct UserProfile: Codable, Equatable {
     }
 }
 
-enum UserProfileStore {
-    private static let storageKey = "UserProfile"
-
-    static func load() -> UserProfile? {
-        guard let data = UserDefaults.standard.data(forKey: storageKey) else {
-            return nil
-        }
-
-        return try? JSONDecoder().decode(UserProfile.self, from: data)
-    }
-
-    static func save(_ profile: UserProfile) {
-        guard let data = try? JSONEncoder().encode(profile) else {
-            return
-        }
-
-        UserDefaults.standard.set(data, forKey: storageKey)
+extension UserProfile: Equatable {
+    static func == (lhs: UserProfile, rhs: UserProfile) -> Bool {
+        lhs.id == rhs.id
     }
 }

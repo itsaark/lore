@@ -10,6 +10,7 @@ import Speech
 import AVFoundation
 import SwiftUI
 import Accelerate
+import SwiftData
 
 /// ViewModel for handling speech recognition functionality with word-by-word display
 @MainActor
@@ -40,12 +41,13 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var recordingStartTime: Date?
     private var audioLevelTimer: Timer?
     private var audioLevelBuffer: [Float] = []
+    private var modelContext: ModelContext?
+    private var hasLoadedStories = false
     
     // MARK: - Initialization
     init() {
         Task {
             await requestPermissions()
-            loadStories()
         }
     }
     
@@ -74,6 +76,18 @@ class SpeechRecognitionViewModel: ObservableObject {
         currentAudioLevel = 0.0
         stopAudioLevelTimer()
     }
+
+    /// Connects the view model to SwiftData once the view receives its environment context.
+    func configure(modelContext: ModelContext) {
+        self.modelContext = modelContext
+
+        guard !hasLoadedStories else {
+            return
+        }
+
+        loadStories()
+        hasLoadedStories = true
+    }
     
     /// Updates the text of an existing story.
     func updateStory(_ story: Story, withText newText: String) {
@@ -83,7 +97,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
         
         stories[index].text = newText
-        saveStories()
+        stories[index].updatedAt = Date()
+        saveContext()
+        loadStories()
         print("Story updated successfully")
     }
 
@@ -97,31 +113,34 @@ class SpeechRecognitionViewModel: ObservableObject {
                 continue
             }
             
-            stories.remove(at: originalIndex)
+            let story = stories.remove(at: originalIndex)
+            modelContext?.delete(story)
         }
         
-        saveStories()
+        saveContext()
+        loadStories()
     }
     
-    /// Saves stories to UserDefaults.
-    private func saveStories() {
+    /// Saves pending SwiftData changes.
+    private func saveContext() {
+        guard let modelContext else { return }
+
         do {
-            let data = try JSONEncoder().encode(stories)
-            UserDefaults.standard.set(data, forKey: "SavedStories")
-            UserDefaults.standard.removeObject(forKey: "SavedRecordings")
+            try modelContext.save()
         } catch {
             print("Failed to save stories: \(error)")
         }
     }
     
-    /// Loads stories from UserDefaults, including existing prototype recordings.
+    /// Loads stories from SwiftData.
     private func loadStories() {
-        let defaults = UserDefaults.standard
-        guard let data = defaults.data(forKey: "SavedStories") ?? defaults.data(forKey: "SavedRecordings") else { return }
+        guard let modelContext else { return }
         
         do {
-            stories = try JSONDecoder().decode([Story].self, from: data)
-            saveStories()
+            let descriptor = FetchDescriptor<Story>(
+                sortBy: [SortDescriptor(\.date, order: .forward)]
+            )
+            stories = try modelContext.fetch(descriptor)
         } catch {
             print("Failed to load stories: \(error)")
             stories = []
@@ -198,6 +217,11 @@ class SpeechRecognitionViewModel: ObservableObject {
             setError("Speech recognizer not available for your language/region.")
             return
         }
+
+        guard speechRecognizer.supportsOnDeviceRecognition else {
+            setError("On-device speech recognition is not available for your language or device.")
+            return
+        }
         
         guard AVAudioSession.sharedInstance().recordPermission == .granted else {
             setError("Microphone access required. Please check Settings.")
@@ -234,7 +258,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
         
         recognitionRequest.shouldReportPartialResults = true
-        recognitionRequest.requiresOnDeviceRecognition = false
+        recognitionRequest.requiresOnDeviceRecognition = true
         
         // Get audio input node
         let inputNode = audioEngine.inputNode
@@ -482,11 +506,21 @@ class SpeechRecognitionViewModel: ObservableObject {
         let story = Story(
             text: transcribedText,
             date: startTime,
-            duration: duration
+            duration: duration,
+            rawTranscriptExpiresAt: Calendar.current.date(
+                byAdding: .day,
+                value: 120,
+                to: startTime
+            )
         )
         
-        stories.append(story)
-        saveStories()
+        if let modelContext {
+            modelContext.insert(story)
+            saveContext()
+            loadStories()
+        } else {
+            stories.append(story)
+        }
         
         let displayText = story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 
                          "No voice found in story" : 

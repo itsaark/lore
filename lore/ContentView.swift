@@ -6,9 +6,11 @@
 //
 
 import SwiftUI
+import SwiftData
 
 struct ContentView: View {
     let userProfile: UserProfile
+    @Environment(\.modelContext) private var modelContext
     @StateObject private var speechRecognizer = SpeechRecognitionViewModel()
     @State private var glowAnimation = false
     
@@ -139,6 +141,9 @@ struct ContentView: View {
                 }
             }
             .navigationBarHidden(true)
+            .onAppear {
+                speechRecognizer.configure(modelContext: modelContext)
+            }
         }
     }
 }
@@ -277,4 +282,5 @@ struct RecordingGlowOverlay: View {
             birthYear: 1994
         )
     )
+    .modelContainer(LoreModelContainer.preview)
 }
