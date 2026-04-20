@@ -79,6 +79,12 @@ struct StoryRowView: View {
                 Text(story.formattedDate)
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                if story.processingStatus != "captured" {
+                    Text(statusText)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
             }
             
             Spacer()
@@ -90,6 +96,21 @@ struct StoryRowView: View {
         .padding(.vertical, 8)
         .background(Color(.systemGray6))
         .cornerRadius(8)
+    }
+
+    private var statusText: String {
+        switch story.processingStatus {
+        case "awaitingModel":
+            return "Waiting for Local AI"
+        case "processing":
+            return "Writing Draft"
+        case "processed":
+            return "Draft Ready"
+        case "failed":
+            return "Draft Failed"
+        default:
+            return story.processingStatus
+        }
     }
 }
 

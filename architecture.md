@@ -1,6 +1,6 @@
 # Lore Architecture
 
-Last updated: 2026-04-17
+Last updated: 2026-04-19
 
 ## Architectural Principles
 
@@ -330,13 +330,13 @@ Entitlement checks should gate premium features, not local data access. If a sub
 
 ## First Implementation Slice
 
-1. Add SwiftData models for `UserProfile`, `Story`, `AudioAsset`, `StoryMetadata`, and `BiographyFragment`.
-2. Rename UI language from Recordings to Stories.
-3. Add onboarding for name, hometown, and birth year.
-4. Add audio asset lifecycle and 7-day deletion.
-5. Add 120-day raw transcript retention.
-6. Add local model download shell for Ternary Bonsai 4B.
-7. Add `GenerationService` abstraction.
-8. Implement transcript-to-biography-prose generation.
-9. Add initial graph candidate extraction for people, places, themes, and life events.
-10. Display chronological Stories with generated biography prose.
+1. [x] Add SwiftData models for `UserProfile`, `Story`, `AudioAsset`, `StoryMetadata`, and `BiographyFragment`.
+2. [x] Rename UI language from Recordings to Stories.
+3. [x] Add onboarding for name, hometown, and birth year.
+4. [ ] Add audio asset lifecycle and 7-day deletion.
+5. [x] Add 120-day raw transcript retention metadata.
+6. [x] Add local model download shell for Ternary Bonsai 4B.
+7. [x] Add `GenerationService` abstraction.
+8. [ ] Implement transcript-to-biography-prose generation with real local MLX inference.
+9. [ ] Add initial graph candidate extraction for people, places, themes, and life events.
+10. [ ] Display chronological Stories with generated biography prose from the real local model.

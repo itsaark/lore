@@ -11,6 +11,7 @@ import SwiftData
 struct ContentView: View {
     let userProfile: UserProfile
     @Environment(\.modelContext) private var modelContext
+    @StateObject private var modelManager = ModelManager()
     @StateObject private var speechRecognizer = SpeechRecognitionViewModel()
     @State private var glowAnimation = false
     
@@ -48,10 +49,7 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        Button(action: {
-                            // Settings action - placeholder for now
-                            print("Settings tapped")
-                        }) {
+                        NavigationLink(destination: LocalAISetupView(modelManager: modelManager)) {
                             Image(systemName: "gearshape")
                                 .font(.title3)
                                 .foregroundColor(.primary)
@@ -142,7 +140,11 @@ struct ContentView: View {
             }
             .navigationBarHidden(true)
             .onAppear {
-                speechRecognizer.configure(modelContext: modelContext)
+                speechRecognizer.configure(
+                    modelContext: modelContext,
+                    generationService: LocalGenerationService(modelManager: modelManager),
+                    userProfile: userProfile
+                )
             }
         }
     }

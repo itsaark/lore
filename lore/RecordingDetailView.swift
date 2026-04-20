@@ -40,6 +40,31 @@ struct StoryDetailView: View {
                 .padding(.horizontal)
                 
                 Divider()
+
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Biography Draft")
+                        .font(.headline)
+                        .foregroundColor(.primary)
+
+                    if let biographyProse = currentStory.biographyProse, !biographyProse.isEmpty {
+                        Text(biographyProse)
+                            .font(.body)
+                            .foregroundColor(.primary)
+                            .lineSpacing(4)
+                            .textSelection(.enabled)
+                    } else {
+                        HStack(spacing: 8) {
+                            Image(systemName: processingIconName)
+                                .foregroundColor(.secondary)
+                            Text(processingStatusText)
+                                .font(.body)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                .padding(.horizontal)
+
+                Divider()
                 
                 // Story content
                 VStack(alignment: .leading, spacing: 12) {
@@ -131,14 +156,45 @@ struct StoryDetailView: View {
             editedText = story.text
         }
     }
+
+    private var currentStory: Story {
+        speechRecognizer.stories.first(where: { $0.id == story.id }) ?? story
+    }
+
+    private var processingStatusText: String {
+        switch currentStory.processingStatus {
+        case "captured":
+            return "Ready for local biography generation."
+        case "awaitingModel":
+            return "Load the local AI model to generate this draft."
+        case "processing":
+            return "Writing biography prose on device."
+        case "processed":
+            return "Biography draft is ready."
+        case "failed":
+            return "Lore could not generate a draft for this story."
+        default:
+            return "Waiting for local processing."
+        }
+    }
+
+    private var processingIconName: String {
+        switch currentStory.processingStatus {
+        case "processed":
+            return "checkmark.seal"
+        case "failed":
+            return "exclamationmark.triangle"
+        case "processing":
+            return "hourglass"
+        default:
+            return "sparkles"
+        }
+    }
     
     /// Gets the current text to display (updated text if available)
     private func getCurrentText() -> String {
         // Find the updated story from the speech recognizer.
-        if let updatedStory = speechRecognizer.stories.first(where: { $0.id == story.id }) {
-            return updatedStory.text
-        }
-        return story.text
+        currentStory.text
     }
 }
 

@@ -96,6 +96,59 @@ struct loreTests {
         #expect(migratedStories.first?.id == storyID)
     }
 
+    @MainActor
+    @Test func modelManagerDownloadsAndLoadsSelectedModel() async throws {
+        let defaults = try makeIsolatedDefaults()
+        let modelManager = ModelManager(userDefaults: defaults)
+
+        #expect(modelManager.status.tier == .standard4B)
+        #expect(modelManager.status.state == .notDownloaded)
+
+        modelManager.select(.lightweight17B)
+        await modelManager.downloadSelectedModel()
+        await modelManager.loadSelectedModel()
+
+        #expect(modelManager.status.tier == .lightweight17B)
+        #expect(modelManager.status.state == .loaded)
+        #expect(modelManager.status.isReady)
+    }
+
+    @MainActor
+    @Test func generationServiceRequiresLoadedModel() async throws {
+        let defaults = try makeIsolatedDefaults()
+        let modelManager = ModelManager(userDefaults: defaults)
+        let generationService = LocalGenerationService(modelManager: modelManager)
+        let story = Story(text: "I started a new chapter today.", date: Date(), duration: 8)
+        let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
+        var didRequireModel = false
+
+        do {
+            _ = try await generationService.writeBiographyProse(from: story, userProfile: profile)
+        } catch GenerationError.localModelNotReady {
+            didRequireModel = true
+        }
+
+        #expect(didRequireModel)
+    }
+
+    @MainActor
+    @Test func generationServiceWritesStubBiographyProseWhenModelIsReady() async throws {
+        let defaults = try makeIsolatedDefaults()
+        let modelManager = ModelManager(userDefaults: defaults)
+        let generationService = LocalGenerationService(modelManager: modelManager)
+        let story = Story(text: "I started a new chapter today.", date: Date(), duration: 8)
+        let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
+
+        await modelManager.downloadSelectedModel()
+        await modelManager.loadSelectedModel()
+
+        let prose = try await generationService.writeBiographyProse(from: story, userProfile: profile)
+
+        #expect(prose.contains("Aark"))
+        #expect(prose.contains("Hyderabad"))
+        #expect(prose.contains("I started a new chapter today."))
+    }
+
     private func makeIsolatedDefaults() throws -> UserDefaults {
         let suiteName = "loreTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))

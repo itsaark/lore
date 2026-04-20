@@ -42,6 +42,8 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var audioLevelTimer: Timer?
     private var audioLevelBuffer: [Float] = []
     private var modelContext: ModelContext?
+    private var generationService: (any GenerationService)?
+    private var userProfile: UserProfile?
     private var hasLoadedStories = false
     
     // MARK: - Initialization
@@ -78,8 +80,14 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
 
     /// Connects the view model to SwiftData once the view receives its environment context.
-    func configure(modelContext: ModelContext) {
+    func configure(
+        modelContext: ModelContext,
+        generationService: any GenerationService,
+        userProfile: UserProfile
+    ) {
         self.modelContext = modelContext
+        self.generationService = generationService
+        self.userProfile = userProfile
 
         guard !hasLoadedStories else {
             return
@@ -97,8 +105,14 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
         
         stories[index].text = newText
+        stories[index].biographyProse = nil
+        stories[index].processingStatus = "awaitingModel"
         stories[index].updatedAt = Date()
+        let storyToRegenerate = stories[index]
         saveContext()
+        Task {
+            await generateBiographyProse(for: storyToRegenerate)
+        }
         loadStories()
         print("Story updated successfully")
     }
@@ -518,6 +532,9 @@ class SpeechRecognitionViewModel: ObservableObject {
             modelContext.insert(story)
             saveContext()
             loadStories()
+            Task {
+                await generateBiographyProse(for: story)
+            }
         } else {
             stories.append(story)
         }
@@ -530,6 +547,37 @@ class SpeechRecognitionViewModel: ObservableObject {
         // Reset for next recording
         transcribedText = ""
         recordingStartTime = nil
+    }
+
+    private func generateBiographyProse(for story: Story) async {
+        guard let generationService, let userProfile else {
+            story.processingStatus = "awaitingModel"
+            story.updatedAt = Date()
+            saveContext()
+            loadStories()
+            return
+        }
+
+        story.processingStatus = "processing"
+        story.updatedAt = Date()
+        saveContext()
+
+        do {
+            story.biographyProse = try await generationService.writeBiographyProse(
+                from: story,
+                userProfile: userProfile
+            )
+            story.processingStatus = "processed"
+        } catch GenerationError.localModelNotReady {
+            story.processingStatus = "awaitingModel"
+        } catch {
+            story.processingStatus = "failed"
+            setError(error.localizedDescription)
+        }
+
+        story.updatedAt = Date()
+        saveContext()
+        loadStories()
     }
     
     /// Sets error message and logs it
