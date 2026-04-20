@@ -69,7 +69,7 @@ struct StreamingTextView: View {
                                 .font(.title)
                                 .foregroundColor(.secondary.opacity(0.6))
                             
-                            Text("Tap to start recording")
+                            Text("Tap to start a story")
                                 .font(.body)
                                 .foregroundColor(.secondary)
                         }

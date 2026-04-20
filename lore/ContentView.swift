@@ -8,10 +8,9 @@
 import SwiftUI
 
 struct ContentView: View {
+    let userProfile: UserProfile
     @StateObject private var speechRecognizer = SpeechRecognitionViewModel()
-    @State private var showingRecordings = false
     @State private var glowAnimation = false
-    @State private var audioLevel: Float = 0
     
     var body: some View {
         NavigationView {
@@ -39,7 +38,7 @@ struct ContentView: View {
                 VStack(spacing: 0) {
                     // Top Navigation Bar
                     HStack {
-                        NavigationLink(destination: RecordingsView(speechRecognizer: speechRecognizer)) {
+                        NavigationLink(destination: StoriesView(speechRecognizer: speechRecognizer)) {
                             Image(systemName: "doc.text")
                                 .font(.title3)
                                 .foregroundColor(.primary)
@@ -66,10 +65,14 @@ struct ContentView: View {
                         // Header - only show when not recording
                         if !speechRecognizer.isRecording {
                             VStack(spacing: 8) {
-                                Text("Speak your story ")
+                                Text("Speak your story")
                                     .font(.largeTitle)
                                     .fontWeight(.medium)
                                     .foregroundColor(.primary)
+
+                                Text("Lore is listening, \(userProfile.name).")
+                                    .font(.body)
+                                    .foregroundColor(.secondary)
                             }
                             .transition(.opacity.combined(with: .move(edge: .top)))
                         }
@@ -88,7 +91,7 @@ struct ContentView: View {
                                 Image(systemName: speechRecognizer.isRecording ? "stop.fill" : "mic.fill")
                                     .font(.title2)
                                     .contentTransition(.symbolEffect(.replace))
-                                Text(speechRecognizer.isRecording ? "Stop" : "Start Recording")
+                                Text(speechRecognizer.isRecording ? "Stop" : "Start Story")
                                     .font(.title3)
                                     .fontWeight(.medium)
                                     .contentTransition(.opacity)
@@ -136,9 +139,6 @@ struct ContentView: View {
                 }
             }
             .navigationBarHidden(true)
-        }
-        .sheet(isPresented: $showingRecordings) {
-            RecordingsView(speechRecognizer: speechRecognizer)
         }
     }
 }
@@ -270,5 +270,11 @@ struct RecordingGlowOverlay: View {
 }
 
 #Preview {
-    ContentView()
+    ContentView(
+        userProfile: UserProfile(
+            name: "Aark",
+            hometown: "Hyderabad",
+            birthYear: 1994
+        )
+    )
 }

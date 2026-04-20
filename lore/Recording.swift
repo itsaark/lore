@@ -1,11 +1,34 @@
 import Foundation
 
-/// Model representing a single recording entry
-struct Recording: Identifiable, Codable, Equatable {
-    let id = UUID()
+/// Model representing a single captured story entry.
+struct Story: Identifiable, Codable, Equatable {
+    let id: UUID
     var text: String
     let date: Date
     let duration: TimeInterval // in seconds
+
+    init(id: UUID = UUID(), text: String, date: Date, duration: TimeInterval) {
+        self.id = id
+        self.text = text
+        self.date = date
+        self.duration = duration
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case text
+        case date
+        case duration
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        text = try container.decode(String.self, forKey: .text)
+        date = try container.decode(Date.self, forKey: .date)
+        duration = try container.decode(TimeInterval.self, forKey: .duration)
+    }
     
     /// Computed property for formatted date display
     var formattedDate: String {
@@ -26,8 +49,8 @@ struct Recording: Identifiable, Codable, Equatable {
         }
     }
     
-    /// Equatable implementation to compare recordings
-    static func == (lhs: Recording, rhs: Recording) -> Bool {
+    /// Equatable implementation to compare stories.
+    static func == (lhs: Story, rhs: Story) -> Bool {
         return lhs.id == rhs.id
     }
 }

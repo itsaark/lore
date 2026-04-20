@@ -22,7 +22,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     @Published var isAuthorized = false
     @Published var currentWord = ""
     @Published var wordOpacity: Double = 0.0
-    @Published var recordings: [Recording] = []
+    @Published var stories: [Story] = []
     @Published var speechConfidence: Float = 0.0
     @Published var streamingText = ""
     @Published var isProcessingAudio = false
@@ -45,7 +45,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     init() {
         Task {
             await requestPermissions()
-            loadRecordings()
+            loadStories()
         }
     }
     
@@ -75,37 +75,56 @@ class SpeechRecognitionViewModel: ObservableObject {
         stopAudioLevelTimer()
     }
     
-    /// Updates the text of an existing recording
-    func updateRecording(_ recording: Recording, withText newText: String) {
-        guard let index = recordings.firstIndex(where: { $0.id == recording.id }) else {
-            print("❌ Recording not found for update")
+    /// Updates the text of an existing story.
+    func updateStory(_ story: Story, withText newText: String) {
+        guard let index = stories.firstIndex(where: { $0.id == story.id }) else {
+            print("Story not found for update")
             return
         }
         
-        recordings[index].text = newText
-        saveRecordings()
-        print("✅ Recording updated successfully")
+        stories[index].text = newText
+        saveStories()
+        print("Story updated successfully")
+    }
+
+    /// Deletes stories and persists the updated list.
+    func deleteStories(atOffsets offsets: IndexSet) {
+        let newestFirstStories = Array(stories.reversed())
+        
+        for index in offsets {
+            guard newestFirstStories.indices.contains(index),
+                  let originalIndex = stories.firstIndex(where: { $0.id == newestFirstStories[index].id }) else {
+                continue
+            }
+            
+            stories.remove(at: originalIndex)
+        }
+        
+        saveStories()
     }
     
-    /// Saves recordings to UserDefaults
-    private func saveRecordings() {
+    /// Saves stories to UserDefaults.
+    private func saveStories() {
         do {
-            let data = try JSONEncoder().encode(recordings)
-            UserDefaults.standard.set(data, forKey: "SavedRecordings")
+            let data = try JSONEncoder().encode(stories)
+            UserDefaults.standard.set(data, forKey: "SavedStories")
+            UserDefaults.standard.removeObject(forKey: "SavedRecordings")
         } catch {
-            print("Failed to save recordings: \(error)")
+            print("Failed to save stories: \(error)")
         }
     }
     
-    /// Loads recordings from UserDefaults
-    private func loadRecordings() {
-        guard let data = UserDefaults.standard.data(forKey: "SavedRecordings") else { return }
+    /// Loads stories from UserDefaults, including existing prototype recordings.
+    private func loadStories() {
+        let defaults = UserDefaults.standard
+        guard let data = defaults.data(forKey: "SavedStories") ?? defaults.data(forKey: "SavedRecordings") else { return }
         
         do {
-            recordings = try JSONDecoder().decode([Recording].self, from: data)
+            stories = try JSONDecoder().decode([Story].self, from: data)
+            saveStories()
         } catch {
-            print("Failed to load recordings: \(error)")
-            recordings = []
+            print("Failed to load stories: \(error)")
+            stories = []
         }
     }
 
@@ -460,19 +479,19 @@ class SpeechRecognitionViewModel: ObservableObject {
         guard let startTime = recordingStartTime else { return }
         
         let duration = Date().timeIntervalSince(startTime)
-        let recording = Recording(
+        let story = Story(
             text: transcribedText,
             date: startTime,
             duration: duration
         )
         
-        recordings.append(recording)
-        saveRecordings()
+        stories.append(story)
+        saveStories()
         
-        let displayText = recording.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 
-                         "No voice found in recording" : 
-                         String(recording.text.prefix(50)) + (recording.text.count > 50 ? "..." : "")
-        print("💾 Recording saved: \(recording.formattedDuration) - \(displayText)")
+        let displayText = story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 
+                         "No voice found in story" : 
+                         String(story.text.prefix(50)) + (story.text.count > 50 ? "..." : "")
+        print("Story saved: \(story.formattedDuration) - \(displayText)")
         
         // Reset for next recording
         transcribedText = ""

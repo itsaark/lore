@@ -7,9 +7,9 @@
 
 import SwiftUI
 
-/// Detail view for displaying individual recording content
-struct RecordingDetailView: View {
-    let recording: Recording
+/// Detail view for displaying individual story content.
+struct StoryDetailView: View {
+    let story: Story
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
     
     @State private var isEditing = false
@@ -19,12 +19,12 @@ struct RecordingDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                // Recording metadata
+                // Story metadata
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Image(systemName: "calendar")
                             .foregroundColor(.blue)
-                        Text(recording.formattedDate)
+                        Text(story.formattedDate)
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -32,7 +32,7 @@ struct RecordingDetailView: View {
                     HStack {
                         Image(systemName: "clock")
                             .foregroundColor(.blue)
-                        Text("Duration: \(recording.formattedDuration)")
+                        Text("Duration: \(story.formattedDuration)")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
@@ -41,9 +41,9 @@ struct RecordingDetailView: View {
                 
                 Divider()
                 
-                // Recording content
+                // Story content
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Transcription")
+                    Text("Transcript")
                         .font(.headline)
                         .foregroundColor(.primary)
                     
@@ -65,7 +65,7 @@ struct RecordingDetailView: View {
                             // Edit action buttons
                             HStack(spacing: 12) {
                                 Button("Cancel") {
-                                    editedText = recording.text
+                                    editedText = story.text
                                     isEditing = false
                                     isTextFieldFocused = false
                                 }
@@ -78,7 +78,7 @@ struct RecordingDetailView: View {
                                 )
                                 
                                 Button("Save") {
-                                    speechRecognizer.updateRecording(recording, withText: editedText)
+                                    speechRecognizer.updateStory(story, withText: editedText)
                                     isEditing = false
                                     isTextFieldFocused = false
                                 }
@@ -93,7 +93,7 @@ struct RecordingDetailView: View {
                         }
                     } else {
                         // View mode - show text
-                        Text(getCurrentText().isEmpty ? "No voice found in recording" : getCurrentText())
+                        Text(getCurrentText().isEmpty ? "Story with no transcript" : getCurrentText())
                             .font(.body)
                             .foregroundColor(getCurrentText().isEmpty ? .secondary : .primary)
                             .lineSpacing(4)
@@ -106,7 +106,7 @@ struct RecordingDetailView: View {
             }
             .padding(.vertical)
         }
-        .navigationTitle("Recording")
+        .navigationTitle("Story")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(false)
         .toolbar {
@@ -114,7 +114,7 @@ struct RecordingDetailView: View {
                 Button(isEditing ? "Done" : "Edit") {
                     if isEditing {
                         // Save changes when done
-                        speechRecognizer.updateRecording(recording, withText: editedText)
+                        speechRecognizer.updateStory(story, withText: editedText)
                         isEditing = false
                         isTextFieldFocused = false
                     } else {
@@ -128,25 +128,25 @@ struct RecordingDetailView: View {
             }
         }
         .onAppear {
-            editedText = recording.text
+            editedText = story.text
         }
     }
     
     /// Gets the current text to display (updated text if available)
     private func getCurrentText() -> String {
-        // Find the updated recording from the speech recognizer
-        if let updatedRecording = speechRecognizer.recordings.first(where: { $0.id == recording.id }) {
-            return updatedRecording.text
+        // Find the updated story from the speech recognizer.
+        if let updatedStory = speechRecognizer.stories.first(where: { $0.id == story.id }) {
+            return updatedStory.text
         }
-        return recording.text
+        return story.text
     }
 }
 
 #Preview {
     NavigationView {
-        RecordingDetailView(
-            recording: Recording(
-                text: "This is a sample recording text that shows how the detail view will look with actual content from a speech recognition session.",
+        StoryDetailView(
+            story: Story(
+                text: "This is a sample story text that shows how the detail view will look with actual content from a speech recognition session.",
                 date: Date(),
                 duration: 45
             ),
