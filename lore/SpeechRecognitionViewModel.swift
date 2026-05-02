@@ -45,6 +45,8 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var generationService: (any GenerationService)?
     private var userProfile: UserProfile?
     private var hasLoadedStories = false
+    private static let audioRetentionInterval: TimeInterval = 7 * 24 * 60 * 60
+    private static let placeholderAudioScheme = "lore-audio-placeholder"
     
     // MARK: - Initialization
     init() {
@@ -93,6 +95,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             return
         }
 
+        cleanupExpiredAudioAssets()
         loadStories()
         hasLoadedStories = true
     }
@@ -111,7 +114,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         let storyToRegenerate = stories[index]
         saveContext()
         Task {
-            await generateBiographyProse(for: storyToRegenerate)
+            await processCapturedStory(storyToRegenerate)
         }
         loadStories()
         print("Story updated successfully")
@@ -159,6 +162,40 @@ class SpeechRecognitionViewModel: ObservableObject {
             print("Failed to load stories: \(error)")
             stories = []
         }
+    }
+
+    /// Marks expired audio metadata deleted and removes the backing file when one exists.
+    func cleanupExpiredAudioAssets(now: Date = Date()) {
+        guard let modelContext else { return }
+
+        do {
+            _ = try Self.cleanupExpiredAudioAssets(in: modelContext, now: now)
+        } catch {
+            print("Failed to clean up expired audio assets: \(error)")
+        }
+    }
+
+    @discardableResult
+    static func cleanupExpiredAudioAssets(
+        in modelContext: ModelContext,
+        now: Date = Date(),
+        fileManager: FileManager = .default
+    ) throws -> Int {
+        let allAssets = try modelContext.fetch(FetchDescriptor<AudioAsset>())
+        let expiredAssets = allAssets.filter { asset in
+            !asset.isDeleted && asset.expiresAt <= now
+        }
+
+        for asset in expiredAssets {
+            try removeAudioFileIfPresent(at: asset.fileURL, fileManager: fileManager)
+            asset.isDeleted = true
+        }
+
+        if !expiredAssets.isEmpty {
+            try modelContext.save()
+        }
+
+        return expiredAssets.count
     }
 
     // MARK: - Private Methods
@@ -516,26 +553,29 @@ class SpeechRecognitionViewModel: ObservableObject {
     private func saveCurrentRecording() {
         guard let startTime = recordingStartTime else { return }
         
-        let duration = Date().timeIntervalSince(startTime)
-        let story = Story(
-            text: transcribedText,
-            date: startTime,
-            duration: duration,
-            rawTranscriptExpiresAt: Calendar.current.date(
-                byAdding: .day,
-                value: 120,
-                to: startTime
-            )
-        )
+        let endTime = Date()
+        let story: Story
         
         if let modelContext {
-            modelContext.insert(story)
-            saveContext()
+            do {
+                story = try Self.persistCapturedStory(
+                    transcript: transcribedText,
+                    startTime: startTime,
+                    endTime: endTime,
+                    modelContext: modelContext
+                )
+            } catch {
+                setError("Failed to save story: \(error.localizedDescription)")
+                print("Failed to save story and audio metadata: \(error)")
+                return
+            }
+
             loadStories()
             Task {
-                await generateBiographyProse(for: story)
+                await processCapturedStory(story)
             }
         } else {
+            story = Self.makeStory(transcript: transcribedText, startTime: startTime, endTime: endTime)
             stories.append(story)
         }
         
@@ -549,7 +589,85 @@ class SpeechRecognitionViewModel: ObservableObject {
         recordingStartTime = nil
     }
 
-    private func generateBiographyProse(for story: Story) async {
+    @discardableResult
+    static func persistCapturedStory(
+        transcript: String,
+        startTime: Date,
+        endTime: Date,
+        modelContext: ModelContext
+    ) throws -> Story {
+        let story = makeStory(transcript: transcript, startTime: startTime, endTime: endTime)
+        let audioAsset = makePlaceholderAudioAsset(
+            storyID: story.id,
+            createdAt: endTime,
+            duration: story.duration
+        )
+
+        modelContext.insert(story)
+        modelContext.insert(audioAsset)
+        try modelContext.save()
+
+        return story
+    }
+
+    static func makePlaceholderAudioAsset(
+        storyID: UUID,
+        createdAt: Date,
+        duration: TimeInterval
+    ) -> AudioAsset {
+        AudioAsset(
+            id: storyID,
+            fileURL: placeholderAudioURL(forStoryID: storyID).absoluteString,
+            createdAt: createdAt,
+            expiresAt: createdAt.addingTimeInterval(audioRetentionInterval),
+            duration: duration,
+            isDeleted: false
+        )
+    }
+
+    static func placeholderAudioURL(forStoryID storyID: UUID) -> URL {
+        // The current AVAudioEngine path feeds Speech directly and does not persist audio bytes yet.
+        // This metadata-only URL is intentionally non-file so cleanup will not pretend audio exists.
+        URL(string: "\(placeholderAudioScheme)://metadata-only/stories/\(storyID.uuidString)")!
+    }
+
+    static func isPlaceholderAudioURL(_ fileURL: String) -> Bool {
+        URL(string: fileURL)?.scheme == placeholderAudioScheme
+    }
+
+    private static func makeStory(transcript: String, startTime: Date, endTime: Date) -> Story {
+        Story(
+            text: transcript,
+            date: startTime,
+            duration: endTime.timeIntervalSince(startTime),
+            rawTranscriptExpiresAt: startTime.addingTimeInterval(120 * 24 * 60 * 60),
+            createdAt: endTime,
+            updatedAt: endTime
+        )
+    }
+
+    private static func removeAudioFileIfPresent(
+        at fileURL: String,
+        fileManager: FileManager
+    ) throws {
+        let candidateURL: URL
+
+        if let url = URL(string: fileURL), url.scheme != nil {
+            candidateURL = url
+        } else {
+            candidateURL = URL(fileURLWithPath: fileURL)
+        }
+
+        guard candidateURL.isFileURL else {
+            return
+        }
+
+        if fileManager.fileExists(atPath: candidateURL.path) {
+            try fileManager.removeItem(at: candidateURL)
+        }
+    }
+
+    private func processCapturedStory(_ story: Story) async {
         guard let generationService, let userProfile else {
             story.processingStatus = "awaitingModel"
             story.updatedAt = Date()
@@ -567,6 +685,13 @@ class SpeechRecognitionViewModel: ObservableObject {
                 from: story,
                 userProfile: userProfile
             )
+            let graphJSON = try await generationService.extractMemoryGraph(
+                from: story,
+                userProfile: userProfile
+            )
+            if let modelContext {
+                try MemoryGraphService.persistExtractionJSON(graphJSON, for: story, in: modelContext)
+            }
             story.processingStatus = "processed"
         } catch GenerationError.localModelNotReady {
             story.processingStatus = "awaitingModel"

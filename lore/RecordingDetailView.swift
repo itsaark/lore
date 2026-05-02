@@ -15,6 +15,10 @@ struct StoryDetailView: View {
     @State private var isEditing = false
     @State private var editedText: String = ""
     @FocusState private var isTextFieldFocused: Bool
+
+    private var displayContent: StoryDisplayContent {
+        StoryDisplayContent(story: currentStory)
+    }
     
     var body: some View {
         ScrollView {
@@ -42,11 +46,20 @@ struct StoryDetailView: View {
                 Divider()
 
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Biography Draft")
-                        .font(.headline)
-                        .foregroundColor(.primary)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Biography Draft")
+                            .font(.headline)
+                            .foregroundColor(.primary)
 
-                    if let biographyProse = currentStory.biographyProse, !biographyProse.isEmpty {
+                        Spacer()
+
+                        Label(displayContent.listStatusText, systemImage: displayContent.statusIconName)
+                            .font(.caption2)
+                            .fontWeight(.semibold)
+                            .foregroundColor(displayContent.statusColor)
+                    }
+
+                    if let biographyProse = displayContent.biographyDetailText {
                         Text(biographyProse)
                             .font(.body)
                             .foregroundColor(.primary)
@@ -54,9 +67,9 @@ struct StoryDetailView: View {
                             .textSelection(.enabled)
                     } else {
                         HStack(spacing: 8) {
-                            Image(systemName: processingIconName)
+                            Image(systemName: displayContent.statusIconName)
                                 .foregroundColor(.secondary)
-                            Text(processingStatusText)
+                            Text(displayContent.detailStatusText)
                                 .font(.body)
                                 .foregroundColor(.secondary)
                         }
@@ -90,7 +103,7 @@ struct StoryDetailView: View {
                             // Edit action buttons
                             HStack(spacing: 12) {
                                 Button("Cancel") {
-                                    editedText = story.text
+                                    editedText = currentStory.text
                                     isEditing = false
                                     isTextFieldFocused = false
                                 }
@@ -118,9 +131,9 @@ struct StoryDetailView: View {
                         }
                     } else {
                         // View mode - show text
-                        Text(getCurrentText().isEmpty ? "Story with no transcript" : getCurrentText())
+                        Text(displayContent.transcriptText)
                             .font(.body)
-                            .foregroundColor(getCurrentText().isEmpty ? .secondary : .primary)
+                            .foregroundColor(displayContent.hasTranscript ? .primary : .secondary)
                             .lineSpacing(4)
                             .textSelection(.enabled)
                     }
@@ -144,7 +157,7 @@ struct StoryDetailView: View {
                         isTextFieldFocused = false
                     } else {
                         // Start editing
-                        editedText = getCurrentText()
+                        editedText = currentStory.text
                         isEditing = true
                         isTextFieldFocused = true
                     }
@@ -153,48 +166,12 @@ struct StoryDetailView: View {
             }
         }
         .onAppear {
-            editedText = story.text
+            editedText = currentStory.text
         }
     }
 
     private var currentStory: Story {
         speechRecognizer.stories.first(where: { $0.id == story.id }) ?? story
-    }
-
-    private var processingStatusText: String {
-        switch currentStory.processingStatus {
-        case "captured":
-            return "Ready for local biography generation."
-        case "awaitingModel":
-            return "Load the local AI model to generate this draft."
-        case "processing":
-            return "Writing biography prose on device."
-        case "processed":
-            return "Biography draft is ready."
-        case "failed":
-            return "Lore could not generate a draft for this story."
-        default:
-            return "Waiting for local processing."
-        }
-    }
-
-    private var processingIconName: String {
-        switch currentStory.processingStatus {
-        case "processed":
-            return "checkmark.seal"
-        case "failed":
-            return "exclamationmark.triangle"
-        case "processing":
-            return "hourglass"
-        default:
-            return "sparkles"
-        }
-    }
-    
-    /// Gets the current text to display (updated text if available)
-    private func getCurrentText() -> String {
-        // Find the updated story from the speech recognizer.
-        currentStory.text
     }
 }
 

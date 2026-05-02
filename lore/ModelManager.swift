@@ -30,6 +30,49 @@ enum LocalModelTier: String, CaseIterable, Identifiable {
     }
 }
 
+enum LocalGenerationTask: String, Equatable {
+    case biographyProse
+    case memoryGraphExtraction
+}
+
+struct LocalGenerationFallbackContext: Equatable {
+    var storyID: UUID
+    var transcript: String
+    var userName: String
+    var hometown: String
+    var birthYear: Int
+    var captureDate: Date
+}
+
+struct LocalGenerationRequest: Equatable {
+    var task: LocalGenerationTask
+    var prompt: String
+    var fallbackContext: LocalGenerationFallbackContext
+}
+
+enum LocalModelRuntimeError: Error, LocalizedError {
+    case modelNotReady
+    case generationFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .modelNotReady:
+            return "Local AI is not ready yet."
+        case .generationFailed(let message):
+            return message
+        }
+    }
+}
+
+@MainActor
+protocol LocalModelRuntime {
+    var displayName: String { get }
+    var isMLXBacked: Bool { get }
+
+    func load(tier: LocalModelTier) async throws
+    func generate(_ request: LocalGenerationRequest, tier: LocalModelTier) async throws -> String
+}
+
 enum LocalModelState: String {
     case notDownloaded
     case downloading
@@ -72,11 +115,16 @@ final class ModelManager: ObservableObject {
     @Published private(set) var status: LocalModelStatus
 
     private let userDefaults: UserDefaults
+    private let runtime: any LocalModelRuntime
     private let selectedTierKey = "LoreSelectedLocalModelTier"
     private let downloadedTierKey = "LoreDownloadedLocalModelTier"
 
-    init(userDefaults: UserDefaults = .standard) {
+    init(
+        userDefaults: UserDefaults = .standard,
+        runtime: (any LocalModelRuntime)? = nil
+    ) {
         self.userDefaults = userDefaults
+        self.runtime = runtime ?? DeterministicLocalModelRuntime()
 
         let selectedTier = userDefaults.string(forKey: selectedTierKey)
             .flatMap(LocalModelTier.init(rawValue:)) ?? .standard4B
@@ -142,10 +190,25 @@ final class ModelManager: ObservableObject {
 
         status.state = .loading
         status.message = "Loading local model into memory."
-        try? await Task.sleep(for: .milliseconds(120))
-        status.state = .loaded
-        status.progress = 1.0
-        status.message = "Local generation is ready."
+        do {
+            try await runtime.load(tier: status.tier)
+            status.state = .loaded
+            status.progress = 1.0
+            status.message = runtime.isMLXBacked
+                ? "Local generation is ready."
+                : "Local generation fallback is ready."
+        } catch {
+            status.state = .failed
+            status.message = error.localizedDescription
+        }
+    }
+
+    func generate(_ request: LocalGenerationRequest) async throws -> String {
+        guard status.isReady else {
+            throw LocalModelRuntimeError.modelNotReady
+        }
+
+        return try await runtime.generate(request, tier: status.tier)
     }
 
     func forgetDownloadedModel() {
@@ -154,4 +217,137 @@ final class ModelManager: ObservableObject {
         status.progress = 0.0
         status.message = nil
     }
+}
+
+struct DeterministicLocalModelRuntime: LocalModelRuntime {
+    let displayName = "Deterministic local fallback"
+    let isMLXBacked = false
+
+    func load(tier: LocalModelTier) async throws {
+        try await Task.sleep(for: .milliseconds(20))
+    }
+
+    func generate(_ request: LocalGenerationRequest, tier: LocalModelTier) async throws -> String {
+        try await Task.sleep(for: .milliseconds(20))
+
+        switch request.task {
+        case .biographyProse:
+            return makeBiographyProse(from: request.fallbackContext)
+        case .memoryGraphExtraction:
+            return try makeMemoryGraphJSON(from: request.fallbackContext)
+        }
+    }
+
+    private func makeBiographyProse(from context: LocalGenerationFallbackContext) -> String {
+        let cleanedTranscript = context.transcript
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(separator: " ")
+            .joined(separator: " ")
+
+        return """
+        \(context.userName), who began life in \(context.hometown), remembered this moment with the plain texture of lived experience. \(cleanedTranscript)
+        """
+    }
+
+    private func makeMemoryGraphJSON(from context: LocalGenerationFallbackContext) throws -> String {
+        let cleanedTranscript = context.transcript
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(separator: " ")
+            .joined(separator: " ")
+        let summary = String(cleanedTranscript.prefix(220))
+        let payload = DeterministicMemoryGraphPayload(
+            people: [],
+            places: [
+                DeterministicPlaceCandidate(
+                    displayName: context.hometown,
+                    placeKind: "hometown",
+                    locationHint: context.hometown,
+                    summary: "Hometown from the local user profile.",
+                    confidence: 0.35,
+                    sourceStoryIds: [context.storyID.uuidString]
+                )
+            ],
+            themes: [
+                DeterministicThemeCandidate(
+                    name: "reflection",
+                    summary: "A locally generated fallback theme for a captured personal story.",
+                    confidence: 0.2,
+                    sourceStoryIds: [context.storyID.uuidString]
+                )
+            ],
+            lifeEvents: [
+                DeterministicLifeEventCandidate(
+                    title: "Captured personal memory",
+                    summary: summary,
+                    eventDateKind: "unknown",
+                    eventStartDate: nil,
+                    eventEndDate: nil,
+                    approximateLabel: nil,
+                    confidence: 0.2,
+                    sourceStoryIds: [context.storyID.uuidString]
+                )
+            ],
+            memoryFacts: [
+                DeterministicMemoryFactCandidate(
+                    text: summary,
+                    confidence: 0.2,
+                    sourceStoryId: context.storyID.uuidString
+                )
+            ],
+            modelName: displayName
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(payload)
+        guard let json = String(data: data, encoding: .utf8) else {
+            throw LocalModelRuntimeError.generationFailed("Unable to encode memory graph fallback.")
+        }
+
+        return json
+    }
+}
+
+private struct DeterministicMemoryGraphPayload: Encodable {
+    var people: [DeterministicPersonCandidate]
+    var places: [DeterministicPlaceCandidate]
+    var themes: [DeterministicThemeCandidate]
+    var lifeEvents: [DeterministicLifeEventCandidate]
+    var memoryFacts: [DeterministicMemoryFactCandidate]
+    var modelName: String
+}
+
+private struct DeterministicPersonCandidate: Encodable {}
+
+private struct DeterministicPlaceCandidate: Encodable {
+    var displayName: String
+    var placeKind: String
+    var locationHint: String
+    var summary: String
+    var confidence: Double
+    var sourceStoryIds: [String]
+}
+
+private struct DeterministicThemeCandidate: Encodable {
+    var name: String
+    var summary: String
+    var confidence: Double
+    var sourceStoryIds: [String]
+}
+
+private struct DeterministicLifeEventCandidate: Encodable {
+    var title: String
+    var summary: String
+    var eventDateKind: String
+    var eventStartDate: String?
+    var eventEndDate: String?
+    var approximateLabel: String?
+    var confidence: Double
+    var sourceStoryIds: [String]
+}
+
+private struct DeterministicMemoryFactCandidate: Encodable {
+    var text: String
+    var confidence: Double
+    var sourceStoryId: String
 }
