@@ -305,6 +305,38 @@ struct loreTests {
     }
 
     @MainActor
+    @Test func capturedStoryPersistsRealAudioAssetFileURLWhenAvailable() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let fileManager = FileManager.default
+        let startTime = Date(timeIntervalSince1970: 1_800_000_000)
+        let endTime = startTime.addingTimeInterval(23)
+        let audioFileURL = fileManager.temporaryDirectory
+            .appendingPathComponent("lore-real-audio-\(UUID().uuidString).caf")
+        try Data([0, 1, 2, 3]).write(to: audioFileURL)
+
+        let story = try SpeechRecognitionViewModel.persistCapturedStory(
+            transcript: "A story with retained local audio.",
+            startTime: startTime,
+            endTime: endTime,
+            audioFileURL: audioFileURL,
+            modelContext: context
+        )
+
+        let asset = try #require(try context.fetch(FetchDescriptor<AudioAsset>()).first)
+
+        #expect(asset.id == story.id)
+        #expect(asset.fileURL == audioFileURL.absoluteString)
+        #expect(asset.createdAt == endTime)
+        #expect(asset.expiresAt == endTime.addingTimeInterval(7 * 24 * 60 * 60))
+        #expect(asset.duration == 23)
+        #expect(asset.isDeleted == false)
+        #expect(!SpeechRecognitionViewModel.isPlaceholderAudioURL(asset.fileURL))
+
+        try? fileManager.removeItem(at: audioFileURL)
+    }
+
+    @MainActor
     @Test func cleanupMarksExpiredAudioAssetsDeletedAndRemovesFiles() throws {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)
@@ -345,6 +377,38 @@ struct loreTests {
 
         #expect(cleanedCount == 2)
         #expect(fileManager.fileExists(atPath: expiredFileURL.path) == false)
+    }
+
+    @MainActor
+    @Test func deletingStoryAudioAssetsRemovesLinkedFilesAndMetadata() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let fileManager = FileManager.default
+        let startTime = Date(timeIntervalSince1970: 1_800_000_000)
+        let endTime = startTime.addingTimeInterval(31)
+        let audioFileURL = fileManager.temporaryDirectory
+            .appendingPathComponent("lore-delete-audio-\(UUID().uuidString).caf")
+        try Data([4, 5, 6, 7]).write(to: audioFileURL)
+        let story = try SpeechRecognitionViewModel.persistCapturedStory(
+            transcript: "A story whose audio should be deleted.",
+            startTime: startTime,
+            endTime: endTime,
+            audioFileURL: audioFileURL,
+            modelContext: context
+        )
+
+        let deletedAssetCount = try SpeechRecognitionViewModel.deleteAudioAssets(
+            for: story,
+            in: context,
+            fileManager: fileManager
+        )
+        context.delete(story)
+        try context.save()
+
+        #expect(deletedAssetCount == 1)
+        #expect(fileManager.fileExists(atPath: audioFileURL.path) == false)
+        #expect(try context.fetch(FetchDescriptor<AudioAsset>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<Story>()).isEmpty)
     }
 
     @Test func memoryGraphPersistsLifeEventTemporalUncertaintyAndSources() throws {

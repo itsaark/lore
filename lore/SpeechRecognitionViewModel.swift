@@ -39,6 +39,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var previousWordCount = 0
     private var fadeTimer: Timer?
     private var recordingStartTime: Date?
+    private var currentRecordingAudioFileURL: URL?
     private var audioLevelTimer: Timer?
     private var audioLevelBuffer: [Float] = []
     private var modelContext: ModelContext?
@@ -131,7 +132,15 @@ class SpeechRecognitionViewModel: ObservableObject {
             }
             
             let story = stories.remove(at: originalIndex)
-            modelContext?.delete(story)
+            if let modelContext {
+                do {
+                    try Self.deleteAudioAssets(for: story, in: modelContext)
+                } catch {
+                    setError("Failed to delete story audio: \(error.localizedDescription)")
+                    print("Failed to delete story audio: \(error)")
+                }
+                modelContext.delete(story)
+            }
         }
         
         saveContext()
@@ -284,6 +293,8 @@ class SpeechRecognitionViewModel: ObservableObject {
             try startSpeechRecognition()
             print("✅ Recording started successfully")
         } catch {
+            discardCurrentAudioFile()
+            recordingStartTime = nil
             setError("Failed to start recording: \(error.localizedDescription)")
             print("❌ Recording failed to start: \(error)")
         }
@@ -374,8 +385,19 @@ class SpeechRecognitionViewModel: ObservableObject {
         
         // Configure audio tap with enhanced buffer processing for audio level detection
         let recordingFormat = inputNode.outputFormat(forBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self, weak recognitionRequest] buffer, _ in
+        let audioFileURL = try Self.makeAudioFileURL(forStoryID: UUID())
+        let audioFile = try AVAudioFile(forWriting: audioFileURL, settings: recordingFormat.settings)
+        currentRecordingAudioFileURL = audioFileURL
+
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self, weak recognitionRequest, audioFile] buffer, _ in
             recognitionRequest?.append(buffer)
+            do {
+                try audioFile.write(from: buffer)
+            } catch {
+                DispatchQueue.main.async {
+                    self?.setError("Failed to save recording audio: \(error.localizedDescription)")
+                }
+            }
             
             // Calculate audio level from buffer
             self?.processAudioBuffer(buffer)
@@ -499,21 +521,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         
         // Set flag to indicate this is intentional
         isStoppedByUser = true
-        
-        // Save the current recording if there's text
-        saveCurrentRecording()
-        
-        // Clean up word display and streaming state
-        fadeTimer?.invalidate()
-        fadeTimer = nil
-        currentWord = ""
-        wordOpacity = 0.0
-        previousWordCount = 0
-        speechConfidence = 0.0
-        isProcessingAudio = false
-        currentAudioLevel = 0.0
-        stopAudioLevelTimer()
-        
+
         // Stop audio engine
         if audioEngine.isRunning {
             audioEngine.stop()
@@ -533,6 +541,19 @@ class SpeechRecognitionViewModel: ObservableObject {
         
         // Stop audio engine
         audioEngine.stop()
+
+        // Save the current recording after audio capture has stopped.
+        saveCurrentRecording()
+
+        // Clean up word display and streaming state
+        fadeTimer?.invalidate()
+        fadeTimer = nil
+        currentWord = ""
+        wordOpacity = 0.0
+        previousWordCount = 0
+        speechConfidence = 0.0
+        isProcessingAudio = false
+        currentAudioLevel = 0.0
         
         // Clean up
         recognitionRequest = nil
@@ -562,9 +583,11 @@ class SpeechRecognitionViewModel: ObservableObject {
                     transcript: transcribedText,
                     startTime: startTime,
                     endTime: endTime,
+                    audioFileURL: currentRecordingAudioFileURL,
                     modelContext: modelContext
                 )
             } catch {
+                discardCurrentAudioFile()
                 setError("Failed to save story: \(error.localizedDescription)")
                 print("Failed to save story and audio metadata: \(error)")
                 return
@@ -577,6 +600,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         } else {
             story = Self.makeStory(transcript: transcribedText, startTime: startTime, endTime: endTime)
             stories.append(story)
+            discardCurrentAudioFile()
         }
         
         let displayText = story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 
@@ -587,6 +611,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         // Reset for next recording
         transcribedText = ""
         recordingStartTime = nil
+        currentRecordingAudioFileURL = nil
     }
 
     @discardableResult
@@ -594,20 +619,35 @@ class SpeechRecognitionViewModel: ObservableObject {
         transcript: String,
         startTime: Date,
         endTime: Date,
+        audioFileURL: URL? = nil,
         modelContext: ModelContext
     ) throws -> Story {
         let story = makeStory(transcript: transcript, startTime: startTime, endTime: endTime)
-        let audioAsset = makePlaceholderAudioAsset(
-            storyID: story.id,
-            createdAt: endTime,
-            duration: story.duration
-        )
+        let audioAsset = audioFileURL.map {
+            makeAudioAsset(storyID: story.id, fileURL: $0, createdAt: endTime, duration: story.duration)
+        } ?? makePlaceholderAudioAsset(storyID: story.id, createdAt: endTime, duration: story.duration)
 
         modelContext.insert(story)
         modelContext.insert(audioAsset)
         try modelContext.save()
 
         return story
+    }
+
+    static func makeAudioAsset(
+        storyID: UUID,
+        fileURL: URL,
+        createdAt: Date,
+        duration: TimeInterval
+    ) -> AudioAsset {
+        AudioAsset(
+            id: storyID,
+            fileURL: fileURL.absoluteString,
+            createdAt: createdAt,
+            expiresAt: createdAt.addingTimeInterval(audioRetentionInterval),
+            duration: duration,
+            isDeleted: false
+        )
     }
 
     static func makePlaceholderAudioAsset(
@@ -633,6 +673,46 @@ class SpeechRecognitionViewModel: ObservableObject {
 
     static func isPlaceholderAudioURL(_ fileURL: String) -> Bool {
         URL(string: fileURL)?.scheme == placeholderAudioScheme
+    }
+
+    static func makeAudioFileURL(
+        forStoryID storyID: UUID,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let directory = try audioStorageDirectory(fileManager: fileManager)
+        return directory.appendingPathComponent("\(storyID.uuidString).caf")
+    }
+
+    static func audioStorageDirectory(fileManager: FileManager = .default) throws -> URL {
+        let applicationSupport = try fileManager.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        let directory = applicationSupport
+            .appendingPathComponent("Lore", isDirectory: true)
+            .appendingPathComponent("Audio", isDirectory: true)
+
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory
+    }
+
+    @discardableResult
+    static func deleteAudioAssets(
+        for story: Story,
+        in modelContext: ModelContext,
+        fileManager: FileManager = .default
+    ) throws -> Int {
+        let allAssets = try modelContext.fetch(FetchDescriptor<AudioAsset>())
+        let linkedAssets = allAssets.filter { $0.id == story.id }
+
+        for asset in linkedAssets {
+            try removeAudioFileIfPresent(at: asset.fileURL, fileManager: fileManager)
+            modelContext.delete(asset)
+        }
+
+        return linkedAssets.count
     }
 
     private static func makeStory(transcript: String, startTime: Date, endTime: Date) -> Story {
@@ -665,6 +745,16 @@ class SpeechRecognitionViewModel: ObservableObject {
         if fileManager.fileExists(atPath: candidateURL.path) {
             try fileManager.removeItem(at: candidateURL)
         }
+    }
+
+    private func discardCurrentAudioFile() {
+        guard let currentRecordingAudioFileURL else { return }
+
+        try? Self.removeAudioFileIfPresent(
+            at: currentRecordingAudioFileURL.absoluteString,
+            fileManager: .default
+        )
+        self.currentRecordingAudioFileURL = nil
     }
 
     private func processCapturedStory(_ story: Story) async {

@@ -333,7 +333,7 @@ Entitlement checks should gate premium features, not local data access. If a sub
 1. [x] Add SwiftData models for `UserProfile`, `Story`, `AudioAsset`, `StoryMetadata`, and `BiographyFragment`.
 2. [x] Rename UI language from Recordings to Stories.
 3. [x] Add onboarding for name, hometown, and birth year.
-4. [ ] Add audio asset lifecycle and 7-day deletion.
+4. [x] Add audio asset lifecycle and 7-day deletion.
 5. [x] Add 120-day raw transcript retention metadata.
 6. [x] Add local model download shell for Ternary Bonsai 4B.
 7. [x] Add `GenerationService` abstraction.
