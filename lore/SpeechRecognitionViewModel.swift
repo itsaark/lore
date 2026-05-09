@@ -31,6 +31,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     
     // MARK: - Private Properties
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private let metadataService: any MetadataService
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
@@ -50,7 +51,9 @@ class SpeechRecognitionViewModel: ObservableObject {
     private static let placeholderAudioScheme = "lore-audio-placeholder"
     
     // MARK: - Initialization
-    init() {
+    init(metadataService: any MetadataService = LocalMetadataService()) {
+        self.metadataService = metadataService
+
         Task {
             await requestPermissions()
         }
@@ -135,9 +138,10 @@ class SpeechRecognitionViewModel: ObservableObject {
             if let modelContext {
                 do {
                     try Self.deleteAudioAssets(for: story, in: modelContext)
+                    try Self.deleteStoryMetadata(for: story, in: modelContext)
                 } catch {
-                    setError("Failed to delete story audio: \(error.localizedDescription)")
-                    print("Failed to delete story audio: \(error)")
+                    setError("Failed to delete story support data: \(error.localizedDescription)")
+                    print("Failed to delete story support data: \(error)")
                 }
                 modelContext.delete(story)
             }
@@ -543,7 +547,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         audioEngine.stop()
 
         // Save the current recording after audio capture has stopped.
-        saveCurrentRecording()
+        Task {
+            await saveCurrentRecording()
+        }
 
         // Clean up word display and streaming state
         fadeTimer?.invalidate()
@@ -571,23 +577,30 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
     
     /// Saves the current recording session
-    private func saveCurrentRecording() {
+    private func saveCurrentRecording() async {
         guard let startTime = recordingStartTime else { return }
         
         let endTime = Date()
+        let transcript = transcribedText
+        let audioFileURL = currentRecordingAudioFileURL
         let story: Story
+
+        transcribedText = ""
+        recordingStartTime = nil
+        currentRecordingAudioFileURL = nil
         
         if let modelContext {
             do {
-                story = try Self.persistCapturedStory(
-                    transcript: transcribedText,
+                story = try await Self.persistCapturedStory(
+                    transcript: transcript,
                     startTime: startTime,
                     endTime: endTime,
-                    audioFileURL: currentRecordingAudioFileURL,
+                    audioFileURL: audioFileURL,
+                    metadataService: metadataService,
                     modelContext: modelContext
                 )
             } catch {
-                discardCurrentAudioFile()
+                discardAudioFile(at: audioFileURL)
                 setError("Failed to save story: \(error.localizedDescription)")
                 print("Failed to save story and audio metadata: \(error)")
                 return
@@ -598,20 +611,15 @@ class SpeechRecognitionViewModel: ObservableObject {
                 await processCapturedStory(story)
             }
         } else {
-            story = Self.makeStory(transcript: transcribedText, startTime: startTime, endTime: endTime)
+            story = Self.makeStory(transcript: transcript, startTime: startTime, endTime: endTime)
             stories.append(story)
-            discardCurrentAudioFile()
+            discardAudioFile(at: audioFileURL)
         }
         
         let displayText = story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 
                          "No voice found in story" : 
                          String(story.text.prefix(50)) + (story.text.count > 50 ? "..." : "")
         print("Story saved: \(story.formattedDuration) - \(displayText)")
-        
-        // Reset for next recording
-        transcribedText = ""
-        recordingStartTime = nil
-        currentRecordingAudioFileURL = nil
     }
 
     @discardableResult
@@ -620,14 +628,22 @@ class SpeechRecognitionViewModel: ObservableObject {
         startTime: Date,
         endTime: Date,
         audioFileURL: URL? = nil,
+        metadataService: any MetadataService = LocalMetadataService(),
         modelContext: ModelContext
-    ) throws -> Story {
-        let story = makeStory(transcript: transcript, startTime: startTime, endTime: endTime)
+    ) async throws -> Story {
+        let metadata = await metadataService.makeCaptureMetadata(captureDate: startTime)
+        let story = makeStory(
+            transcript: transcript,
+            startTime: startTime,
+            endTime: endTime,
+            metadataId: metadata.id
+        )
         let audioAsset = audioFileURL.map {
             makeAudioAsset(storyID: story.id, fileURL: $0, createdAt: endTime, duration: story.duration)
         } ?? makePlaceholderAudioAsset(storyID: story.id, createdAt: endTime, duration: story.duration)
 
         modelContext.insert(story)
+        modelContext.insert(metadata)
         modelContext.insert(audioAsset)
         try modelContext.save()
 
@@ -715,12 +731,37 @@ class SpeechRecognitionViewModel: ObservableObject {
         return linkedAssets.count
     }
 
-    private static func makeStory(transcript: String, startTime: Date, endTime: Date) -> Story {
+    @discardableResult
+    static func deleteStoryMetadata(
+        for story: Story,
+        in modelContext: ModelContext
+    ) throws -> Int {
+        guard let metadataId = story.metadataId else {
+            return 0
+        }
+
+        let allMetadata = try modelContext.fetch(FetchDescriptor<StoryMetadata>())
+        let linkedMetadata = allMetadata.filter { $0.id == metadataId }
+
+        for metadata in linkedMetadata {
+            modelContext.delete(metadata)
+        }
+
+        return linkedMetadata.count
+    }
+
+    private static func makeStory(
+        transcript: String,
+        startTime: Date,
+        endTime: Date,
+        metadataId: UUID? = nil
+    ) -> Story {
         Story(
             text: transcript,
             date: startTime,
             duration: endTime.timeIntervalSince(startTime),
             rawTranscriptExpiresAt: startTime.addingTimeInterval(120 * 24 * 60 * 60),
+            metadataId: metadataId,
             createdAt: endTime,
             updatedAt: endTime
         )
@@ -748,13 +789,17 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
 
     private func discardCurrentAudioFile() {
-        guard let currentRecordingAudioFileURL else { return }
+        discardAudioFile(at: currentRecordingAudioFileURL)
+        self.currentRecordingAudioFileURL = nil
+    }
+
+    private func discardAudioFile(at audioFileURL: URL?) {
+        guard let audioFileURL else { return }
 
         try? Self.removeAudioFileIfPresent(
-            at: currentRecordingAudioFileURL.absoluteString,
+            at: audioFileURL.absoluteString,
             fileManager: .default
         )
-        self.currentRecordingAudioFileURL = nil
     }
 
     private func processCapturedStory(_ story: Story) async {

@@ -9,6 +9,7 @@ final class Story {
     var date: Date
     var duration: TimeInterval
     var rawTranscriptExpiresAt: Date?
+    var metadataId: UUID?
     var biographyProse: String?
     var title: String?
     var processingStatus: String
@@ -21,6 +22,7 @@ final class Story {
         date: Date,
         duration: TimeInterval,
         rawTranscriptExpiresAt: Date? = nil,
+        metadataId: UUID? = nil,
         biographyProse: String? = nil,
         title: String? = nil,
         processingStatus: String = "captured",
@@ -32,6 +34,7 @@ final class Story {
         self.date = date
         self.duration = duration
         self.rawTranscriptExpiresAt = rawTranscriptExpiresAt
+        self.metadataId = metadataId
         self.biographyProse = biographyProse
         self.title = title
         self.processingStatus = processingStatus

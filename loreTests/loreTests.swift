@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import CoreLocation
 import SwiftData
 import Testing
 @testable import lore
@@ -276,25 +277,47 @@ struct loreTests {
     }
 
     @MainActor
-    @Test func capturedStoryPersistsPlaceholderAudioAssetMetadata() throws {
+    @Test func capturedStoryPersistsPlaceholderAudioAssetMetadata() async throws {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)
         let startTime = Date(timeIntervalSince1970: 1_800_000_000)
         let endTime = startTime.addingTimeInterval(42)
+        let metadataService = LocalMetadataService(
+            timezoneProvider: { TimeZone(identifier: "America/Los_Angeles")! },
+            locationCaptureProvider: {
+                MetadataLocationCapture(
+                    authorizationStatus: .denied,
+                    captureStatus: .permissionDenied
+                )
+            }
+        )
 
-        let story = try SpeechRecognitionViewModel.persistCapturedStory(
+        let story = try await SpeechRecognitionViewModel.persistCapturedStory(
             transcript: "A remembered afternoon by the lake.",
             startTime: startTime,
             endTime: endTime,
+            metadataService: metadataService,
             modelContext: context
         )
 
         let stories = try context.fetch(FetchDescriptor<Story>())
         let audioAssets = try context.fetch(FetchDescriptor<AudioAsset>())
+        let metadataRecords = try context.fetch(FetchDescriptor<StoryMetadata>())
         let asset = try #require(audioAssets.first)
+        let metadata = try #require(metadataRecords.first)
 
         #expect(stories.count == 1)
         #expect(stories.first?.id == story.id)
+        #expect(stories.first?.metadataId == metadata.id)
+        #expect(metadataRecords.count == 1)
+        #expect(metadata.captureDate == startTime)
+        #expect(metadata.timezone == "America/Los_Angeles")
+        #expect(metadata.latitude == nil)
+        #expect(metadata.longitude == nil)
+        #expect(metadata.weatherSummary == nil)
+        #expect(metadata.permissionSnapshot?.contains("\"locationAuthorizationStatus\":\"denied\"") == true)
+        #expect(metadata.permissionSnapshot?.contains("\"locationCaptureStatus\":\"permissionDenied\"") == true)
+        #expect(metadata.permissionSnapshot?.contains("\"weatherStatus\":\"notRequested\"") == true)
         #expect(audioAssets.count == 1)
         #expect(asset.id == story.id)
         #expect(asset.createdAt == endTime)
@@ -305,25 +328,48 @@ struct loreTests {
     }
 
     @MainActor
-    @Test func capturedStoryPersistsRealAudioAssetFileURLWhenAvailable() throws {
+    @Test func capturedStoryPersistsRealAudioAssetFileURLWhenAvailable() async throws {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)
         let fileManager = FileManager.default
         let startTime = Date(timeIntervalSince1970: 1_800_000_000)
         let endTime = startTime.addingTimeInterval(23)
+        let capturedLocation = CLLocation(latitude: 17.3850, longitude: 78.4867)
+        let metadataService = LocalMetadataService(
+            timezoneProvider: { TimeZone(identifier: "Asia/Kolkata")! },
+            locationCaptureProvider: {
+                MetadataLocationCapture(
+                    authorizationStatus: .authorizedWhenInUse,
+                    captureStatus: .captured,
+                    location: capturedLocation,
+                    locationName: "Hyderabad, Telangana, India"
+                )
+            },
+            weatherCaptureProvider: { location in
+                #expect(location.coordinate.latitude == capturedLocation.coordinate.latitude)
+                #expect(location.coordinate.longitude == capturedLocation.coordinate.longitude)
+                return MetadataWeatherCapture(
+                    summary: "Clear",
+                    temperatureCelsius: 31.4,
+                    source: "WeatherKit"
+                )
+            }
+        )
         let audioFileURL = fileManager.temporaryDirectory
             .appendingPathComponent("lore-real-audio-\(UUID().uuidString).caf")
         try Data([0, 1, 2, 3]).write(to: audioFileURL)
 
-        let story = try SpeechRecognitionViewModel.persistCapturedStory(
+        let story = try await SpeechRecognitionViewModel.persistCapturedStory(
             transcript: "A story with retained local audio.",
             startTime: startTime,
             endTime: endTime,
             audioFileURL: audioFileURL,
+            metadataService: metadataService,
             modelContext: context
         )
 
         let asset = try #require(try context.fetch(FetchDescriptor<AudioAsset>()).first)
+        let metadata = try #require(try context.fetch(FetchDescriptor<StoryMetadata>()).first)
 
         #expect(asset.id == story.id)
         #expect(asset.fileURL == audioFileURL.absoluteString)
@@ -332,6 +378,18 @@ struct loreTests {
         #expect(asset.duration == 23)
         #expect(asset.isDeleted == false)
         #expect(!SpeechRecognitionViewModel.isPlaceholderAudioURL(asset.fileURL))
+        #expect(story.metadataId == metadata.id)
+        #expect(metadata.captureDate == startTime)
+        #expect(metadata.timezone == "Asia/Kolkata")
+        #expect(metadata.locationName == "Hyderabad, Telangana, India")
+        #expect(metadata.latitude == 17.3850)
+        #expect(metadata.longitude == 78.4867)
+        #expect(metadata.weatherSummary == "Clear")
+        #expect(metadata.temperature == 31.4)
+        #expect(metadata.weatherSource == "WeatherKit")
+        #expect(metadata.permissionSnapshot?.contains("\"locationAuthorizationStatus\":\"authorizedWhenInUse\"") == true)
+        #expect(metadata.permissionSnapshot?.contains("\"locationCaptureStatus\":\"captured\"") == true)
+        #expect(metadata.permissionSnapshot?.contains("\"weatherStatus\":\"available\"") == true)
 
         try? fileManager.removeItem(at: audioFileURL)
     }
@@ -380,7 +438,7 @@ struct loreTests {
     }
 
     @MainActor
-    @Test func deletingStoryAudioAssetsRemovesLinkedFilesAndMetadata() throws {
+    @Test func deletingStoryAudioAssetsRemovesLinkedFilesAndMetadata() async throws {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)
         let fileManager = FileManager.default
@@ -389,11 +447,20 @@ struct loreTests {
         let audioFileURL = fileManager.temporaryDirectory
             .appendingPathComponent("lore-delete-audio-\(UUID().uuidString).caf")
         try Data([4, 5, 6, 7]).write(to: audioFileURL)
-        let story = try SpeechRecognitionViewModel.persistCapturedStory(
+        let metadataService = LocalMetadataService(
+            locationCaptureProvider: {
+                MetadataLocationCapture(
+                    authorizationStatus: .denied,
+                    captureStatus: .permissionDenied
+                )
+            }
+        )
+        let story = try await SpeechRecognitionViewModel.persistCapturedStory(
             transcript: "A story whose audio should be deleted.",
             startTime: startTime,
             endTime: endTime,
             audioFileURL: audioFileURL,
+            metadataService: metadataService,
             modelContext: context
         )
 
@@ -402,12 +469,18 @@ struct loreTests {
             in: context,
             fileManager: fileManager
         )
+        let deletedMetadataCount = try SpeechRecognitionViewModel.deleteStoryMetadata(
+            for: story,
+            in: context
+        )
         context.delete(story)
         try context.save()
 
         #expect(deletedAssetCount == 1)
+        #expect(deletedMetadataCount == 1)
         #expect(fileManager.fileExists(atPath: audioFileURL.path) == false)
         #expect(try context.fetch(FetchDescriptor<AudioAsset>()).isEmpty)
+        #expect(try context.fetch(FetchDescriptor<StoryMetadata>()).isEmpty)
         #expect(try context.fetch(FetchDescriptor<Story>()).isEmpty)
     }
 
