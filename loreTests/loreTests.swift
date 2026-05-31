@@ -150,7 +150,7 @@ struct loreTests {
     @MainActor
     @Test func modelManagerDownloadsAndLoadsSelectedModel() async throws {
         let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults)
+        let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
 
         #expect(modelManager.status.tier == .standard4B)
         #expect(modelManager.status.state == .notDownloaded)
@@ -168,7 +168,7 @@ struct loreTests {
     @MainActor
     @Test func generationServiceRequiresLoadedModel() async throws {
         let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults)
+        let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
         let generationService = LocalGenerationService(modelManager: modelManager)
         let story = Story(text: "I started a new chapter today.", date: Date(), duration: 8)
         let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
@@ -208,7 +208,7 @@ struct loreTests {
     @MainActor
     @Test func generationServiceWritesDeterministicFallbackBiographyProseWhenModelIsReady() async throws {
         let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults)
+        let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
         let generationService = LocalGenerationService(modelManager: modelManager)
         let story = Story(text: "I started a new chapter today.", date: Date(), duration: 8)
         let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
@@ -257,7 +257,7 @@ struct loreTests {
     @MainActor
     @Test func generationServiceExtractsDeterministicFallbackMemoryGraph() async throws {
         let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults)
+        let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
         let generationService = LocalGenerationService(modelManager: modelManager)
         let storyID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let story = Story(id: storyID, text: "I remembered summers in Hyderabad with my cousins.", date: Date(), duration: 8)
@@ -756,6 +756,8 @@ private final class CapturingLocalModelRuntime: LocalModelRuntime {
     init(output: String) {
         self.output = output
     }
+
+    func download(tier: LocalModelTier) async throws {}
 
     func load(tier: LocalModelTier) async throws {
         loadedTiers.append(tier)

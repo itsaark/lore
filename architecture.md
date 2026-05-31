@@ -337,6 +337,6 @@ Entitlement checks should gate premium features, not local data access. If a sub
 5. [x] Add 120-day raw transcript retention metadata.
 6. [x] Add local model download shell for Ternary Bonsai 4B.
 7. [x] Add `GenerationService` abstraction.
-8. [ ] Implement transcript-to-biography-prose generation with real local MLX inference.
+8. [x] Implement transcript-to-biography-prose generation with real local MLX inference.
 9. [ ] Add initial graph candidate extraction for people, places, themes, and life events.
 10. [ ] Display chronological Stories with generated biography prose from the real local model.

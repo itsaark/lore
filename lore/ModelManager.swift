@@ -28,11 +28,40 @@ enum LocalModelTier: String, CaseIterable, Identifiable {
             return "Ternary Bonsai 1.7B for faster local processing."
         }
     }
+
+    var repositoryID: String {
+        switch self {
+        case .standard4B:
+            return "prism-ml/Ternary-Bonsai-4B-mlx-2bit"
+        case .bestWriting8B:
+            return "prism-ml/Ternary-Bonsai-8B-mlx-2bit"
+        case .lightweight17B:
+            return "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit"
+        }
+    }
 }
 
 enum LocalGenerationTask: String, Equatable {
     case biographyProse
     case memoryGraphExtraction
+
+    var maxGeneratedTokens: Int {
+        switch self {
+        case .biographyProse:
+            return 700
+        case .memoryGraphExtraction:
+            return 900
+        }
+    }
+
+    var samplingTemperature: Float {
+        switch self {
+        case .biographyProse:
+            return 0.55
+        case .memoryGraphExtraction:
+            return 0.1
+        }
+    }
 }
 
 struct LocalGenerationFallbackContext: Equatable {
@@ -69,6 +98,7 @@ protocol LocalModelRuntime {
     var displayName: String { get }
     var isMLXBacked: Bool { get }
 
+    func download(tier: LocalModelTier) async throws
     func load(tier: LocalModelTier) async throws
     func generate(_ request: LocalGenerationRequest, tier: LocalModelTier) async throws -> String
 }
@@ -124,7 +154,7 @@ final class ModelManager: ObservableObject {
         runtime: (any LocalModelRuntime)? = nil
     ) {
         self.userDefaults = userDefaults
-        self.runtime = runtime ?? DeterministicLocalModelRuntime()
+        self.runtime = runtime ?? Self.makeDefaultRuntime()
 
         let selectedTier = userDefaults.string(forKey: selectedTierKey)
             .flatMap(LocalModelTier.init(rawValue:)) ?? .standard4B
@@ -162,19 +192,25 @@ final class ModelManager: ObservableObject {
             return
         }
 
+        let tier = status.tier
         status.state = .downloading
-        status.progress = 0.0
+        status.progress = 0.05
         status.message = "Preparing local model files."
 
-        for progress in [0.2, 0.45, 0.7, 1.0] {
-            try? await Task.sleep(for: .milliseconds(120))
-            status.progress = progress
+        do {
+            try await runtime.download(tier: tier)
+            userDefaults.set(tier.rawValue, forKey: selectedTierKey)
+            userDefaults.set(tier.rawValue, forKey: downloadedTierKey)
+            status.state = .downloaded
+            status.progress = 1.0
+            status.message = runtime.isMLXBacked
+                ? "Model files are downloaded and ready to load."
+                : "Model files are ready to load."
+        } catch {
+            status.state = .failed
+            status.progress = 0.0
+            status.message = error.localizedDescription
         }
-
-        userDefaults.set(status.tier.rawValue, forKey: selectedTierKey)
-        userDefaults.set(status.tier.rawValue, forKey: downloadedTierKey)
-        status.state = .downloaded
-        status.message = "Model files are ready to load."
     }
 
     func loadSelectedModel() async {
@@ -217,11 +253,25 @@ final class ModelManager: ObservableObject {
         status.progress = 0.0
         status.message = nil
     }
+
+    private static func makeDefaultRuntime() -> any LocalModelRuntime {
+        #if canImport(MLXLLM) && canImport(MLXLMCommon)
+        return MLXLocalModelRuntime()
+        #else
+        return DeterministicLocalModelRuntime()
+        #endif
+    }
 }
 
 struct DeterministicLocalModelRuntime: LocalModelRuntime {
     let displayName = "Deterministic local fallback"
     let isMLXBacked = false
+
+    func download(tier: LocalModelTier) async throws {
+        for _ in [0.2, 0.45, 0.7, 1.0] {
+            try await Task.sleep(for: .milliseconds(120))
+        }
+    }
 
     func load(tier: LocalModelTier) async throws {
         try await Task.sleep(for: .milliseconds(20))

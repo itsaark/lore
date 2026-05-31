@@ -23,6 +23,11 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXBuildFile section */
+		08A9C16B16B74D3AB1D0ABE7 /* MLXLLM in Frameworks */ = {isa = PBXBuildFile; productRef = C8723B6D8FA54139983CE300 /* MLXLLM */; };
+		7BA4A156E82C46CB846A8096 /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 5082BA658CB54070982C6DDE /* MLXLMCommon */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		413077852E2B1B5F00EE1780 /* lore.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = lore.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		413077952E2B1B6000EE1780 /* loreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = loreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -52,6 +57,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				08A9C16B16B74D3AB1D0ABE7 /* MLXLLM in Frameworks */,
+				7BA4A156E82C46CB846A8096 /* MLXLMCommon in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +119,8 @@
 			);
 			name = lore;
 			packageProductDependencies = (
+				C8723B6D8FA54139983CE300 /* MLXLLM */,
+				5082BA658CB54070982C6DDE /* MLXLMCommon */,
 			);
 			productName = lore;
 			productReference = 413077852E2B1B5F00EE1780 /* lore.app */;
@@ -200,6 +209,9 @@
 			);
 			mainGroup = 4130777C2E2B1B5F00EE1780;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				65E94886477E465B8D672845 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 413077862E2B1B5F00EE1780 /* Products */;
 			projectDirPath = "";
@@ -571,6 +583,31 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		65E94886477E465B8D672845 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ml-explore/mlx-swift-lm";
+			requirement = {
+				kind = exactVersion;
+				minimumVersion = 2.31.3;
+				version = 2.31.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5082BA658CB54070982C6DDE /* MLXLMCommon */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 65E94886477E465B8D672845 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLMCommon;
+		};
+		C8723B6D8FA54139983CE300 /* MLXLLM */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 65E94886477E465B8D672845 /* XCRemoteSwiftPackageReference "mlx-swift-lm" */;
+			productName = MLXLLM;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4130777D2E2B1B5F00EE1780 /* Project object */;
 }
