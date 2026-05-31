@@ -43,6 +43,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var currentRecordingAudioFileURL: URL?
     private var audioLevelTimer: Timer?
     private var audioLevelBuffer: [Float] = []
+    private var pendingSaveTask: Task<Void, Never>?
     private var modelContext: ModelContext?
     private var generationService: (any GenerationService)?
     private var userProfile: UserProfile?
@@ -267,7 +268,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         print("🎤 Attempting to start recording...")
         
         // Reset any previous state
-        stopRecording()
+        stopRecording(shouldSave: false, waitForFinalTranscript: false)
         clearText()
         isStoppedByUser = false
         
@@ -353,7 +354,7 @@ class SpeechRecognitionViewModel: ObservableObject {
                     // Auto-stop if final result (only if not stopped by user)
                     if result.isFinal && !self.isStoppedByUser {
                         print("✅ Recognition completed naturally")
-                        self.stopRecording()
+                        self.stopRecording(waitForFinalTranscript: false)
                     }
                 } else {
                     // No result means silence or processing pause
@@ -376,7 +377,7 @@ class SpeechRecognitionViewModel: ObservableObject {
                     
                     self.setError("Recognition error: \(error.localizedDescription)")
                     print("❌ Recognition error: \(error)")
-                    self.stopRecording()
+                    self.stopRecording(waitForFinalTranscript: false)
                 }
             }
         }
@@ -514,11 +515,16 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
     
     /// Stops recording and cleans up resources
-    private func stopRecording() {
+    private func stopRecording(
+        shouldSave: Bool = true,
+        waitForFinalTranscript: Bool = true
+    ) {
         print("🛑 Stopping recording...")
         
         // Set flag to indicate this is intentional
         isStoppedByUser = true
+        pendingSaveTask?.cancel()
+        pendingSaveTask = nil
 
         // Stop audio engine
         if audioEngine.isRunning {
@@ -528,7 +534,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         
         // End recognition request gracefully
         recognitionRequest?.endAudio()
-        recognitionTask?.cancel()
+        if !waitForFinalTranscript {
+            recognitionTask?.cancel()
+        }
         
         speechConfidence = 0.0
         isProcessingAudio = false
@@ -540,9 +548,21 @@ class SpeechRecognitionViewModel: ObservableObject {
         // Stop audio engine
         audioEngine.stop()
 
-        // Save the current recording after audio capture has stopped.
-        Task {
-            await saveCurrentRecording()
+        if shouldSave {
+            pendingSaveTask = Task { [weak self] in
+                if waitForFinalTranscript {
+                    do {
+                        try await Task.sleep(for: .milliseconds(800))
+                    } catch {
+                        return
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                await self?.saveCurrentRecording()
+            }
+        } else {
+            discardCurrentAudioFile()
+            recordingStartTime = nil
         }
 
         // Clean up word display and streaming state
@@ -557,7 +577,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         
         // Clean up
         recognitionRequest = nil
-        recognitionTask = nil
+        if !waitForFinalTranscript {
+            recognitionTask = nil
+        }
         isRecording = false
         
         print("✅ Recording stopped and cleaned up")
@@ -579,9 +601,12 @@ class SpeechRecognitionViewModel: ObservableObject {
         let audioFileURL = currentRecordingAudioFileURL
         let story: Story
 
+        pendingSaveTask = nil
         transcribedText = ""
         recordingStartTime = nil
         currentRecordingAudioFileURL = nil
+        recognitionTask?.cancel()
+        recognitionTask = nil
         
         if let modelContext {
             do {
@@ -601,8 +626,10 @@ class SpeechRecognitionViewModel: ObservableObject {
             }
 
             loadStories()
-            Task {
-                await processCapturedStory(story)
+            if !story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Task {
+                    await processCapturedStory(story)
+                }
             }
         } else {
             story = Self.makeStory(transcript: transcript, startTime: startTime, endTime: endTime)
