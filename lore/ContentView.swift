@@ -96,16 +96,9 @@ struct ContentView: View {
                                     .fontWeight(.medium)
                                     .contentTransition(.opacity)
                             }
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 32)
-                            .padding(.vertical, 16)
-                            .background(
-                                speechRecognizer.isRecording ? 
-                                Color.red : (speechRecognizer.isAuthorized ? Color.black : Color.gray)
-                            )
-                            .clipShape(Capsule())
+                            .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(StoryRecordButtonStyle(isRecording: speechRecognizer.isRecording))
                         .disabled(!speechRecognizer.isAuthorized)
                         .scaleEffect(speechRecognizer.isRecording ? 1.02 : 1.0)
                         .animation(.smooth(duration: 0.3), value: speechRecognizer.isRecording)
@@ -147,6 +140,55 @@ struct ContentView: View {
                 )
             }
         }
+    }
+}
+
+private struct StoryRecordButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    let isRecording: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundColor(.white)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 17)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(backgroundColor(isPressed: configuration.isPressed))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.white.opacity(isEnabled ? 0.18 : 0), lineWidth: 1)
+            )
+            .shadow(
+                color: shadowColor(isPressed: configuration.isPressed),
+                radius: configuration.isPressed ? 4 : 12,
+                x: 0,
+                y: configuration.isPressed ? 2 : 7
+            )
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .animation(.smooth(duration: 0.18), value: configuration.isPressed)
+    }
+
+    private func backgroundColor(isPressed: Bool) -> Color {
+        guard isEnabled else {
+            return Color(.systemGray3)
+        }
+
+        if isRecording {
+            return isPressed ? Color.red.opacity(0.82) : Color.red
+        }
+
+        return isPressed ? Color.black.opacity(0.82) : Color.black
+    }
+
+    private func shadowColor(isPressed: Bool) -> Color {
+        guard isEnabled else {
+            return .clear
+        }
+
+        let baseColor: Color = isRecording ? .red : .black
+        return baseColor.opacity(isPressed ? 0.14 : 0.24)
     }
 }
 
