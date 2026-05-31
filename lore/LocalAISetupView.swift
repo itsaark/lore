@@ -110,11 +110,7 @@ struct LocalAISetupView: View {
                 .font(.footnote)
                 .foregroundColor(.secondary)
         case .loaded:
-            Button("Forget Downloaded Model") {
-                modelManager.forgetDownloadedModel()
-            }
-            .font(.footnote)
-            .foregroundColor(.secondary)
+            EmptyView()
         }
     }
 
