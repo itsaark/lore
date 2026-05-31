@@ -171,6 +171,10 @@ final class ModelManager: ObservableObject {
     }
 
     func select(_ tier: LocalModelTier) {
+        guard status.state != .downloading, status.state != .loading else {
+            return
+        }
+
         guard tier != status.tier else {
             return
         }
@@ -201,11 +205,8 @@ final class ModelManager: ObservableObject {
             try await runtime.download(tier: tier)
             userDefaults.set(tier.rawValue, forKey: selectedTierKey)
             userDefaults.set(tier.rawValue, forKey: downloadedTierKey)
-            status.state = .downloaded
             status.progress = 1.0
-            status.message = runtime.isMLXBacked
-                ? "Model files are downloaded and ready to load."
-                : "Model files are ready to load."
+            try await loadDownloadedModel(tier: tier)
         } catch {
             status.state = .failed
             status.progress = 0.0
@@ -225,14 +226,8 @@ final class ModelManager: ObservableObject {
         }
 
         status.state = .loading
-        status.message = "Loading local model into memory."
         do {
-            try await runtime.load(tier: status.tier)
-            status.state = .loaded
-            status.progress = 1.0
-            status.message = runtime.isMLXBacked
-                ? "Local generation is ready."
-                : "Local generation fallback is ready."
+            try await loadDownloadedModel(tier: status.tier)
         } catch {
             status.state = .failed
             status.message = error.localizedDescription
@@ -260,6 +255,19 @@ final class ModelManager: ObservableObject {
         #else
         return DeterministicLocalModelRuntime()
         #endif
+    }
+
+    private func loadDownloadedModel(tier: LocalModelTier) async throws {
+        status.state = .loading
+        status.message = "Loading local model into memory."
+
+        try await runtime.load(tier: tier)
+
+        status.state = .loaded
+        status.progress = 1.0
+        status.message = runtime.isMLXBacked
+            ? "Local generation is ready."
+            : "Local generation fallback is ready."
     }
 }
 

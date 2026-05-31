@@ -101,7 +101,7 @@ struct LocalAISetupView: View {
             .buttonStyle(LocalAIPrimaryButtonStyle())
         case .downloaded:
             Button(action: loadSelectedModel) {
-                Text("Load Model")
+                Text("Load Downloaded Model")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(LocalAIPrimaryButtonStyle())

@@ -157,12 +157,24 @@ struct loreTests {
 
         modelManager.select(.lightweight17B)
         await modelManager.downloadSelectedModel()
-        await modelManager.loadSelectedModel()
 
         #expect(modelManager.status.tier == .lightweight17B)
         #expect(modelManager.status.state == .loaded)
         #expect(modelManager.status.isReady)
         #expect(modelManager.status.message == "Local generation fallback is ready.")
+    }
+
+    @MainActor
+    @Test func modelManagerDoesNotLoadPersistedDownloadOnLaunch() async throws {
+        let defaults = try makeIsolatedDefaults()
+        defaults.set(LocalModelTier.standard4B.rawValue, forKey: "LoreSelectedLocalModelTier")
+        defaults.set(LocalModelTier.standard4B.rawValue, forKey: "LoreDownloadedLocalModelTier")
+
+        let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
+
+        #expect(modelManager.status.tier == .standard4B)
+        #expect(modelManager.status.state == .downloaded)
+        #expect(modelManager.status.isReady == false)
     }
 
     @MainActor
@@ -193,7 +205,6 @@ struct loreTests {
         let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
 
         await modelManager.downloadSelectedModel()
-        await modelManager.loadSelectedModel()
 
         let prose = try await generationService.writeBiographyProse(from: story, userProfile: profile)
 
@@ -214,7 +225,6 @@ struct loreTests {
         let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
 
         await modelManager.downloadSelectedModel()
-        await modelManager.loadSelectedModel()
 
         let prose = try await generationService.writeBiographyProse(from: story, userProfile: profile)
 
@@ -264,7 +274,6 @@ struct loreTests {
         let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
 
         await modelManager.downloadSelectedModel()
-        await modelManager.loadSelectedModel()
 
         let graphJSON = try await generationService.extractMemoryGraph(from: story, userProfile: profile)
         let data = try #require(graphJSON.data(using: .utf8))
