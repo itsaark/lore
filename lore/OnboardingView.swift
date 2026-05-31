@@ -55,16 +55,16 @@ struct OnboardingView: View {
                     }
 
                     Button(action: completeOnboarding) {
-                        Text("Start telling stories")
-                            .font(.headline)
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(canComplete ? Color.black : Color.gray)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        HStack(spacing: 10) {
+                            Text("Start telling stories")
+                            Image(systemName: "arrow.right.circle.fill")
+                                .imageScale(.large)
+                        }
+                        .frame(maxWidth: .infinity)
                     }
                     .disabled(!canComplete)
-                    .buttonStyle(.plain)
+                    .buttonStyle(OnboardingPrimaryButtonStyle())
+                    .accessibilityHint("Completes onboarding and opens Lore")
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 72)
@@ -123,6 +123,43 @@ struct OnboardingView: View {
                 birthYear: parsedBirthYear
             )
         )
+    }
+}
+
+private struct OnboardingPrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .fontWeight(.semibold)
+            .foregroundColor(.white)
+            .padding(.vertical, 16)
+            .padding(.horizontal, 18)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(backgroundColor(isPressed: configuration.isPressed))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(Color.white.opacity(isEnabled ? 0.18 : 0), lineWidth: 1)
+            )
+            .shadow(
+                color: isEnabled ? Color.black.opacity(configuration.isPressed ? 0.12 : 0.22) : .clear,
+                radius: configuration.isPressed ? 4 : 10,
+                x: 0,
+                y: configuration.isPressed ? 2 : 6
+            )
+            .scaleEffect(configuration.isPressed ? 0.98 : 1)
+            .animation(.smooth(duration: 0.18), value: configuration.isPressed)
+    }
+
+    private func backgroundColor(isPressed: Bool) -> Color {
+        guard isEnabled else {
+            return Color(.systemGray3)
+        }
+
+        return isPressed ? Color.black.opacity(0.82) : Color.black
     }
 }
 
