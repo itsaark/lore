@@ -327,6 +327,54 @@ struct loreTests {
         #expect(SpeechRecognitionViewModel.isPlaceholderAudioURL(asset.fileURL))
     }
 
+    @Test func recognitionNoSpeechAfterTranscriptIsBenign() {
+        let error = NSError(
+            domain: "kAFAssistantErrorDomain",
+            code: 1110,
+            userInfo: [NSLocalizedDescriptionKey: "No speech detected"]
+        )
+
+        #expect(
+            SpeechRecognitionViewModel.shouldIgnoreRecognitionError(
+                error,
+                isStoppedByUser: false,
+                hasTranscript: true
+            )
+        )
+    }
+
+    @Test func recognitionNoSpeechWithoutTranscriptWhileRecordingIsNotIgnored() {
+        let error = NSError(
+            domain: "kAFAssistantErrorDomain",
+            code: 1110,
+            userInfo: [NSLocalizedDescriptionKey: "No speech detected"]
+        )
+
+        #expect(
+            !SpeechRecognitionViewModel.shouldIgnoreRecognitionError(
+                error,
+                isStoppedByUser: false,
+                hasTranscript: false
+            )
+        )
+    }
+
+    @Test func recognitionNoSpeechAfterUserStopIsBenign() {
+        let error = NSError(
+            domain: "kAFAssistantErrorDomain",
+            code: 1110,
+            userInfo: [NSLocalizedDescriptionKey: "No speech detected"]
+        )
+
+        #expect(
+            SpeechRecognitionViewModel.shouldIgnoreRecognitionError(
+                error,
+                isStoppedByUser: true,
+                hasTranscript: false
+            )
+        )
+    }
+
     @MainActor
     @Test func capturedStoryPersistsRealAudioAssetFileURLWhenAvailable() async throws {
         let container = try LoreModelContainer.make(inMemory: true)

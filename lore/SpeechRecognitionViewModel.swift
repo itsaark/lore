@@ -365,19 +365,13 @@ class SpeechRecognitionViewModel: ObservableObject {
                 }
                 
                 if let error = error {
-                    // Check if this is just a cancellation error from user stopping
-                    let nsError = error as NSError
-                    if nsError.domain == "kAFAssistantErrorDomain" && nsError.code == 216 {
-                        print("ℹ️ Recognition task was cancelled (normal when stopping)")
+                    if Self.shouldIgnoreRecognitionError(
+                        error,
+                        isStoppedByUser: self.isStoppedByUser,
+                        hasTranscript: !self.transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ) {
+                        print("ℹ️ Ignoring benign recognition error: \(error)")
                         return
-                    }
-                    
-                    if nsError.localizedDescription.lowercased().contains("cancelled") ||
-                       nsError.localizedDescription.lowercased().contains("canceled") {
-                        if self.isStoppedByUser {
-                            print("ℹ️ Recognition cancelled by user action (normal)")
-                            return
-                        }
                     }
                     
                     self.setError("Recognition error: \(error.localizedDescription)")
@@ -844,6 +838,34 @@ class SpeechRecognitionViewModel: ObservableObject {
     private func setError(_ message: String) {
         errorMessage = message
         print("❌ Error: \(message)")
+    }
+
+    nonisolated static func shouldIgnoreRecognitionError(
+        _ error: Error,
+        isStoppedByUser: Bool,
+        hasTranscript: Bool
+    ) -> Bool {
+        let nsError = error as NSError
+        let description = nsError.localizedDescription.lowercased()
+        let isAssistantError = nsError.domain == "kAFAssistantErrorDomain"
+
+        if isAssistantError && nsError.code == 216 {
+            return true
+        }
+
+        if isStoppedByUser && (description.contains("cancelled") || description.contains("canceled")) {
+            return true
+        }
+
+        if isAssistantError && nsError.code == 1110 && (isStoppedByUser || hasTranscript) {
+            return true
+        }
+
+        if isStoppedByUser && description.contains("no speech detected") {
+            return true
+        }
+
+        return false
     }
 }
 
