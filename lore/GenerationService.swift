@@ -18,6 +18,7 @@ enum GenerationError: Error, LocalizedError {
 protocol GenerationService {
     func writeBiographyProse(from story: Story, userProfile: UserProfile) async throws -> String
     func extractMemoryGraph(from story: Story, userProfile: UserProfile) async throws -> String
+    func releaseResources()
 }
 
 struct LocalGenerationService: GenerationService {
@@ -76,6 +77,10 @@ struct LocalGenerationService: GenerationService {
         } catch LocalModelRuntimeError.modelNotReady {
             throw GenerationError.localModelNotReady
         }
+    }
+
+    func releaseResources() {
+        modelManager.unloadModel()
     }
 }
 

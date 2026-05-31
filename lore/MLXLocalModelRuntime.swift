@@ -49,5 +49,10 @@ final class MLXLocalModelRuntime: LocalModelRuntime {
 
         return cleanedOutput
     }
+
+    func unload() {
+        modelContainer = nil
+        loadedTier = nil
+    }
 }
 #endif

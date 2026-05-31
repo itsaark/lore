@@ -50,7 +50,7 @@ enum LocalGenerationTask: String, Equatable {
         case .biographyProse:
             return 700
         case .memoryGraphExtraction:
-            return 900
+            return 700
         }
     }
 
@@ -101,6 +101,7 @@ protocol LocalModelRuntime {
     func download(tier: LocalModelTier) async throws
     func load(tier: LocalModelTier) async throws
     func generate(_ request: LocalGenerationRequest, tier: LocalModelTier) async throws -> String
+    func unload()
 }
 
 enum LocalModelState: String {
@@ -235,6 +236,14 @@ final class ModelManager: ObservableObject {
     }
 
     func generate(_ request: LocalGenerationRequest) async throws -> String {
+        if !status.isReady {
+            guard isSelectedTierDownloaded else {
+                throw LocalModelRuntimeError.modelNotReady
+            }
+
+            try await loadDownloadedModel(tier: status.tier)
+        }
+
         guard status.isReady else {
             throw LocalModelRuntimeError.modelNotReady
         }
@@ -242,7 +251,20 @@ final class ModelManager: ObservableObject {
         return try await runtime.generate(request, tier: status.tier)
     }
 
+    func unloadModel(message: String? = "Local model unloaded to free memory.") {
+        guard status.state == .loaded else {
+            return
+        }
+
+        runtime.unload()
+
+        status.state = isSelectedTierDownloaded ? .downloaded : .notDownloaded
+        status.progress = isSelectedTierDownloaded ? 1.0 : 0.0
+        status.message = message
+    }
+
     func forgetDownloadedModel() {
+        runtime.unload()
         userDefaults.removeObject(forKey: downloadedTierKey)
         status.state = .notDownloaded
         status.progress = 0.0
@@ -268,6 +290,11 @@ final class ModelManager: ObservableObject {
         status.message = runtime.isMLXBacked
             ? "Local generation is ready."
             : "Local generation fallback is ready."
+    }
+
+    private var isSelectedTierDownloaded: Bool {
+        userDefaults.string(forKey: downloadedTierKey)
+            .flatMap(LocalModelTier.init(rawValue:)) == status.tier
     }
 }
 
@@ -364,6 +391,8 @@ struct DeterministicLocalModelRuntime: LocalModelRuntime {
 
         return json
     }
+
+    func unload() {}
 }
 
 private struct DeterministicMemoryGraphPayload: Encodable {

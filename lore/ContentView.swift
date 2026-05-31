@@ -7,6 +7,9 @@
 
 import SwiftUI
 import SwiftData
+#if canImport(UIKit)
+import UIKit
+#endif
 
 struct ContentView: View {
     let userProfile: UserProfile
@@ -143,6 +146,14 @@ struct ContentView: View {
                     userProfile: userProfile
                 )
             }
+#if canImport(UIKit)
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
+                modelManager.unloadModel(message: "Local model unloaded after a memory warning.")
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+                modelManager.unloadModel(message: "Local model unloaded while Lore is in the background.")
+            }
+#endif
         }
     }
 }

@@ -831,6 +831,9 @@ class SpeechRecognitionViewModel: ObservableObject {
             loadStories()
             return
         }
+        defer {
+            generationService.releaseResources()
+        }
 
         story.processingStatus = "processing"
         story.updatedAt = Date()

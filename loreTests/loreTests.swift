@@ -178,6 +178,38 @@ struct loreTests {
     }
 
     @MainActor
+    @Test func modelManagerUnloadsLoadedModelButKeepsDownloadedState() async throws {
+        let defaults = try makeIsolatedDefaults()
+        let runtime = CapturingLocalModelRuntime(output: "Generated biography prose.")
+        let modelManager = ModelManager(userDefaults: defaults, runtime: runtime)
+
+        await modelManager.downloadSelectedModel()
+        modelManager.unloadModel()
+
+        #expect(modelManager.status.state == .downloaded)
+        #expect(modelManager.status.isReady == false)
+        #expect(runtime.unloadCount == 1)
+    }
+
+    @MainActor
+    @Test func generationAutoLoadsDownloadedModelWhenNeeded() async throws {
+        let defaults = try makeIsolatedDefaults()
+        defaults.set(LocalModelTier.standard4B.rawValue, forKey: "LoreSelectedLocalModelTier")
+        defaults.set(LocalModelTier.standard4B.rawValue, forKey: "LoreDownloadedLocalModelTier")
+        let runtime = CapturingLocalModelRuntime(output: "Generated biography prose.")
+        let modelManager = ModelManager(userDefaults: defaults, runtime: runtime)
+        let generationService = LocalGenerationService(modelManager: modelManager)
+        let story = Story(text: "I started a new chapter today.", date: Date(), duration: 8)
+        let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
+
+        let prose = try await generationService.writeBiographyProse(from: story, userProfile: profile)
+
+        #expect(prose == "Generated biography prose.")
+        #expect(runtime.loadedTiers == [.standard4B])
+        #expect(modelManager.status.isReady)
+    }
+
+    @MainActor
     @Test func generationServiceRequiresLoadedModel() async throws {
         let defaults = try makeIsolatedDefaults()
         let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
@@ -809,6 +841,7 @@ private final class CapturingLocalModelRuntime: LocalModelRuntime {
     let output: String
     private(set) var loadedTiers: [LocalModelTier] = []
     private(set) var requests: [LocalGenerationRequest] = []
+    private(set) var unloadCount = 0
 
     init(output: String) {
         self.output = output
@@ -823,5 +856,9 @@ private final class CapturingLocalModelRuntime: LocalModelRuntime {
     func generate(_ request: LocalGenerationRequest, tier: LocalModelTier) async throws -> String {
         requests.append(request)
         return output
+    }
+
+    func unload() {
+        unloadCount += 1
     }
 }
