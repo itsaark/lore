@@ -100,12 +100,8 @@ struct ContentView: View {
                                     .contentTransition(.opacity)
                             }
                             .fontWeight(.semibold)
-                            .frame(maxWidth: .infinity)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .buttonBorderShape(.capsule)
-                        .controlSize(.large)
-                        .tint(speechRecognizer.isRecording ? .red : .primary)
+                        .buttonStyle(StoryRecordButtonStyle(isRecording: speechRecognizer.isRecording))
                         .disabled(!speechRecognizer.isAuthorized)
                         .scaleEffect(speechRecognizer.isRecording ? 1.02 : 1.0)
                         .animation(.smooth(duration: 0.3), value: speechRecognizer.isRecording)
@@ -155,6 +151,51 @@ struct ContentView: View {
             }
 #endif
         }
+    }
+}
+
+private struct StoryRecordButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
+
+    let isRecording: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 16)
+            .background(
+                Capsule()
+                    .fill(backgroundColor)
+            )
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1)
+            .animation(.smooth(duration: 0.16), value: configuration.isPressed)
+    }
+
+    private var backgroundColor: Color {
+        guard isEnabled else {
+            return Color(.systemGray4)
+        }
+
+        if isRecording {
+            return .red
+        }
+
+        return colorScheme == .dark ? .white : .black
+    }
+
+    private var foregroundColor: Color {
+        guard isEnabled else {
+            return Color(.secondaryLabel)
+        }
+
+        if isRecording {
+            return .white
+        }
+
+        return colorScheme == .dark ? .black : .white
     }
 }
 

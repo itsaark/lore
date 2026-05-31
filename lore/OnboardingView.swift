@@ -65,10 +65,7 @@ struct OnboardingView: View {
                         .frame(maxWidth: .infinity)
                     }
                     .disabled(!canComplete)
-                    .buttonStyle(.borderedProminent)
-                    .buttonBorderShape(.capsule)
-                    .controlSize(.large)
-                    .tint(.primary)
+                    .buttonStyle(OnboardingPrimaryButtonStyle())
                     .accessibilityHint("Completes onboarding and opens Lore")
                 }
                 .padding(.horizontal, 24)
@@ -128,6 +125,41 @@ struct OnboardingView: View {
                 birthYear: parsedBirthYear
             )
         )
+    }
+}
+
+private struct OnboardingPrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(foregroundColor)
+            .padding(.vertical, 16)
+            .padding(.horizontal, 20)
+            .background(
+                Capsule()
+                    .fill(backgroundColor)
+            )
+            .opacity(configuration.isPressed ? 0.82 : 1)
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .animation(.smooth(duration: 0.16), value: configuration.isPressed)
+    }
+
+    private var backgroundColor: Color {
+        guard isEnabled else {
+            return Color(.systemGray4)
+        }
+
+        return colorScheme == .dark ? .white : .black
+    }
+
+    private var foregroundColor: Color {
+        guard isEnabled else {
+            return Color(.secondaryLabel)
+        }
+
+        return colorScheme == .dark ? .black : .white
     }
 }
 
