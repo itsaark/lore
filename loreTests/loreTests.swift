@@ -368,6 +368,32 @@ struct loreTests {
         #expect(SpeechRecognitionViewModel.isPlaceholderAudioURL(asset.fileURL))
     }
 
+    @MainActor
+    @Test func capturedStoryCanPersistBeforeOptionalMetadataFinishes() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let startTime = Date(timeIntervalSince1970: 1_800_000_000)
+        let endTime = startTime.addingTimeInterval(14)
+
+        let story = try SpeechRecognitionViewModel.persistCapturedStoryImmediately(
+            transcript: "This story should appear before location or weather metadata is ready.",
+            startTime: startTime,
+            endTime: endTime,
+            modelContext: context
+        )
+
+        let stories = try context.fetch(FetchDescriptor<Story>())
+        let metadataRecords = try context.fetch(FetchDescriptor<StoryMetadata>())
+        let metadata = try #require(metadataRecords.first)
+
+        #expect(stories.count == 1)
+        #expect(stories.first?.id == story.id)
+        #expect(story.metadataId == metadata.id)
+        #expect(metadata.captureDate == startTime)
+        #expect(metadata.permissionSnapshot?.contains("\"locationAuthorizationStatus\":\"pending\"") == true)
+        #expect(metadata.permissionSnapshot?.contains("\"weatherStatus\":\"pending\"") == true)
+    }
+
     @Test func recognitionNoSpeechAfterTranscriptIsBenign() {
         let error = NSError(
             domain: "kAFAssistantErrorDomain",

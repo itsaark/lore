@@ -610,12 +610,11 @@ class SpeechRecognitionViewModel: ObservableObject {
         
         if let modelContext {
             do {
-                story = try await Self.persistCapturedStory(
+                story = try Self.persistCapturedStoryImmediately(
                     transcript: transcript,
                     startTime: startTime,
                     endTime: endTime,
                     audioFileURL: audioFileURL,
-                    metadataService: metadataService,
                     modelContext: modelContext
                 )
             } catch {
@@ -626,6 +625,9 @@ class SpeechRecognitionViewModel: ObservableObject {
             }
 
             loadStories()
+            Task {
+                await enrichCaptureMetadata(for: story, captureDate: startTime)
+            }
             if !story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Task {
                     await processCapturedStory(story)
@@ -669,6 +671,64 @@ class SpeechRecognitionViewModel: ObservableObject {
         try modelContext.save()
 
         return story
+    }
+
+    @discardableResult
+    static func persistCapturedStoryImmediately(
+        transcript: String,
+        startTime: Date,
+        endTime: Date,
+        audioFileURL: URL? = nil,
+        modelContext: ModelContext
+    ) throws -> Story {
+        try persistCapturedStory(
+            transcript: transcript,
+            startTime: startTime,
+            endTime: endTime,
+            audioFileURL: audioFileURL,
+            metadata: makePendingCaptureMetadata(captureDate: startTime),
+            modelContext: modelContext
+        )
+    }
+
+    private static func persistCapturedStory(
+        transcript: String,
+        startTime: Date,
+        endTime: Date,
+        audioFileURL: URL? = nil,
+        metadata: StoryMetadata,
+        modelContext: ModelContext
+    ) throws -> Story {
+        let story = makeStory(
+            transcript: transcript,
+            startTime: startTime,
+            endTime: endTime,
+            metadataId: metadata.id
+        )
+        let audioAsset = audioFileURL.map {
+            makeAudioAsset(storyID: story.id, fileURL: $0, createdAt: endTime, duration: story.duration)
+        } ?? makePlaceholderAudioAsset(storyID: story.id, createdAt: endTime, duration: story.duration)
+
+        modelContext.insert(story)
+        modelContext.insert(metadata)
+        modelContext.insert(audioAsset)
+        try modelContext.save()
+
+        return story
+    }
+
+    private static func makePendingCaptureMetadata(captureDate: Date) -> StoryMetadata {
+        let snapshot = MetadataPermissionSnapshot(
+            locationAuthorizationStatus: "pending",
+            locationCaptureStatus: MetadataLocationCaptureStatus.unavailable.rawValue,
+            weatherStatus: "pending"
+        )
+
+        return StoryMetadata(
+            captureDate: captureDate,
+            timezone: TimeZone.current.identifier,
+            permissionSnapshot: snapshot.encodedString
+        )
     }
 
     static func makeAudioAsset(
@@ -821,6 +881,34 @@ class SpeechRecognitionViewModel: ObservableObject {
             at: audioFileURL.absoluteString,
             fileManager: .default
         )
+    }
+
+    private func enrichCaptureMetadata(for story: Story, captureDate: Date) async {
+        guard let modelContext, let metadataId = story.metadataId else {
+            return
+        }
+
+        let enrichedMetadata = await metadataService.makeCaptureMetadata(captureDate: captureDate)
+
+        do {
+            let allMetadata = try modelContext.fetch(FetchDescriptor<StoryMetadata>())
+            guard let metadata = allMetadata.first(where: { $0.id == metadataId }) else {
+                return
+            }
+
+            metadata.captureDate = enrichedMetadata.captureDate
+            metadata.timezone = enrichedMetadata.timezone
+            metadata.locationName = enrichedMetadata.locationName
+            metadata.latitude = enrichedMetadata.latitude
+            metadata.longitude = enrichedMetadata.longitude
+            metadata.weatherSummary = enrichedMetadata.weatherSummary
+            metadata.temperature = enrichedMetadata.temperature
+            metadata.weatherSource = enrichedMetadata.weatherSource
+            metadata.permissionSnapshot = enrichedMetadata.permissionSnapshot
+            try modelContext.save()
+        } catch {
+            print("Failed to enrich story metadata: \(error)")
+        }
     }
 
     private func processCapturedStory(_ story: Story) async {
