@@ -16,7 +16,6 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @StateObject private var modelManager = ModelManager()
     @StateObject private var speechRecognizer = SpeechRecognitionViewModel()
-    @State private var glowAnimation = false
     
     var body: some View {
         NavigationView {
@@ -24,22 +23,6 @@ struct ContentView: View {
                 // Background
                 Color(.systemBackground)
                     .ignoresSafeArea()
-                
-                // Recording glow overlay when recording
-                if speechRecognizer.isRecording {
-                    RecordingGlowOverlay(
-                        isAnimating: $glowAnimation, 
-                        audioLevel: speechRecognizer.currentAudioLevel
-                    )
-                        .ignoresSafeArea()
-                        .allowsHitTesting(false)
-                        .onAppear {
-                            glowAnimation = true
-                        }
-                        .onDisappear {
-                            glowAnimation = false
-                        }
-                }
                 
                 VStack(spacing: 0) {
                     // Top Navigation Bar
@@ -65,8 +48,20 @@ struct ContentView: View {
                     
                     // Main Content
                     VStack(spacing: 40) {
-                        // Header - only show when not recording
-                        if !speechRecognizer.isRecording {
+                        if speechRecognizer.isRecording {
+                            VStack(spacing: 24) {
+                                CloudWaveOrb(
+                                    state: .listening,
+                                    audioLevel: speechRecognizer.currentAudioLevel
+                                )
+
+                                Text("Listening…")
+                                    .font(.headline)
+                                    .foregroundStyle(.secondary)
+                                    .contentTransition(.numericText())
+                            }
+                            .transition(.scale(scale: 0.92).combined(with: .opacity))
+                        } else {
                             VStack(spacing: 8) {
                                 Text("Speak your story")
                                     .font(.largeTitle)
@@ -81,6 +76,7 @@ struct ContentView: View {
                         }
                     }
                     .padding(.horizontal, 20)
+                    .animation(.smooth(duration: 0.45), value: speechRecognizer.isRecording)
                     
                     Spacer()
                     
@@ -196,132 +192,6 @@ private struct StoryRecordButtonStyle: ButtonStyle {
         }
 
         return colorScheme == .dark ? .black : .white
-    }
-}
-
-// MARK: - Recording Glow Overlay
-struct RecordingGlowOverlay: View {
-    @Binding var isAnimating: Bool
-    let audioLevel: Float
-    
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                // Calculate glow intensity based on audio level
-                let glowIntensity = Double(audioLevel)
-                let baseIntensity: Double = 0.15 // Minimum glow when silent
-                let maxIntensity: Double = 0.8   // Maximum glow when speaking loudly
-                let currentIntensity = baseIntensity + (glowIntensity * (maxIntensity - baseIntensity))
-                
-                // Calculate blur intensity
-                let baseBlur: Double = 15
-                let maxBlur: Double = 50
-                let currentBlur = baseBlur + (glowIntensity * (maxBlur - baseBlur))
-                
-                // Calculate scale effect
-                let baseScale: Double = 0.8
-                let maxScale: Double = 1.3
-                let currentScale = baseScale + (glowIntensity * (maxScale - baseScale))
-                
-                // Top edge glow
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            gradient: Gradient(colors: [
-                                Color.red.opacity(currentIntensity * 1.2),
-                                Color.orange.opacity(currentIntensity * 0.8),
-                                Color.clear
-                            ]),
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .frame(height: 120 + (glowIntensity * 80))
-                    .position(x: geometry.size.width / 2, y: 0)
-                    .blur(radius: currentBlur)
-                    .scaleEffect(x: currentScale, y: 1.0)
-                
-                // Bottom edge glow
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            gradient: Gradient(colors: [
-                                Color.clear,
-                                Color.pink.opacity(currentIntensity * 0.9),
-                                Color.red.opacity(currentIntensity * 0.7)
-                            ]),
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .frame(height: 120 + (glowIntensity * 70))
-                    .position(x: geometry.size.width / 2, y: geometry.size.height)
-                    .blur(radius: currentBlur * 0.9)
-                    .scaleEffect(x: currentScale, y: 1.0)
-                
-                // Left edge glow
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            gradient: Gradient(colors: [
-                                Color.purple.opacity(currentIntensity * 0.8),
-                                Color.pink.opacity(currentIntensity * 0.6),
-                                Color.clear
-                            ]),
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: 100 + (glowIntensity * 60))
-                    .position(x: 0, y: geometry.size.height / 2)
-                    .blur(radius: currentBlur * 0.8)
-                    .scaleEffect(x: 1.0, y: currentScale)
-                
-                // Right edge glow
-                Rectangle()
-                    .fill(
-                        LinearGradient(
-                            gradient: Gradient(colors: [
-                                Color.clear,
-                                Color.orange.opacity(currentIntensity * 0.7),
-                                Color.red.opacity(currentIntensity * 0.9)
-                            ]),
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .frame(width: 100 + (glowIntensity * 60))
-                    .position(x: geometry.size.width, y: geometry.size.height / 2)
-                    .blur(radius: currentBlur * 0.8)
-                    .scaleEffect(x: 1.0, y: currentScale)
-                
-                // Corner accents that react more dramatically to audio
-                ForEach(0..<4, id: \.self) { corner in
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                gradient: Gradient(colors: [
-                                    Color.red.opacity(currentIntensity * 1.5),
-                                    Color.orange.opacity(currentIntensity * 1.0),
-                                    Color.clear
-                                ]),
-                                center: .center,
-                                startRadius: 20,
-                                endRadius: 100 + (glowIntensity * 100)
-                            )
-                        )
-                        .frame(width: 200, height: 200)
-                        .position(
-                            x: corner % 2 == 0 ? -50 : geometry.size.width + 50,
-                            y: corner < 2 ? -50 : geometry.size.height + 50
-                        )
-                        .blur(radius: currentBlur * (0.6 + Double(corner) * 0.1))
-                        .scaleEffect(currentScale + Double(corner) * 0.1)
-                        .opacity(0.7 + (glowIntensity * 0.3))
-                }
-            }
-        }
-        .animation(.easeOut(duration: 0.1), value: audioLevel) // Fast response to audio changes
     }
 }
 
