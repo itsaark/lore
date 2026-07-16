@@ -1,6 +1,6 @@
 # Lore Vision
 
-Last updated: 2026-07-15
+Last updated: 2026-07-16
 
 ## Product Thesis
 
@@ -42,8 +42,8 @@ No live transcript is required while recording. Capture should remain calm and i
 
 The first release has three primary surfaces:
 
-- **Notes:** the fast capture home, recording state, recent voice notes, processing state, and access to the raw or corrected transcript.
-- **Biography:** daily entries written from those notes, grouped chronologically, with a clear path back to each supporting transcript. The initial default is short, warm third-person prose; perspective and style can become customizable.
+- **Notes:** a minimal, fast capture home focused entirely on starting, stopping, and understanding the state of the current recording.
+- **Biography:** daily entries written from those notes, grouped chronologically, with a clear path to the raw or corrected supporting transcripts. The initial default is short, warm third-person prose; perspective and style can become customizable.
 - **Settings:** privacy mode, remote-transcription permission, cellular policy, audio recovery behavior, writing perspective/style, export/delete controls, and optional local-model management.
 
 Additional graph, people, places, timeline, interview, and insight views come later. They should not complicate the capture-first MVP.

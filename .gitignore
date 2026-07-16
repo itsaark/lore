@@ -1,0 +1,9 @@
+.DS_Store
+.vercel/
+node_modules/
+backend/node_modules/
+backend/coverage/
+backend/dist/
+.env
+.env.*
+!.env.example
