@@ -4,70 +4,46 @@ struct LocalAISetupView: View {
     @ObservedObject var modelManager: ModelManager
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Local AI")
-                        .font(.largeTitle)
-                        .fontWeight(.semibold)
-
-                    Text("Prepare Lore's private biography engine on this device.")
-                        .font(.body)
-                        .foregroundColor(.secondary)
+        Form {
+            Section {
+                ForEach(LocalModelTier.allCases) { tier in
+                    LocalModelOptionRow(
+                        tier: tier,
+                        isSelected: modelManager.status.tier == tier,
+                        isDisabled: modelManager.status.state == .downloading || modelManager.status.state == .loading,
+                        onSelect: selectTier
+                    )
                 }
-
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Model")
-                        .font(.headline)
-
-                    ForEach(LocalModelTier.allCases) { tier in
-                        LocalModelOptionRow(
-                            tier: tier,
-                            isSelected: modelManager.status.tier == tier,
-                            isDisabled: modelManager.status.state == .downloading || modelManager.status.state == .loading,
-                            onSelect: selectTier
-                        )
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(modelManager.status.statusText)
-                                .font(.headline)
-                            Text(modelManager.status.tier.rawValue)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-
-                        Spacer()
-
-                        statusIcon
-                    }
-
-                    if modelManager.status.state == .downloading {
-                        ProgressView(value: modelManager.status.progress)
-                    }
-
-                    if let message = modelManager.status.message {
-                        Text(message)
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                    }
-
-                    actionButton
-                }
-                .padding(16)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color(.systemGray6))
-                )
+            } header: {
+                Text("Model")
+            } footer: {
+                Text("Choose the balance of writing quality, speed, and storage that fits this iPhone.")
             }
-            .padding(24)
+
+            Section {
+                LabeledContent("Status") {
+                    HStack(spacing: 6) {
+                        statusIcon
+
+                        Text(modelManager.status.statusText)
+                    }
+                    .foregroundStyle(.secondary)
+                }
+
+                if modelManager.status.state == .downloading {
+                    ProgressView(value: modelManager.status.progress)
+                        .accessibilityLabel("Model download progress")
+                }
+
+                actionButton
+            } header: {
+                Text("On-device model")
+            } footer: {
+                statusFooter
+            }
         }
-        .navigationTitle("Local AI")
+        .navigationTitle("Models")
         .navigationBarTitleDisplayMode(.inline)
-        .background(Color(.systemBackground))
     }
 
     @ViewBuilder
@@ -75,18 +51,35 @@ struct LocalAISetupView: View {
         switch modelManager.status.state {
         case .notDownloaded:
             Image(systemName: "arrow.down.circle")
-                .foregroundColor(.secondary)
+                .accessibilityHidden(true)
         case .downloading, .loading:
             ProgressView()
+                .controlSize(.small)
+                .accessibilityHidden(true)
         case .downloaded:
             Image(systemName: "externaldrive.fill")
-                .foregroundColor(.blue)
+                .accessibilityHidden(true)
         case .loaded:
             Image(systemName: "checkmark.seal.fill")
-                .foregroundColor(.green)
+                .foregroundStyle(.green)
+                .accessibilityHidden(true)
         case .failed:
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(.orange)
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private var statusFooter: some View {
+        if let message = modelManager.status.message {
+            Text(message)
+        } else {
+            Text("Lore runs this model locally to keep biography writing private.")
+        }
+
+        if modelManager.status.state == .downloading || modelManager.status.state == .loading {
+            Text("Keep Lore open while this finishes.")
         }
     }
 
@@ -95,22 +88,25 @@ struct LocalAISetupView: View {
         switch modelManager.status.state {
         case .notDownloaded, .failed:
             Button(action: downloadSelectedModel) {
-                Text("Download Model")
-                    .frame(maxWidth: .infinity)
+                Label("Download Model", systemImage: "arrow.down.circle")
             }
-            .buttonStyle(LocalAIPrimaryButtonStyle())
         case .downloaded:
             Button(action: loadSelectedModel) {
-                Text("Load Downloaded Model")
-                    .frame(maxWidth: .infinity)
+                Label("Load Model", systemImage: "bolt.circle")
             }
-            .buttonStyle(LocalAIPrimaryButtonStyle())
-        case .downloading, .loading:
-            Text("Keep Lore open while this finishes.")
-                .font(.footnote)
-                .foregroundColor(.secondary)
+            removeModelButton
         case .loaded:
+            removeModelButton
+        case .downloading, .loading:
             EmptyView()
+        }
+    }
+
+    private var removeModelButton: some View {
+        Button(role: .destructive) {
+            modelManager.forgetDownloadedModel()
+        } label: {
+            Label("Remove Download", systemImage: "trash")
         }
     }
 
@@ -141,47 +137,36 @@ private struct LocalModelOptionRow: View {
         Button {
             onSelect(tier)
         } label: {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor(isSelected ? .green : .secondary)
-
+            HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(tier.displayName)
-                        .font(.subheadline)
-                        .fontWeight(.medium)
-                        .foregroundColor(.primary)
+                        .foregroundStyle(.primary)
                     Text(tier.detail)
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                Spacer()
+                Spacer(minLength: 8)
+
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityHidden(true)
+                }
             }
-            .padding(14)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(.systemGray6))
-            )
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(isDisabled)
-    }
-}
-
-private struct LocalAIPrimaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.headline)
-            .foregroundColor(.white)
-            .padding(.vertical, 14)
-            .background(configuration.isPressed ? Color.black.opacity(0.8) : Color.black)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel(tier.displayName)
+        .accessibilityValue(isSelected ? "Selected" : "Not selected")
     }
 }
 
 #Preview {
-    NavigationView {
+    NavigationStack {
         LocalAISetupView(modelManager: ModelManager())
     }
 }
