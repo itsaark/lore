@@ -1,12 +1,14 @@
 # Lore Inference Strategy
 
-Last updated: 2026-07-14
+Last updated: 2026-07-16
 
 ## Status
 
 This document records the current MVP candidates and the production contract to evaluate. Provider availability, pricing, retention, and model behavior are release-time inputs, not permanent assumptions.
 
 Decisions remain provisional until Lore's own transcription and journal-writing evaluations pass.
+
+Provider capabilities, pricing, and retention claims in this document were rechecked against official documentation on 2026-07-16. They must be checked again at the production release gate.
 
 ## MVP Route Summary
 
@@ -19,6 +21,8 @@ Decisions remain provisional until Lore's own transcription and journal-writing 
 5. Keep `SFSpeechRecognizer` as a compatibility implementation for evaluation and Device Only experiments, not the default transcription route on older devices.
 6. Use Groq Whisper Large V3 Turbo for the normal remote pass. Offer Large V3 or OpenAI Transcribe only as an explicit accuracy escalation.
 7. Commit the raw transcript and provenance transactionally on the iPhone before deleting audio.
+
+The Vercel MVP must send bounded `multipart/form-data` chunks rather than base64 audio in JSON. Vercel documents a 4.5 MB function payload limit, so Lore will enforce a conservative 3.5 MB maximum for the complete multipart request, with at most 3.25 MB allocated to audio, and retain stable time/chunk identifiers for deterministic transcript assembly. The backend forwards chunks directly to Groq without durable server storage. See [Vercel's payload guidance](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions) and [Groq's speech file requirements](https://console.groq.com/docs/speech-to-text).
 
 Hardware generation establishes the initial eligibility boundary, but never guarantees local routing by itself. Runtime API/locale availability, measured quality, truncation, and user policy must also pass. The allowlist should remain remotely configurable as Lore collects device-specific evidence.
 

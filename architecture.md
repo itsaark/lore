@@ -1,6 +1,6 @@
 # Lore Architecture
 
-Last updated: 2026-07-14
+Last updated: 2026-07-16
 
 ## System Goal
 
@@ -82,11 +82,11 @@ The initial app shell has three top-level destinations:
 
 | Surface | Primary responsibility | Explicitly deferred |
 | --- | --- | --- |
-| Notes | Start/stop recording, show recent captures and job states, inspect raw/corrected transcript | Graph browsing and long-form composition |
-| Biography | Show short daily narrative entries and their transcript sources | Full chapter editor, people/place/theme explorers |
+| Notes | Provide a minimal, focused start/stop recording surface and communicate capture state without visual clutter | Transcript lists, graph browsing, and long-form composition |
+| Biography | Show short daily narrative entries and provide access to their raw transcript sources | Full chapter editor, people/place/theme explorers |
 | Settings | Privacy and network modes, audio fallback consent, writing perspective/style, retention, export/delete, optional local models | General-purpose assistant configuration |
 
-Capture must remain one tap away and must not wait for model initialization or network reachability. Biography is a derived, revisable surface; Notes owns access to source material.
+Capture must remain one tap away and must not wait for model initialization or network reachability. Notes stays focused on capture; Biography is a derived, revisable surface that also provides access to source material.
 
 ## Privacy Modes and Routing Constraints
 
@@ -273,7 +273,15 @@ iPhone
   -> server purge + deletion receipt
 ```
 
-Server interfaces should include:
+The request-ephemeral MVP interfaces should include:
+
+- `POST /v1/transcriptions` as a bounded `multipart/form-data` audio request
+- `POST /v1/daily-entries` as a versioned JSON request
+- `GET /v1/health` with no content or provider details
+
+Both processing endpoints require a pseudonymous authenticated session, an idempotency key, an explicit `requestEphemeral` retention policy, and versioned response schemas. They return the result synchronously and persist no request or result content. The app's durable local `ProcessingJob` remains the recovery and retry record.
+
+If asynchronous recovery is introduced later, the backend may add:
 
 - `POST /v1/jobs` with an idempotency key and explicit task/retention policy
 - `GET /v1/jobs/{id}` for resumable status/result delivery
@@ -281,6 +289,33 @@ Server interfaces should include:
 - `POST /v1/jobs/{id}/ack` after the result is durably committed locally
 
 Exact endpoints may change, but the semantics should remain stable.
+
+### Vercel MVP transport constraints
+
+The first Lore backend is planned as TypeScript Vercel Functions using the Node.js runtime and direct Groq adapters. Vercel AI Gateway is not on the MVP data path.
+
+Vercel currently documents a 4.5 MB function request/response body limit. Groq accepts direct speech attachments up to 25 MB and larger files by URL, but using a provider URL would require a separate temporary object store and weaken the request-ephemeral design. Therefore:
+
+- the app must encode speech efficiently and split long recordings into independently transcribable chunks
+- each complete multipart request must remain at or below 3.5 MB; Lore currently reserves 3.25 MB for the audio part and the remainder for form overhead
+- audio bytes must not be base64-encoded inside the JSON contract
+- the backend must stream or forward each bounded part without writing it to durable disk, object storage, a queue, or a database
+- transcript segments must retain stable chunk/time identifiers so the app can assemble them deterministically and preserve provenance
+- a later dedicated upload service is an architectural change requiring a new retention review
+
+Relevant platform references are [Vercel's function payload guidance](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions), [Groq speech file limits](https://console.groq.com/docs/speech-to-text), and [Groq data controls](https://console.groq.com/docs/your-data). These constraints must be rechecked before production release.
+
+### Repository and deployment topology
+
+Lore uses one GitHub monorepo with independently deployable applications:
+
+- the iOS application and its tests remain the primary client
+- `backend/` is imported into Vercel as a standalone API project
+- a future `web/` directory will contain the public landing page and later account-management UI, imported as a second Vercel project
+
+The API and website may share versioned, content-free contract code in the future, but they must not share runtime environment variables or deployment lifecycles. The API owns provider secrets and processing endpoints. The website owns public pages and authenticated account UI, and calls the API through its public authenticated contract.
+
+Using one repository keeps cross-client contract changes and privacy reviews atomic. Using separate Vercel projects preserves independent domains, previews, rollbacks, scaling, access controls, and secret scopes. Splitting into multiple repositories is deferred until team ownership, release cadence, or security boundaries make that separation materially useful.
 
 ### Remote request envelope
 
@@ -465,54 +500,79 @@ As archives grow, hierarchical local summaries can reduce context size, but summ
 
 ## Current Implementation Snapshot
 
-Implemented in the current app:
+This snapshot deliberately distinguishes code that exists from a feature that works end to end. A type, protocol, route decision, or passing unit test does not make the remote product path production-capable.
+
+### Implemented foundations
 
 - onboarding and user profile
-- audio recording and Apple on-device speech recognition
-- SwiftData persistence and legacy migration
-- local audio-file expiry metadata and cleanup
-- transcript expiry metadata
-- optional location, timezone, and WeatherKit capture
-- downloadable 1.7B, 4B, and 8B Ternary Bonsai tiers
-- MLX Swift local generation behind `GenerationService`
-- per-story biography prose generation
-- extraction and persistence of people, places, themes, and life events
-- basic graph merging and chronological Stories UI
-- model unloading on memory/background events
+- the Notes, Biography, and Settings shell, including the minimal recording surface and raw-transcript access from Biography
+- audio recording, audio-level UI, and legacy Apple `SFSpeechRecognizer` transcription
+- SwiftData persistence, legacy migration, and model registration
+- immutable `TranscriptArtifact` source records and append-only `TranscriptVersion` corrections
+- the `ProcessingJob` data model, state types, route metadata, and deletion metadata
+- deterministic hardware/capability policies for local versus remote speech and biography routes
+- completion-based local audio deletion after a usable transcript is committed, plus failed-transcription audio retention
+- story deletion for linked local audio, transcript support records, and metadata
+- local MLX/Bonsai generation, local memory extraction, basic graph merging, and model unloading
+- vocabulary, automatic-mode, cellular preference, journal-style, privacy-copy, and local-model settings surfaces
+- unit coverage for routing, contracts, transcript immutability, successful audio deletion, and failed-transcription recovery
+- a TypeScript `lore-api` Vercel Functions project with strict Zod contracts, OpenAPI documentation, content-free logging, health routing, multipart transcription validation, and grounded daily-entry validation
+- direct Groq Whisper and GPT-OSS adapters with mocked success/error coverage, strict JSON Schema output, source-reference validation, and fail-closed provider-policy configuration
 
-Important gaps:
+### Partially wired systems
 
-- the launch navigation is not yet the focused Notes, Biography, and Settings shell
-- speech recognition still needs an iOS 26 `SpeechAnalyzer` path plus locale-aware capability checks and a hardened legacy path for iOS 18 through 25
-- audio cleanup is driven by expiry metadata rather than a verified transcript-commit event with a visible recovery state
-- generation is local-only and coupled to local model readiness at composition points
-- queued stories do not reliably resume after model setup; retry/cancel and interrupted-job recovery are incomplete
-- there is no capability router, remote processing API, or privacy-mode UI
-- `processingStatus` is a string on `Story`, not a durable multi-job state machine
-- transcript expiry metadata reflects an older policy; the durable source archive should instead remain local until user deletion
-- the raw transcript is a mutable `Story.text` field rather than an immutable artifact plus corrected versions
-- `BiographyFragment` exists but generated prose is primarily stored on `Story`
-- memory extraction does not yet persist the full intended fact/relationship model
-- graph merging is basic normalized-name matching
-- biography/timeline/people/place/theme experiences are not yet the primary product surface
-- physical-device model, memory, battery, and thermal validation remains incomplete
+- Remote-routed capture is selected on older or unvalidated hardware, but the recording is currently sent to the remote transcriber before its `Story`, `AudioAsset`, and retry job are durably committed. Save-before-processing ordering must be corrected before live networking is enabled.
+- `ProcessingJob` persists state, but it is not yet the workflow runner. Relaunch resumption, leasing, backoff, retry, cancellation, dependencies, and idempotent replay remain incomplete, while `Story.processingStatus` still drives part of the flow.
+- Remote biography routing and request construction use the newest transcript version, but the successful branch currently persists only `Story.title` and `Story.biographyProse`.
+- Completion-driven audio deletion works after a successful transcript transaction, but remote interruption and response-loss behavior are not yet orchestrated by a durable runner.
+- Settings expose an automatic mode, cellular toggle, and privacy explanation, but they do not yet provide revocable Device Only/Adaptive permission, separate audio-upload consent, or enforce the cellular preference in routing.
+- Transcript evidence is additive and immutable, but generated prose is still primarily stored on `Story`; complete sentence provenance, memory candidates, provider provenance, retention attestations, and versioned `BiographyFragment` commits are unfinished.
+- The hardware policy exists, but the allowlist is local rather than a signed remotely managed policy, and iOS 26 `SpeechAnalyzer`, locale checks, thermal/power inputs, and physical-device validation remain incomplete.
+- The backend builds and its health route has been verified in an ephemeral Vercel deployment, but the canonical GitHub-connected Vercel project has not been imported and no Groq credential or live provider test has been configured. Processing endpoints remain disabled/fail-closed.
+- Backend authentication is preview-only scaffolding. Production deliberately rejects it until the App Attest/session design is implemented.
+
+### Contracts and stubs only
+
+- Provider-neutral transcription and daily-entry request/response types, retention fields, provenance types, and deletion-receipt types exist.
+- `LoreBackendProcessingClient`, `RemoteDailyEntryGenerationService`, and remote speech protocols exist.
+- `UnavailableRemoteSpeechTranscriber` and `UnconfiguredLoreBackendProcessingClient` intentionally fail closed.
+- There is no live iOS HTTP implementation, production authentication/session flow, configured Groq organization, live provider result, or synthetic end-to-end canary through the app.
+
+### Production-capable status
+
+- No Adaptive remote-processing path is production-capable today.
+- The local capture and archive foundation is functional and test-covered, but release readiness still requires the speech compatibility work, background/interruption hardening, privacy controls, and physical-device validation described above.
+- No real user audio or transcript should be sent remotely until authentication, consent, content-free logging, Groq ZDR configuration, transactional local commits, and the end-to-end synthetic canary pass their release gates.
+
+### Immediate next steps
+
+The next implementation slice should build on the existing foundations rather than rebuild recording:
+
+1. Correct remote persistence ordering: commit the local `Story`, `AudioAsset`, and queued `ProcessingJob` before opening any network request.
+2. Build the Lore Vercel backend and direct Groq transcription/daily-entry adapters.
+3. Wire the existing provider-neutral contracts into a real iOS HTTP client.
+4. Add a one-time Adaptive processing disclosure during onboarding, with separate audio-upload permission and a revocable Device Only/Adaptive choice in Settings.
+5. Make the existing cellular toggle an enforced input to route selection.
+6. Make `ProcessingJob` the real runner for retry, restart recovery, cancellation, and idempotent commit.
+7. Persist the complete remote result—sentence provenance, memory candidates, provider/model provenance, retention attestation, and versioned biography output—not only title and prose.
+8. Verify the normal and failure paths with synthetic preview/production canaries before enabling real user content.
 
 ## Delivery Phases
 
 ### Phase A: Reliable local foundation
 
-1. Establish the Notes, Biography, and Settings navigation shell without slowing capture.
-2. Replace story-level status strings with durable `ProcessingJob` records.
-3. Add `TranscriptArtifact`/`TranscriptVersion`, transcription provenance, and immutable source hashes.
+1. **Complete:** establish the Notes, Biography, and Settings navigation shell without slowing capture.
+2. **Partial:** replace story-level status strings with durable `ProcessingJob` records.
+3. **Complete for the source layer:** add `TranscriptArtifact`/`TranscriptVersion`, transcription provenance, and immutable source hashes.
 4. Add automatic queue resumption, retry, cancellation, idempotent commits, and interrupted-work recovery.
-5. Delete audio after verified transcript commit and implement provenance-aware user deletion propagation.
+5. **Partial:** delete audio after verified transcript commit; complete provenance-aware deletion propagation for all derived records.
 6. Measure transcription and local model tasks across the supported device set.
-7. Add storage/integrity checks, real download progress, and model removal.
+7. Add remaining storage/integrity checks, real download progress, and model removal.
 
 ### Phase B: Provider-neutral adaptive compute
 
-1. Generalize `GenerationService` and transcription behind shared route-aware result types.
-2. Add `DeviceCapabilityService` and policy-driven `ComputeRouter`.
+1. **Partial:** generalize generation and transcription behind provider-neutral, route-aware result types.
+2. **Partial:** capability policies exist; add the full `DeviceCapabilityService`, signed remote policy, privacy/network inputs, and diagnostic routing reasons.
 3. Build the Lore Processing API and direct provider adapters behind `ModelGateway`, beginning with Groq and an evaluated Fireworks fallback for text.
 4. Start with approved hosted open-weight models for structured text extraction and daily-entry writing; add Groq Whisper remote speech only after separate audio consent, benchmark, and retention validation.
 5. Add privacy modes, data-transfer disclosure, cellular controls, remote job status, cancellation, and deletion receipts.
