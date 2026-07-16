@@ -35,7 +35,12 @@ struct ContentView: View {
                         
                         Spacer()
                         
-                        NavigationLink(destination: LocalAISetupView(modelManager: modelManager)) {
+                        NavigationLink {
+                            SettingsHomeView(
+                                userProfile: userProfile,
+                                modelManager: modelManager
+                            )
+                        } label: {
                             Image(systemName: "gearshape")
                                 .font(.title3)
                                 .foregroundColor(.primary)
