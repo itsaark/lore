@@ -27,6 +27,10 @@ final class VocabularyEntry {
         self.updatedAt = updatedAt
     }
 
+    var isReplacement: Bool {
+        replacement?.isEmpty == false
+    }
+
     static func normalizedKey(for phrase: String) -> String {
         phrase
             .trimmingCharacters(in: .whitespacesAndNewlines)

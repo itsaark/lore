@@ -54,5 +54,13 @@ final class MLXLocalModelRuntime: LocalModelRuntime {
         modelContainer = nil
         loadedTier = nil
     }
+
+    func delete(tier: LocalModelTier) throws {
+        let modelDirectory = ModelConfiguration(id: tier.repositoryID).modelDirectory()
+        guard FileManager.default.fileExists(atPath: modelDirectory.path) else {
+            return
+        }
+        try FileManager.default.removeItem(at: modelDirectory)
+    }
 }
 #endif

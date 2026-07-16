@@ -54,6 +54,7 @@ struct LegacyUserProfilePayload: Codable, Equatable {
 
 enum LegacyDataMigrator {
     private static let migrationCompleteKey = "LoreSwiftDataMigrationV1Complete"
+    private static let transcriptBackfillCompleteKey = "LoreTranscriptArtifactBackfillV2Complete"
     private static let legacyProfileKey = "UserProfile"
     private static let legacyStoriesKey = "SavedStories"
     private static let legacyRecordingsKey = "SavedRecordings"
@@ -62,15 +63,18 @@ enum LegacyDataMigrator {
         modelContext: ModelContext,
         userDefaults: UserDefaults = .standard
     ) throws {
-        guard !userDefaults.bool(forKey: migrationCompleteKey) else {
-            return
+        if !userDefaults.bool(forKey: migrationCompleteKey) {
+            try migrateProfile(modelContext: modelContext, userDefaults: userDefaults)
+            try migrateStories(modelContext: modelContext, userDefaults: userDefaults)
+            try modelContext.save()
+            userDefaults.set(true, forKey: migrationCompleteKey)
         }
 
-        try migrateProfile(modelContext: modelContext, userDefaults: userDefaults)
-        try migrateStories(modelContext: modelContext, userDefaults: userDefaults)
-        try modelContext.save()
-
-        userDefaults.set(true, forKey: migrationCompleteKey)
+        if !userDefaults.bool(forKey: transcriptBackfillCompleteKey) {
+            try backfillTranscriptArtifacts(modelContext: modelContext)
+            try modelContext.save()
+            userDefaults.set(true, forKey: transcriptBackfillCompleteKey)
+        }
     }
 
     private static func migrateProfile(
@@ -114,15 +118,47 @@ enum LegacyDataMigrator {
                     text: legacyStory.text,
                     date: legacyStory.date,
                     duration: legacyStory.duration,
-                    rawTranscriptExpiresAt: Calendar.current.date(
-                        byAdding: .day,
-                        value: 120,
-                        to: legacyStory.date
-                    ),
+                    rawTranscriptExpiresAt: nil,
                     createdAt: legacyStory.date,
                     updatedAt: legacyStory.date
                 )
             )
+        }
+    }
+
+    private static func backfillTranscriptArtifacts(modelContext: ModelContext) throws {
+        let stories = try modelContext.fetch(FetchDescriptor<Story>())
+        let artifacts = try modelContext.fetch(FetchDescriptor<TranscriptArtifact>())
+        let audioAssets = try modelContext.fetch(FetchDescriptor<AudioAsset>())
+        let storyIdsWithArtifacts = Set(artifacts.compactMap(\.storyId))
+        let audioAssetByStoryId = Dictionary(uniqueKeysWithValues: audioAssets.map { ($0.id, $0.id) })
+
+        for story in stories where !storyIdsWithArtifacts.contains(story.id) {
+            let rawText = story.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rawText.isEmpty else { continue }
+
+            let artifact = TranscriptArtifact(
+                storyId: story.id,
+                audioAssetId: audioAssetByStoryId[story.id],
+                rawText: story.text,
+                source: .legacyStory,
+                capturedAt: story.date,
+                transcribedAt: story.createdAt,
+                audioDuration: story.duration,
+                createdAt: story.createdAt
+            )
+            let sourceVersion = TranscriptVersion(
+                transcriptArtifactId: artifact.id,
+                storyId: story.id,
+                revision: 1,
+                text: story.text,
+                kind: .sourceSnapshot,
+                author: .source,
+                createdAt: story.createdAt
+            )
+            story.rawTranscriptExpiresAt = nil
+            modelContext.insert(artifact)
+            modelContext.insert(sourceVersion)
         }
     }
 }

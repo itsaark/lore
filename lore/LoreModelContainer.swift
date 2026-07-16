@@ -12,6 +12,9 @@ enum LoreModelContainer {
         Person.self,
         Place.self,
         Theme.self,
+        TranscriptArtifact.self,
+        TranscriptVersion.self,
+        ProcessingJob.self,
         VocabularyEntry.self
     ])
 
