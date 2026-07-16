@@ -236,7 +236,7 @@ enum StoryProcessingDisplayStatus: Equatable {
         case .processed:
             return hasBiographyDraft ? "Draft Ready" : "Draft Missing"
         case .awaitingModel:
-            return hasBiographyDraft ? "Draft Ready" : "Waiting for Local AI"
+            return hasBiographyDraft ? "Draft Ready" : "Waiting for Processing"
         case .captured:
             return hasBiographyDraft ? "Draft Ready" : "Pending Draft"
         case .unknown(let rawValue):
@@ -247,17 +247,17 @@ enum StoryProcessingDisplayStatus: Equatable {
     func detailText(hasBiographyDraft: Bool) -> String {
         switch self {
         case .captured:
-            return hasBiographyDraft ? "Biography draft is ready." : "Ready for local biography generation."
+            return hasBiographyDraft ? "Biography draft is ready." : "Ready for biography generation."
         case .awaitingModel:
-            return hasBiographyDraft ? "Biography draft is ready." : "Load the local AI model to generate this draft."
+            return hasBiographyDraft ? "Biography draft is ready." : "Waiting for the selected processing route to become available."
         case .processing:
-            return "Writing biography prose and updating memory on device."
+            return "Writing biography prose and updating memory."
         case .processed:
             return hasBiographyDraft ? "Biography draft is ready." : "Lore marked this story processed, but no biography draft was saved."
         case .failed:
-            return "Lore could not finish local processing for this story."
+            return "Lore could not finish processing this story."
         case .unknown:
-            return hasBiographyDraft ? "Biography draft is ready." : "Waiting for local processing."
+            return hasBiographyDraft ? "Biography draft is ready." : "Waiting for processing."
         }
     }
 

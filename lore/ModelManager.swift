@@ -64,27 +64,20 @@ enum LocalGenerationTask: String, Equatable {
     }
 }
 
-struct LocalGenerationFallbackContext: Equatable {
-    var storyID: UUID
-    var transcript: String
-    var userName: String
-    var hometown: String
-    var birthYear: Int
-    var captureDate: Date
-}
-
 struct LocalGenerationRequest: Equatable {
     var task: LocalGenerationTask
     var prompt: String
-    var fallbackContext: LocalGenerationFallbackContext
 }
 
 enum LocalModelRuntimeError: Error, LocalizedError {
+    case deviceNotEligible
     case modelNotReady
     case generationFailed(String)
 
     var errorDescription: String? {
         switch self {
+        case .deviceNotEligible:
+            return "On-device biography processing requires iPhone 17 or newer."
         case .modelNotReady:
             return "Local AI is not ready yet."
         case .generationFailed(let message):
@@ -102,6 +95,17 @@ protocol LocalModelRuntime {
     func load(tier: LocalModelTier) async throws
     func generate(_ request: LocalGenerationRequest, tier: LocalModelTier) async throws -> String
     func unload()
+    func delete(tier: LocalModelTier) throws
+}
+
+enum LocalModelRuntimeAvailability {
+    static var isAvailable: Bool {
+#if canImport(MLXLLM) && canImport(MLXLMCommon)
+        true
+#else
+        false
+#endif
+    }
 }
 
 enum LocalModelState: String {
@@ -144,6 +148,7 @@ struct LocalModelStatus: Equatable {
 @MainActor
 final class ModelManager: ObservableObject {
     @Published private(set) var status: LocalModelStatus
+    let isLocalGenerationEligible: Bool
 
     private let userDefaults: UserDefaults
     private let runtime: any LocalModelRuntime
@@ -152,13 +157,16 @@ final class ModelManager: ObservableObject {
 
     init(
         userDefaults: UserDefaults = .standard,
-        runtime: (any LocalModelRuntime)? = nil
+        runtime: (any LocalModelRuntime)? = nil,
+        isLocalGenerationEligible: Bool? = nil
     ) {
         self.userDefaults = userDefaults
-        self.runtime = runtime ?? Self.makeDefaultRuntime()
+        let eligible = isLocalGenerationEligible ?? (runtime != nil || Self.productionEligibility())
+        self.isLocalGenerationEligible = eligible
+        self.runtime = runtime ?? (eligible ? Self.makeDefaultRuntime() : UnavailableLocalModelRuntime())
 
         let selectedTier = userDefaults.string(forKey: selectedTierKey)
-            .flatMap(LocalModelTier.init(rawValue:)) ?? .standard4B
+            .flatMap(LocalModelTier.init(rawValue:)) ?? .lightweight17B
         let downloadedTier = userDefaults.string(forKey: downloadedTierKey)
             .flatMap(LocalModelTier.init(rawValue:))
         let state: LocalModelState = selectedTier == downloadedTier ? .downloaded : .notDownloaded
@@ -172,6 +180,7 @@ final class ModelManager: ObservableObject {
     }
 
     func select(_ tier: LocalModelTier) {
+        guard isLocalGenerationEligible else { return }
         guard status.state != .downloading, status.state != .loading else {
             return
         }
@@ -193,6 +202,11 @@ final class ModelManager: ObservableObject {
     }
 
     func downloadSelectedModel() async {
+        guard isLocalGenerationEligible else {
+            status.state = .failed
+            status.message = LocalModelRuntimeError.deviceNotEligible.localizedDescription
+            return
+        }
         guard status.state != .downloading, status.state != .loading else {
             return
         }
@@ -216,6 +230,11 @@ final class ModelManager: ObservableObject {
     }
 
     func loadSelectedModel() async {
+        guard isLocalGenerationEligible else {
+            status.state = .failed
+            status.message = LocalModelRuntimeError.deviceNotEligible.localizedDescription
+            return
+        }
         guard status.state == .downloaded || status.state == .loaded else {
             status.state = .failed
             status.message = "Download a local model before loading it."
@@ -236,6 +255,9 @@ final class ModelManager: ObservableObject {
     }
 
     func generate(_ request: LocalGenerationRequest) async throws -> String {
+        guard isLocalGenerationEligible else {
+            throw LocalModelRuntimeError.deviceNotEligible
+        }
         if !status.isReady {
             guard isSelectedTierDownloaded else {
                 throw LocalModelRuntimeError.modelNotReady
@@ -265,6 +287,13 @@ final class ModelManager: ObservableObject {
 
     func forgetDownloadedModel() {
         runtime.unload()
+        do {
+            try runtime.delete(tier: status.tier)
+        } catch {
+            status.state = .failed
+            status.message = "Lore could not remove the downloaded model: \(error.localizedDescription)"
+            return
+        }
         userDefaults.removeObject(forKey: downloadedTierKey)
         status.state = .notDownloaded
         status.progress = 0.0
@@ -275,8 +304,16 @@ final class ModelManager: ObservableObject {
         #if canImport(MLXLLM) && canImport(MLXLMCommon)
         return MLXLocalModelRuntime()
         #else
-        return DeterministicLocalModelRuntime()
+        return UnavailableLocalModelRuntime()
         #endif
+    }
+
+    private static func productionEligibility() -> Bool {
+        let capabilities = BiographyGenerationCapabilities(
+            hardwareIdentifier: CurrentSpeechDevice.hardwareIdentifier,
+            supportsLocalRuntime: LocalModelRuntimeAvailability.isAvailable
+        )
+        return BiographyGenerationPolicy.production().route(for: capabilities).usesLocalModel
     }
 
     private func loadDownloadedModel(tier: LocalModelTier) async throws {
@@ -298,143 +335,23 @@ final class ModelManager: ObservableObject {
     }
 }
 
-struct DeterministicLocalModelRuntime: LocalModelRuntime {
-    let displayName = "Deterministic local fallback"
+struct UnavailableLocalModelRuntime: LocalModelRuntime {
+    let displayName = "Unavailable local runtime"
     let isMLXBacked = false
 
     func download(tier: LocalModelTier) async throws {
-        for _ in [0.2, 0.45, 0.7, 1.0] {
-            try await Task.sleep(for: .milliseconds(120))
-        }
+        throw LocalModelRuntimeError.modelNotReady
     }
 
     func load(tier: LocalModelTier) async throws {
-        try await Task.sleep(for: .milliseconds(20))
+        throw LocalModelRuntimeError.modelNotReady
     }
 
     func generate(_ request: LocalGenerationRequest, tier: LocalModelTier) async throws -> String {
-        try await Task.sleep(for: .milliseconds(20))
-
-        switch request.task {
-        case .biographyProse:
-            return makeBiographyProse(from: request.fallbackContext)
-        case .memoryGraphExtraction:
-            return try makeMemoryGraphJSON(from: request.fallbackContext)
-        }
-    }
-
-    private func makeBiographyProse(from context: LocalGenerationFallbackContext) -> String {
-        let cleanedTranscript = context.transcript
-            .replacingOccurrences(of: "\n", with: " ")
-            .split(separator: " ")
-            .joined(separator: " ")
-
-        return """
-        \(context.userName), who began life in \(context.hometown), remembered this moment with the plain texture of lived experience. \(cleanedTranscript)
-        """
-    }
-
-    private func makeMemoryGraphJSON(from context: LocalGenerationFallbackContext) throws -> String {
-        let cleanedTranscript = context.transcript
-            .replacingOccurrences(of: "\n", with: " ")
-            .split(separator: " ")
-            .joined(separator: " ")
-        let summary = String(cleanedTranscript.prefix(220))
-        let payload = DeterministicMemoryGraphPayload(
-            people: [],
-            places: [
-                DeterministicPlaceCandidate(
-                    displayName: context.hometown,
-                    placeKind: "hometown",
-                    locationHint: context.hometown,
-                    summary: "Hometown from the local user profile.",
-                    confidence: 0.35,
-                    sourceStoryIds: [context.storyID.uuidString]
-                )
-            ],
-            themes: [
-                DeterministicThemeCandidate(
-                    name: "reflection",
-                    summary: "A locally generated fallback theme for a captured personal story.",
-                    confidence: 0.2,
-                    sourceStoryIds: [context.storyID.uuidString]
-                )
-            ],
-            lifeEvents: [
-                DeterministicLifeEventCandidate(
-                    title: "Captured personal memory",
-                    summary: summary,
-                    eventDateKind: "unknown",
-                    eventStartDate: nil,
-                    eventEndDate: nil,
-                    approximateLabel: nil,
-                    confidence: 0.2,
-                    sourceStoryIds: [context.storyID.uuidString]
-                )
-            ],
-            memoryFacts: [
-                DeterministicMemoryFactCandidate(
-                    text: summary,
-                    confidence: 0.2,
-                    sourceStoryId: context.storyID.uuidString
-                )
-            ],
-            modelName: displayName
-        )
-
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(payload)
-        guard let json = String(data: data, encoding: .utf8) else {
-            throw LocalModelRuntimeError.generationFailed("Unable to encode memory graph fallback.")
-        }
-
-        return json
+        throw LocalModelRuntimeError.modelNotReady
     }
 
     func unload() {}
-}
 
-private struct DeterministicMemoryGraphPayload: Encodable {
-    var people: [DeterministicPersonCandidate]
-    var places: [DeterministicPlaceCandidate]
-    var themes: [DeterministicThemeCandidate]
-    var lifeEvents: [DeterministicLifeEventCandidate]
-    var memoryFacts: [DeterministicMemoryFactCandidate]
-    var modelName: String
-}
-
-private struct DeterministicPersonCandidate: Encodable {}
-
-private struct DeterministicPlaceCandidate: Encodable {
-    var displayName: String
-    var placeKind: String
-    var locationHint: String
-    var summary: String
-    var confidence: Double
-    var sourceStoryIds: [String]
-}
-
-private struct DeterministicThemeCandidate: Encodable {
-    var name: String
-    var summary: String
-    var confidence: Double
-    var sourceStoryIds: [String]
-}
-
-private struct DeterministicLifeEventCandidate: Encodable {
-    var title: String
-    var summary: String
-    var eventDateKind: String
-    var eventStartDate: String?
-    var eventEndDate: String?
-    var approximateLabel: String?
-    var confidence: Double
-    var sourceStoryIds: [String]
-}
-
-private struct DeterministicMemoryFactCandidate: Encodable {
-    var text: String
-    var confidence: Double
-    var sourceStoryId: String
+    func delete(tier: LocalModelTier) throws {}
 }

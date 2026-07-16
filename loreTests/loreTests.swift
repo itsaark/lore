@@ -14,6 +14,64 @@ import Testing
 @Suite(.serialized)
 struct loreTests {
 
+    @Test func audioLevelEnvelopeRespondsToWhispersWithoutJumping() {
+        var envelope = AudioLevelEnvelope()
+        let whisperRMS = pow(Float(10), -56 / 20)
+        let whisperPeak = pow(Float(10), -49 / 20)
+
+        let firstFrame = envelope.process(
+            rms: whisperRMS,
+            peak: whisperPeak,
+            frameDuration: 1.0 / 43.0
+        )
+        _ = envelope.process(
+            rms: whisperRMS,
+            peak: whisperPeak,
+            frameDuration: 1.0 / 43.0
+        )
+        let thirdFrame = envelope.process(
+            rms: whisperRMS,
+            peak: whisperPeak,
+            frameDuration: 1.0 / 43.0
+        )
+
+        #expect(firstFrame > 0.1)
+        #expect(thirdFrame > firstFrame)
+        #expect(thirdFrame < 0.4)
+    }
+
+    @Test func audioLevelEnvelopeReleasesSmoothlyAfterSpeech() {
+        var envelope = AudioLevelEnvelope()
+        let speechRMS = pow(Float(10), -28 / 20)
+        let speechPeak = pow(Float(10), -18 / 20)
+
+        for _ in 0..<6 {
+            _ = envelope.process(
+                rms: speechRMS,
+                peak: speechPeak,
+                frameDuration: 1.0 / 43.0
+            )
+        }
+        let spokenLevel = envelope.value
+        let firstSilentFrame = envelope.process(
+            rms: 0,
+            peak: 0,
+            frameDuration: 1.0 / 43.0
+        )
+
+        for _ in 0..<24 {
+            _ = envelope.process(
+                rms: 0,
+                peak: 0,
+                frameDuration: 1.0 / 43.0
+            )
+        }
+
+        #expect(firstSilentFrame < spokenLevel)
+        #expect(firstSilentFrame > spokenLevel * 0.75)
+        #expect(envelope.value < firstSilentFrame * 0.1)
+    }
+
     @Test func legacyStoryDecodesPayloadWithoutID() throws {
         let json = """
         {
@@ -35,6 +93,152 @@ struct loreTests {
         let story = Story(id: id, text: "Today felt quieter than usual.", date: Date(), duration: 12)
 
         #expect(story.id == id)
+    }
+
+    @Test func vocabularyEntryPersistsPreferredSpellingAndReplacement() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let preferred = VocabularyEntry(phrase: "Hyderabad")
+        let replacement = VocabularyEntry(phrase: "Marisa", replacement: "Marissa")
+
+        context.insert(preferred)
+        context.insert(replacement)
+        try context.save()
+
+        let entries = try context.fetch(FetchDescriptor<VocabularyEntry>())
+
+        #expect(entries.count == 2)
+        #expect(entries.first(where: { $0.phrase == "Hyderabad" })?.isReplacement == false)
+        #expect(entries.first(where: { $0.phrase == "Marisa" })?.replacement == "Marissa")
+        #expect(VocabularyEntry.normalizedKey(for: "  HYDERÁBAD ") == "hyderabad")
+    }
+
+    @Test func transcriptArtifactsVersionsAndJobsPersistAdditively() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let storyID = UUID()
+        let artifact = TranscriptArtifact(
+            storyId: storyID,
+            rawText: "Melissa—no, Marissa—is my cousin.",
+            source: .appleSpeech,
+            languageCode: "en-US",
+            capturedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            audioDuration: 4
+        )
+        let sourceVersion = TranscriptVersion(
+            transcriptArtifactId: artifact.id,
+            storyId: storyID,
+            revision: 1,
+            text: artifact.rawText,
+            kind: .sourceSnapshot,
+            author: .source
+        )
+        let correction = TranscriptVersion(
+            transcriptArtifactId: artifact.id,
+            storyId: storyID,
+            supersedesVersionId: sourceVersion.id,
+            revision: 2,
+            text: "Marissa is my cousin.",
+            kind: .userCorrection,
+            author: .user,
+            editSummary: "Confirmed name spelling"
+        )
+        let job = ProcessingJob(
+            idempotencyKey: "daily-entry:\(storyID.uuidString):2",
+            storyId: storyID,
+            transcriptArtifactId: artifact.id,
+            inputTranscriptVersionId: correction.id,
+            kind: .dailyEntry,
+            route: .adaptive,
+            deletionState: .required
+        )
+
+        context.insert(artifact)
+        context.insert(sourceVersion)
+        context.insert(correction)
+        context.insert(job)
+        try context.save()
+
+        let artifacts = try context.fetch(FetchDescriptor<TranscriptArtifact>())
+        let versions = try context.fetch(FetchDescriptor<TranscriptVersion>())
+        let jobs = try context.fetch(FetchDescriptor<ProcessingJob>())
+
+        #expect(artifacts.count == 1)
+        #expect(artifacts.first?.rawText == "Melissa—no, Marissa—is my cousin.")
+        #expect(artifacts.first?.source == .appleSpeech)
+        #expect(versions.count == 2)
+        #expect(versions.contains(where: { $0.kind == .userCorrection && $0.author == .user }))
+        #expect(jobs.first?.kind == .dailyEntry)
+        #expect(jobs.first?.state == .queued)
+        #expect(jobs.first?.deletionState == .required)
+
+        let attemptDate = Date(timeIntervalSince1970: 1_800_000_100)
+        job.beginAttempt(at: attemptDate, leaseDuration: 60)
+        #expect(job.state == .running)
+        #expect(job.attemptCount == 1)
+        #expect(job.leaseExpiresAt == attemptDate.addingTimeInterval(60))
+
+        let retryDate = attemptDate.addingTimeInterval(30)
+        job.markFailed(errorCode: "network_unavailable", retryAt: retryDate, at: attemptDate)
+        #expect(job.state == .queued)
+        #expect(job.lastErrorCode == "network_unavailable")
+        #expect(job.nextAttemptAt == retryDate)
+    }
+
+    @Test func remoteProcessingContractsRoundTripWithoutProviderCredentials() throws {
+        let request = DailyEntryGenerationRequest(
+            jobId: UUID(),
+            noteId: UUID(),
+            transcriptArtifactId: UUID(),
+            transcriptVersionId: UUID(),
+            capturedLocalDate: "2026-07-14",
+            languageCode: "en-US",
+            subject: JournalSubject(displayName: "Maya", pronouns: ["she", "her"]),
+            sourceSegments: [
+                TranscriptSourceSegment(
+                    id: "s1",
+                    startMilliseconds: 0,
+                    endMilliseconds: 4_000,
+                    text: "Melissa—no, Marissa—is my cousin.",
+                    confidence: 0.91,
+                    speakerLabel: nil
+                )
+            ]
+        )
+
+        let encoded = try JSONEncoder().encode(request)
+        let decoded = try JSONDecoder().decode(DailyEntryGenerationRequest.self, from: encoded)
+
+        #expect(decoded == request)
+        #expect(decoded.retentionPolicy.mode == .zeroDataRetention)
+        #expect(decoded.retentionPolicy.maximumRetentionSeconds == 0)
+        #expect(String(decoding: encoded, as: UTF8.self).contains("apiKey") == false)
+    }
+
+    @Test func unconfiguredRemoteBackendFailsClosed() async {
+        let service = BackendRemoteTranscriptionService(
+            backend: UnconfiguredLoreBackendProcessingClient()
+        )
+        let request = RemoteTranscriptionRequest(
+            jobId: UUID(),
+            audio: RemoteAudioPayload(
+                bytes: Data([0x00, 0x01]),
+                mimeType: "audio/mp4",
+                filenameExtension: "m4a",
+                durationSeconds: 1
+            )
+        )
+        var error: LoreBackendProcessingError?
+
+        do {
+            _ = try await service.transcribe(request)
+        } catch let caught as LoreBackendProcessingError {
+            error = caught
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+
+        #expect(error == .notConfigured)
     }
 
     @Test func storyDisplayContentPrefersGeneratedBiographyProseWhenAvailable() {
@@ -67,7 +271,7 @@ struct loreTests {
         #expect(content.primaryPreview == "I started a new chapter today.")
         #expect(content.sourceTranscriptPreview == nil)
         #expect(content.listStatusText == "Writing Draft")
-        #expect(content.detailStatusText == "Writing biography prose and updating memory on device.")
+        #expect(content.detailStatusText == "Writing biography prose and updating memory.")
     }
 
     @Test func storyDisplayContentReportsFailedDraftWithoutHidingTranscript() {
@@ -83,7 +287,7 @@ struct loreTests {
         #expect(content.primaryPreview == "This memory should remain readable.")
         #expect(content.transcriptText == "This memory should remain readable.")
         #expect(content.listStatusText == "Draft Failed")
-        #expect(content.detailStatusText == "Lore could not finish local processing for this story.")
+        #expect(content.detailStatusText == "Lore could not finish processing this story.")
     }
 
     @Test func legacyMigrationImportsProfileAndStories() throws {
@@ -117,7 +321,15 @@ struct loreTests {
         #expect(migratedProfiles.first?.birthYear == 1994)
         #expect(migratedStories.count == 1)
         #expect(migratedStories.first?.id == storyID)
-        #expect(migratedStories.first?.rawTranscriptExpiresAt != nil)
+        #expect(migratedStories.first?.rawTranscriptExpiresAt == nil)
+        let artifacts = try context.fetch(FetchDescriptor<TranscriptArtifact>())
+        let versions = try context.fetch(FetchDescriptor<TranscriptVersion>())
+        #expect(artifacts.count == 1)
+        #expect(artifacts.first?.storyId == storyID)
+        #expect(artifacts.first?.rawText == "A childhood memory from Hyderabad.")
+        #expect(artifacts.first?.source == .legacyStory)
+        #expect(versions.count == 1)
+        #expect(versions.first?.transcriptArtifactId == artifacts.first?.id)
     }
 
     @Test func legacyMigrationDoesNotDuplicateStories() throws {
@@ -142,17 +354,19 @@ struct loreTests {
         try LegacyDataMigrator.migrateIfNeeded(modelContext: context, userDefaults: defaults)
 
         let migratedStories = try context.fetch(FetchDescriptor<Story>())
+        let artifacts = try context.fetch(FetchDescriptor<TranscriptArtifact>())
 
         #expect(migratedStories.count == 1)
         #expect(migratedStories.first?.id == storyID)
+        #expect(artifacts.count == 1)
     }
 
     @MainActor
     @Test func modelManagerDownloadsAndLoadsSelectedModel() async throws {
         let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
+        let modelManager = ModelManager(userDefaults: defaults, runtime: TestDeterministicLocalModelRuntime())
 
-        #expect(modelManager.status.tier == .standard4B)
+        #expect(modelManager.status.tier == .lightweight17B)
         #expect(modelManager.status.state == .notDownloaded)
 
         modelManager.select(.lightweight17B)
@@ -170,7 +384,7 @@ struct loreTests {
         defaults.set(LocalModelTier.standard4B.rawValue, forKey: "LoreSelectedLocalModelTier")
         defaults.set(LocalModelTier.standard4B.rawValue, forKey: "LoreDownloadedLocalModelTier")
 
-        let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
+        let modelManager = ModelManager(userDefaults: defaults, runtime: TestDeterministicLocalModelRuntime())
 
         #expect(modelManager.status.tier == .standard4B)
         #expect(modelManager.status.state == .downloaded)
@@ -212,7 +426,7 @@ struct loreTests {
     @MainActor
     @Test func generationServiceRequiresLoadedModel() async throws {
         let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
+        let modelManager = ModelManager(userDefaults: defaults, runtime: TestDeterministicLocalModelRuntime())
         let generationService = LocalGenerationService(modelManager: modelManager)
         let story = Story(text: "I started a new chapter today.", date: Date(), duration: 8)
         let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
@@ -241,7 +455,7 @@ struct loreTests {
         let prose = try await generationService.writeBiographyProse(from: story, userProfile: profile)
 
         #expect(prose == "Generated biography prose.")
-        #expect(runtime.loadedTiers == [.standard4B])
+        #expect(runtime.loadedTiers == [.lightweight17B])
         #expect(runtime.requests.count == 1)
         #expect(runtime.requests.first?.task == .biographyProse)
         #expect(runtime.requests.first?.prompt.contains("Return only polished prose.") == true)
@@ -251,7 +465,7 @@ struct loreTests {
     @MainActor
     @Test func generationServiceWritesDeterministicFallbackBiographyProseWhenModelIsReady() async throws {
         let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
+        let modelManager = ModelManager(userDefaults: defaults, runtime: TestDeterministicLocalModelRuntime())
         let generationService = LocalGenerationService(modelManager: modelManager)
         let story = Story(text: "I started a new chapter today.", date: Date(), duration: 8)
         let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
@@ -299,7 +513,7 @@ struct loreTests {
     @MainActor
     @Test func generationServiceExtractsDeterministicFallbackMemoryGraph() async throws {
         let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults, runtime: DeterministicLocalModelRuntime())
+        let modelManager = ModelManager(userDefaults: defaults, runtime: TestDeterministicLocalModelRuntime())
         let generationService = LocalGenerationService(modelManager: modelManager)
         let storyID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         let story = Story(id: storyID, text: "I remembered summers in Hyderabad with my cousins.", date: Date(), duration: 8)
@@ -846,6 +1060,238 @@ struct loreTests {
         #expect(theme.sourceStoryIds == [firstStory.id, secondStory.id])
     }
 
+    @Test func marketedIPhone16FamilyDefaultsToRemoteTranscription() throws {
+        let defaults = try makeIsolatedDefaults()
+        let policy = SpeechTranscriptionPolicy.production(userDefaults: defaults)
+        let capabilities = SpeechTranscriptionCapabilities(
+            hardwareIdentifier: "iPhone17,3",
+            osMajorVersion: 26,
+            supportsOnDeviceRecognition: true
+        )
+
+        #expect(policy.route(for: capabilities) == .remote(reason: .hardwareNotValidated))
+    }
+
+    @Test func marketedIPhone17FamilyUsesOnDeviceTranscriptionWhenCapabilityExists() throws {
+        let defaults = try makeIsolatedDefaults()
+        let policy = SpeechTranscriptionPolicy.production(userDefaults: defaults)
+        let capabilities = SpeechTranscriptionCapabilities(
+            hardwareIdentifier: "iPhone18,1",
+            osMajorVersion: 26,
+            supportsOnDeviceRecognition: true
+        )
+
+        #expect(policy.route(for: capabilities) == .onDevice)
+    }
+
+    @Test func olderIPhoneDefaultsToRemoteTranscription() throws {
+        let defaults = try makeIsolatedDefaults()
+        let policy = SpeechTranscriptionPolicy.production(userDefaults: defaults)
+        let capabilities = SpeechTranscriptionCapabilities(
+            hardwareIdentifier: "iPhone16,2",
+            osMajorVersion: 26,
+            supportsOnDeviceRecognition: true
+        )
+
+        #expect(policy.route(for: capabilities) == .remote(reason: .hardwareNotValidated))
+    }
+
+    @Test func eligibleHardwareStillRoutesRemoteWithoutOnDeviceCapability() throws {
+        let defaults = try makeIsolatedDefaults()
+        let policy = SpeechTranscriptionPolicy.production(userDefaults: defaults)
+        let capabilities = SpeechTranscriptionCapabilities(
+            hardwareIdentifier: "iPhone18,1",
+            osMajorVersion: 26,
+            supportsOnDeviceRecognition: false
+        )
+
+        #expect(policy.route(for: capabilities) == .remote(reason: .onDeviceRecognitionUnsupported))
+    }
+
+    @Test func validationAllowlistCannotBypassIPhone17HardwareFloor() {
+        let policy = SpeechTranscriptionPolicy(
+            validatedLocalHardwareIdentifiers: ["iPhone16,2"]
+        )
+        let capabilities = SpeechTranscriptionCapabilities(
+            hardwareIdentifier: "iPhone16,2",
+            osMajorVersion: 26,
+            supportsOnDeviceRecognition: true
+        )
+
+        #expect(policy.route(for: capabilities) == .remote(reason: .hardwareNotValidated))
+    }
+
+    @Test func marketedIPhone17FamilyUsesLocalBiographyGeneration() {
+        let policy = BiographyGenerationPolicy()
+        let capabilities = BiographyGenerationCapabilities(
+            hardwareIdentifier: "iPhone18,1",
+            supportsLocalRuntime: true
+        )
+
+        #expect(policy.route(for: capabilities) == .local)
+    }
+
+    @Test func marketedIPhone16FamilyUsesRemoteBiographyGeneration() {
+        let policy = BiographyGenerationPolicy()
+        let capabilities = BiographyGenerationCapabilities(
+            hardwareIdentifier: "iPhone17,3",
+            supportsLocalRuntime: true
+        )
+
+        #expect(policy.route(for: capabilities) == .remote)
+    }
+
+    @Test func unknownHardwareUsesRemoteBiographyGeneration() {
+        let policy = BiographyGenerationPolicy()
+        let capabilities = BiographyGenerationCapabilities(
+            hardwareIdentifier: "simulator",
+            supportsLocalRuntime: true
+        )
+
+        #expect(policy.route(for: capabilities) == .remote)
+    }
+
+    @Test func eligibleHardwareUsesRemoteBiographyGenerationWithoutMLXRuntime() {
+        let policy = BiographyGenerationPolicy()
+        let capabilities = BiographyGenerationCapabilities(
+            hardwareIdentifier: "iPhone18,1",
+            supportsLocalRuntime: false
+        )
+
+        #expect(policy.route(for: capabilities) == .remote)
+    }
+
+    @MainActor
+    @Test func transcriptCorrectionAppendsVersionWithoutMutatingRawArtifact() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let story = try SpeechRecognitionViewModel.persistCapturedStoryImmediately(
+            transcript: "Melissa is my cousin.",
+            startTime: Date(timeIntervalSince1970: 1_800_000_000),
+            endTime: Date(timeIntervalSince1970: 1_800_000_005),
+            modelContext: context
+        )
+
+        try SpeechRecognitionViewModel.applyUserCorrection(
+            "Marissa is my cousin.",
+            to: story,
+            in: context,
+            at: Date(timeIntervalSince1970: 1_800_000_100)
+        )
+
+        let artifact = try #require(try context.fetch(FetchDescriptor<TranscriptArtifact>()).first)
+        let versions = try context.fetch(FetchDescriptor<TranscriptVersion>())
+            .sorted { $0.revision < $1.revision }
+
+        #expect(artifact.rawText == "Melissa is my cousin.")
+        #expect(story.text == "Marissa is my cousin.")
+        #expect(versions.count == 2)
+        #expect(versions[0].kind == .sourceSnapshot)
+        #expect(versions[1].kind == .userCorrection)
+        #expect(versions[1].supersedesVersionId == versions[0].id)
+        #expect(versions[1].text == "Marissa is my cousin.")
+    }
+
+    @MainActor
+    @Test func successfulTranscriptDeletionRemovesAudioButKeepsAuditMetadata() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lore-success-delete-\(UUID().uuidString).caf")
+        try Data([1, 2, 3]).write(to: audioURL)
+        let story = try SpeechRecognitionViewModel.persistCapturedStoryImmediately(
+            transcript: "A durable transcript.",
+            startTime: Date(timeIntervalSince1970: 1_800_000_000),
+            endTime: Date(timeIntervalSince1970: 1_800_000_010),
+            audioFileURL: audioURL,
+            transcriptSource: .remoteProvider,
+            languageCode: "en-US",
+            providerId: "test-provider",
+            providerModelId: "test-model",
+            providerRequestId: "request-123",
+            modelContext: context
+        )
+
+        let deletedCount = try SpeechRecognitionViewModel.deleteAudioAfterSuccessfulTranscription(
+            for: story,
+            in: context
+        )
+        let verificationContext = ModelContext(container)
+        let remainingAssets = try verificationContext.fetch(FetchDescriptor<AudioAsset>())
+        let artifact = try #require(try verificationContext.fetch(FetchDescriptor<TranscriptArtifact>()).first)
+        let version = try #require(try verificationContext.fetch(FetchDescriptor<TranscriptVersion>()).first)
+
+        #expect(deletedCount == 1)
+        #expect(remainingAssets.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: audioURL.path) == false)
+        #expect(story.rawTranscriptExpiresAt == nil)
+        #expect(artifact.rawText == "A durable transcript.")
+        #expect(artifact.source == .remoteProvider)
+        #expect(artifact.providerId == "test-provider")
+        #expect(artifact.providerModelId == "test-model")
+        #expect(artifact.providerRequestId == "request-123")
+        #expect(version.text == artifact.rawText)
+        #expect(version.transcriptArtifactId == artifact.id)
+    }
+
+    @MainActor
+    @Test func remoteGenerationRequestUsesNewestTranscriptVersion() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let story = try SpeechRecognitionViewModel.persistCapturedStoryImmediately(
+            transcript: "Melissa is my cousin.",
+            startTime: Date(timeIntervalSince1970: 1_800_000_000),
+            endTime: Date(timeIntervalSince1970: 1_800_000_005),
+            modelContext: context
+        )
+        try SpeechRecognitionViewModel.applyUserCorrection(
+            "Marissa is my cousin.",
+            to: story,
+            in: context,
+            at: Date(timeIntervalSince1970: 1_800_000_100)
+        )
+
+        let request = try RemoteGenerationRequestFactory.makeRequest(
+            for: story,
+            userProfile: UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994),
+            in: context,
+            locale: Locale(identifier: "en-US")
+        )
+        let versions = try context.fetch(FetchDescriptor<TranscriptVersion>())
+            .sorted { $0.revision < $1.revision }
+
+        #expect(request.transcriptVersionId == versions.last?.id)
+        #expect(request.sourceSegments.map(\.text) == ["Marissa is my cousin."])
+        #expect(request.subject.displayName == "Aark")
+    }
+
+    @MainActor
+    @Test func missingTranscriptDefersAudioDeletionForRemoteRetry() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lore-deferred-delete-\(UUID().uuidString).caf")
+        try Data([1, 2, 3]).write(to: audioURL)
+        let story = try SpeechRecognitionViewModel.persistCapturedStoryImmediately(
+            transcript: "",
+            startTime: Date(timeIntervalSince1970: 1_800_000_000),
+            endTime: Date(timeIntervalSince1970: 1_800_000_010),
+            audioFileURL: audioURL,
+            modelContext: context
+        )
+
+        let deletedCount = try SpeechRecognitionViewModel.deleteAudioAfterSuccessfulTranscription(
+            for: story,
+            in: context
+        )
+        let asset = try #require(try context.fetch(FetchDescriptor<AudioAsset>()).first)
+
+        #expect(deletedCount == 0)
+        #expect(asset.isDeleted == false)
+        #expect(FileManager.default.fileExists(atPath: audioURL.path))
+        try? FileManager.default.removeItem(at: audioURL)
+    }
+
     private func makeIsolatedDefaults() throws -> UserDefaults {
         let suiteName = "loreTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -887,4 +1333,40 @@ private final class CapturingLocalModelRuntime: LocalModelRuntime {
     func unload() {
         unloadCount += 1
     }
+
+    func delete(tier: LocalModelTier) throws {}
+}
+
+@MainActor
+private struct TestDeterministicLocalModelRuntime: LocalModelRuntime {
+    let displayName = "Test deterministic runtime"
+    let isMLXBacked = false
+
+    func download(tier: LocalModelTier) async throws {}
+    func load(tier: LocalModelTier) async throws {}
+
+    func generate(_ request: LocalGenerationRequest, tier: LocalModelTier) async throws -> String {
+        switch request.task {
+        case .biographyProse:
+            return request.prompt
+        case .memoryGraphExtraction:
+            let escapedPrompt = request.prompt
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "\n", with: "\\n")
+            return """
+            {
+              "lifeEvents": [],
+              "people": [],
+              "places": [],
+              "themes": [],
+              "memoryFacts": [],
+              "sourcePrompt": "\(escapedPrompt)"
+            }
+            """
+        }
+    }
+
+    func unload() {}
+    func delete(tier: LocalModelTier) throws {}
 }

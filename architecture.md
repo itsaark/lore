@@ -1,342 +1,559 @@
 # Lore Architecture
 
-Last updated: 2026-04-19
+Last updated: 2026-07-14
+
+## System Goal
+
+Lore is a local-first, voice-first journal and biography system with adaptive compute. The iPhone contains the canonical durable transcript archive and every accepted derived view. Work may execute on-device or on ephemeral remote infrastructure, depending on user privacy settings, device capability, task complexity, connectivity, and runtime conditions.
+
+The execution location must not change the product data model. Capture, processing, validation, persistence, provenance, and biography assembly use stable interfaces so local models, gateways, hosted models, and later self-hosted inference remain replaceable.
 
 ## Architectural Principles
 
-Lore is a local-first iOS app. The architecture should protect user trust, support years of non-linear storytelling, and keep the local model replaceable.
+- **Save before processing.** A source story is durably committed locally before any AI job begins.
+- **Local is canonical.** Ordinary remote processing does not create a second durable biography store.
+- **Local-first is not local-only.** Less capable devices receive the same core product through privacy-conscious remote compute.
+- **User policy is a hard boundary.** Device Only mode never uses a server. Adaptive mode never silently uploads a story after a local attempt fails.
+- **Minimize every request.** Send text instead of audio when possible and only the context required for one task.
+- **Separate evidence from narrative.** Source stories and user corrections ground a memory graph; generated prose is a replaceable view.
+- **Preserve uncertainty and disagreement.** Approximate dates and conflicting accounts remain explicit.
+- **Provenance survives model changes.** Every derived fact and passage links to source stories and records how it was produced.
+- **Provider details stay behind ports.** Feature code does not depend directly on MLX, Vercel AI Gateway, or a model vendor.
+- **Offline capture always works.** Connectivity may delay processing but must not block recording or reading the archive.
+- **Privacy claims are testable system properties.** Retention, log redaction, provider settings, and deletion acknowledgements require verification.
 
-Principles:
+## Trust Boundaries
 
-- Personal speech, transcripts, generated prose, and memory graph data stay local.
-- Capture order is not the same as life chronology.
-- Every generated fact must be traceable back to a source story.
-- The system should preserve uncertainty instead of inventing exact dates.
-- MLX and Ternary Bonsai are central, but app features should call them through a clean generation service.
-- SwiftData should own app data; temporary audio should live in the file system with metadata in SwiftData.
+### On the iPhone
 
-## High-Level Pipeline
+Durable by default:
+
+- user profile and preferences
+- stories, immutable raw transcripts, and corrected transcript versions until user deletion
+- corrections and provenance
+- memory graph and temporal relationships
+- biography fragments, chapters, and timelines
+- processing job state and remote deletion receipts
+
+Temporary:
+
+- audio files under the local retention policy
+- local model caches, prompts, and intermediate results
+
+### Lore processing backend
+
+The backend is a task orchestrator, not the user's archive. It authenticates the app, enforces privacy and retention policy, selects an allowed model route, sends the minimum required payload, validates the response, and returns the result. Normal synchronous inference is request-ephemeral on a verified zero-data-retention route. Content is persisted only when an asynchronous job or undelivered result requires recovery, and then only encrypted under a hard TTL.
+
+### Model router and inference provider
+
+Lore's backend owns provider adapters and may call an approved inference provider directly or through a gateway. Direct Groq is the leading MVP candidate for hosted Whisper transcription and GPT-OSS text generation; Fireworks is the leading text fallback. Vercel AI Gateway remains an optional text-routing tool rather than an architectural requirement and should be bypassed for MVP transcription because it does not expose the preferred Groq route and adds another processor.
+
+The selected upstream model may be open-weight and hosted by a third party. "Open-weight" does not by itself establish license suitability or privacy; the exact model license, host, gateway, endpoint, feature configuration, and provider route must all be approved. Every intermediary is a separate data processor with separate logging and retention behavior.
+
+Later, the same backend can route to self-hosted inference without changing the iOS feature interfaces or stored biography format.
+
+## End-to-End Pipeline
 
 ```text
 Record audio
-  -> on-device Apple Speech transcript
-  -> Story saved in SwiftData
-  -> metadata attached: capture time, location, weather, prompt
-  -> local model writes third-person biography prose
-  -> local model extracts memory graph candidates
-  -> graph merge resolves entities, events, relationships, and uncertainty
-  -> timeline and biography fragments update
+  -> commit local audio asset and capture metadata
+  -> transcribe on-device when supported
+       OR enqueue consented ephemeral remote transcription
+  -> commit immutable raw transcript + transcription provenance locally
+  -> create corrected/canonical transcript version when the user edits
+  -> delete audio after a usable transcript is safely committed
+       OR retain locally in a visible short-lived retry state
+  -> create durable local processing job(s)
+  -> ComputeRouter selects local or remote execution under user policy
+  -> extract source-grounded memory candidates
+  -> validate and merge candidates into the local memory graph
+  -> retrieve relevant prior memories and source summaries
+  -> write or revise biography fragments
+  -> validate provenance and commit results locally
+  -> acknowledge remote delivery and purge remote working data
+  -> update timeline, chapters, people, places, and themes
 ```
 
-The pipeline should run after recording stops. It does not need to be live.
+Extraction and prose generation are separate jobs. Each can use a different execution route and can retry independently. A generation failure never invalidates the saved story or successful transcription.
 
-## Core Modules
+## Launch Navigation and Responsibilities
+
+The initial app shell has three top-level destinations:
+
+| Surface | Primary responsibility | Explicitly deferred |
+| --- | --- | --- |
+| Notes | Start/stop recording, show recent captures and job states, inspect raw/corrected transcript | Graph browsing and long-form composition |
+| Biography | Show short daily narrative entries and their transcript sources | Full chapter editor, people/place/theme explorers |
+| Settings | Privacy and network modes, audio fallback consent, writing perspective/style, retention, export/delete, optional local models | General-purpose assistant configuration |
+
+Capture must remain one tap away and must not wait for model initialization or network reachability. Biography is a derived, revisable surface; Notes owns access to source material.
+
+## Privacy Modes and Routing Constraints
+
+```swift
+enum PrivacyMode {
+    case deviceOnly
+    case adaptive
+}
+
+enum ExecutionRoute {
+    case local
+    case remote
+    case deferred(reason: DeferralReason)
+}
+```
+
+`ComputeRouter` evaluates, in order:
+
+1. User privacy mode and per-feature permissions.
+2. Whether the payload includes text, audio, or sensitive metadata.
+3. Task requirements: modality, context length, structured-output support, and quality floor.
+4. Local readiness: membership in a remotely configurable device allowlist, OS support, model installed, measured memory headroom, storage, language support, and predicted latency. The initial local speech and biography-processing floor is marketed iPhone 17-class hardware (`iPhone18,*` identifiers and above).
+5. Runtime state: thermal pressure, Low Power Mode, battery, foreground/background budget, and current memory pressure.
+6. Network policy: offline state, Wi-Fi/cellular permission, expected transfer size, and remote service health.
+7. Model policy: allowed providers, regional requirements, retention guarantees, and current availability.
+
+The router returns a decision plus a user-readable reason. For speech, earlier, unknown, or unvalidated devices select remote transcription before recording begins when consent and network policy permit it. A device model may establish eligibility, but local routing still requires measured/runtime checks. A remote route must fail closed when its provider policy is unknown or incompatible.
+
+Adaptive mode can select a remote route before work begins under the user's standing text/audio and network permissions. If the selected local route begins and then fails, the job becomes retryable; the router may not silently change it to remote. Uploading that story requires a visible, explicit retry action. Device Only jobs can only retry locally or remain deferred.
+
+Suggested task preferences:
+
+| Task | Preferred route | Allowed fallback |
+| --- | --- | --- |
+| Speech transcription | Local on validated newer devices; remote on older or unvalidated devices | Deferred when the selected route is not permitted |
+| Entity/event extraction | Local when reliable | Remote with minimized transcript/context |
+| Biography prose | Local Bonsai on validated iPhone 17-class and newer hardware; remote on earlier or unknown devices | Deferred or smaller local model |
+| Chapter reconciliation | Remote for large context initially | Local when a capable model is installed |
+| Search and graph traversal | Local | No remote requirement |
+| Follow-up question selection | Local rules/graph first | Remote generation when permitted |
+
+## Core iOS Modules
 
 ### CaptureService
 
-Owns audio recording and audio file creation.
+- Starts and stops audio recording.
+- Writes audio to protected local file storage.
+- Emits levels for recording UI.
+- Creates `AudioAsset` records with creation and expiry dates.
+- Recovers finalized recordings after interruption when possible.
 
-Responsibilities:
+### TranscriptionService
 
-- Start and stop recording.
-- Write audio to local file storage.
-- Emit audio levels for the recording glow.
-- Create `AudioAsset` records with `createdAt` and `expiresAt`.
+A provider-neutral boundary:
 
-### SpeechTranscriptionService
+```swift
+protocol TranscriptionService {
+    func transcribe(_ input: TranscriptionInput, route: ExecutionRoute) async throws -> TranscriptionResult
+}
+```
 
-Owns Apple Speech integration.
+Implementations:
 
-Responsibilities:
+- `AppleOnDeviceTranscriptionService`
+- possible future local speech-model service
+- `RemoteTranscriptionService`
 
-- Require on-device speech recognition.
-- Check `supportsOnDeviceRecognition`.
-- Refuse cloud fallback.
-- Produce raw transcript text.
+On-device recognition remains preferred. Remote transcription receives audio only for that task and only when privacy settings permit it.
 
 ### StoryStore
 
-SwiftData-backed persistence boundary.
-
-Responsibilities:
-
-- Save stories, prompts, metadata, generated prose, graph records, and biography fragments.
-- Expose query methods for chronological story views.
-- Support future life-chronology and chapter/theme views.
+SwiftData-backed persistence boundary. It commits source stories before processing, exposes capture and life chronology queries, applies user corrections, and coordinates deletion propagation.
 
 ### MetadataService
 
-Captures contextual metadata with permission.
+Captures date, timezone, location, and WeatherKit snapshots with permission. Remote requests should omit precise location unless the task needs it; a human-readable place from the transcript is usually sufficient.
 
-Responsibilities:
+### ProcessingJobStore
 
-- Capture date and local time.
-- Capture location when allowed.
-- Fetch WeatherKit conditions when allowed.
-- Store metadata snapshots, not live dependencies.
+Persists the state machine for every task so work survives app restarts:
 
-### ModelManager
+```text
+captured -> ready -> routing -> runningLocal | uploading | runningRemote
+         -> validating -> committing -> completed
+         -> deferred | retryableFailure | permanentFailure | cancelled
+```
 
-Owns local model lifecycle.
+Each job includes:
 
-Responsibilities:
+- stable local job ID and idempotency key
+- story ID, task kind, input revision, and dependency IDs
+- selected route and reason
+- attempt count, timestamps, and retry eligibility
+- model/provider metadata without prompt content in logs
+- remote request ID, result-delivery state, and deletion status when applicable
 
-- Download selected Ternary Bonsai model after user consent.
-- Verify files and available storage.
-- Load/unload MLX models.
-- Choose model tier by device capability and user setting.
+Retrying the same idempotency key must not create duplicate graph facts or fragments. A new user edit increments the input revision and supersedes stale results.
 
-Initial tiers:
+### ComputeRouter
 
-- `Ternary-Bonsai-4B-mlx-2bit` as default.
-- `Ternary-Bonsai-8B-mlx-2bit` as best writing option.
-- `Ternary-Bonsai-1.7B-mlx-2bit` as lightweight fallback.
+Applies privacy and capability policy to a processing job. The router is deterministic for a supplied capability snapshot and returns a reason suitable for diagnostics and user disclosure.
+
+### DeviceCapabilityService
+
+Reports observed capabilities instead of relying only on phone generation:
+
+- available memory and storage headroom
+- model availability and load success history
+- thermal and power state
+- supported speech languages and on-device availability
+- task-specific benchmark/latency class
+- current network policy and reachability
+
+Capability data should be coarse and remain local unless aggregate, consented telemetry is introduced later.
+
+### LocalModelManager
+
+Owns optional downloadable MLX model lifecycle: storage validation, download integrity, load/unload, cancellation, removal, and memory-pressure response. It exposes capabilities rather than selecting product behavior itself.
+
+Initial 1.7B, 4B, and 8B Ternary Bonsai support is existing experimental infrastructure, not a promise that every tier works on every device. Larger models, including 27B-class models, require physical-device validation and should not gate the core experience.
 
 ### GenerationService
 
-Single app-facing boundary for local LLM tasks.
+Single app-facing boundary for model work:
 
-Responsibilities:
+```swift
+protocol GenerationService {
+    func writeBiographyProse(_ request: BiographyRequest, route: ExecutionRoute) async throws -> BiographyResult
+    func extractMemories(_ request: ExtractionRequest, route: ExecutionRoute) async throws -> ExtractionResult
+    func reconcileBiography(_ request: ReconciliationRequest, route: ExecutionRoute) async throws -> ReconciliationResult
+    func generatePrompt(_ request: PromptRequest, route: ExecutionRoute) async throws -> PromptResult
+}
+```
 
-- `writeBiographyProse(from:)`
-- `extractMemoryGraph(from:)`
-- `generateDailyPrompt(context:)`
-- `rewriteChapter(_:style:)`
-- `summarizeStory(_:)`
-
-Feature code should not call MLX directly.
+Local and remote implementations return the same versioned, structured result types. Feature code never calls MLX, a gateway SDK, or provider API directly.
 
 ### MemoryGraphService
 
-Owns graph extraction, merge, and retrieval.
-
-Responsibilities:
-
-- Convert model-extracted candidates into durable graph records.
-- Merge duplicate people, places, themes, and events.
-- Preserve confidence, provenance, and temporal uncertainty.
-- Retrieve graph context for biography writing.
+- Parses versioned structured extraction results.
+- Creates or merges people, places, themes, events, relationships, and facts.
+- Preserves temporal uncertainty, contradiction, confidence, and source spans.
+- Makes merge actions reversible.
+- Retrieves source-bounded context for biography revision.
+- Removes or marks provenance when a source is deleted.
 
 ### BiographyEngine
 
-Owns narrative assembly.
-
-Responsibilities:
-
-- Create biography fragments from stories.
-- Maintain a chronological timeline.
-- Later, assemble chapter-based or theme-based biography views.
-- Link every generated fragment to supporting stories and facts.
+- Creates and revises fragments from graph evidence.
+- Maintains event chronology separately from capture chronology.
+- Reconciles passages affected by new facts or corrections.
+- Assembles chapter, relationship, place, theme, and timeline views.
+- Requires supporting source IDs for factual generated passages.
 
 ### RetentionService
 
-Owns local cleanup.
+Owns local cleanup and coordinates deletion semantics:
 
-Responsibilities:
+- deletes audio promptly after a usable transcript and provenance are durably committed
+- retains failed or unprocessed audio locally in a visible recovery state for no more than 7 days by default
+- keeps raw transcripts and corrected transcript versions locally until explicit user deletion
+- applies cascading or provenance-aware cleanup after user deletion
+- removes expired local prompt and result caches
+- tracks remote deletion acknowledgements and surfaces exceptions
 
-- Delete audio files after 7 days.
-- Delete raw transcripts after the configured retention window, default 120 days.
-- Keep generated biography prose and graph facts unless the user deletes them.
-- Run on app launch and via background maintenance when possible.
+Local cleanup must delete content, not merely store an expiry date.
+
+## Remote Processing Architecture
+
+The iOS app must call a Lore-owned API, not embed gateway or inference-provider credentials.
+
+```text
+iPhone
+  -> authenticated Lore Processing API
+       -> policy + retention guard
+       -> prompt/context builder
+       -> ModelGateway port
+            -> approved direct provider adapter (Groq initially)
+            -> approved fallback adapter (Fireworks candidate)
+            -> optional text gateway adapter
+            -> self-hosted inference later
+       -> schema/safety validation
+       -> request-ephemeral result delivery
+  -> local commit and delivery acknowledgement
+  -> server purge + deletion receipt
+```
+
+Server interfaces should include:
+
+- `POST /v1/jobs` with an idempotency key and explicit task/retention policy
+- `GET /v1/jobs/{id}` for resumable status/result delivery
+- `DELETE /v1/jobs/{id}` for cancellation and early deletion
+- `POST /v1/jobs/{id}/ack` after the result is durably committed locally
+
+Exact endpoints may change, but the semantics should remain stable.
+
+### Remote request envelope
+
+A request contains only:
+
+- pseudonymous installation/session credential
+- job ID, task kind, schema version, locale, and input revision
+- minimized transcript or audio payload
+- the smallest relevant context package, using source IDs meaningful only on-device
+- selected retention class and absolute expiry timestamp
+- required output schema and model capability constraints
+
+It should not contain the user's full archive, advertising identifiers, address book, precise location, or gateway credentials.
+
+### Gateway abstraction
+
+```swift
+protocol ModelGateway {
+    func execute(_ request: ModelRequest) async throws -> ModelResponse
+    func capabilities() async throws -> [ModelCapability]
+}
+```
+
+Adapters translate Lore's request into direct Groq, Fireworks, an optional gateway, or self-hosted inference calls. Model aliases such as `daily-entry-v1`, `memory-extraction-v1`, and `transcription-fallback-v1` are configured server-side; the app does not depend on provider model IDs.
+
+Structured extraction should require schema-constrained output when supported and undergo server and client validation. Invalid results are rejected rather than merged into the canonical graph.
+
+At the current evaluation date, Groq exposes self-serve organization-level ZDR for its transcription endpoints and very low-cost Whisper Large V3 routes, making a direct adapter the strongest remote-audio candidate. That configuration still requires a dedicated consent and privacy release gate; ZDR means transient plaintext processing, not that PII was never disclosed. OpenAI transcription is an accuracy escalation candidate. Remote audio must never pass through an unapproved fallback.
+
+## Remote Data Lifecycle
+
+The deletion promise spans Lore's API, queues, object storage, gateway, inference provider, observability, crash reporting, and backups. There are two permitted retention classes:
+
+- `requestEphemeral`: the normal synchronous route. Content remains in volatile request scope, the full gateway/provider path is verified for zero data retention, and input/output content is discarded immediately when the request completes.
+- `asyncRecovery`: only for explicitly asynchronous work or an undelivered result. Content is encrypted with a job-scoped key, deleted immediately after delivery acknowledgement or terminal failure, and subject to a hard seven-day TTL.
+
+Target lifecycle:
+
+1. Receive an authenticated request with an allowed retention class.
+2. For `requestEphemeral`, keep content only in memory, use a verified zero-data-retention provider route, stream/return the result, and discard all content as the request completes.
+3. For `asyncRecovery`, assign an absolute expiry no later than seven days, encrypt the payload with a job-scoped key, and store it in a TTL-enforced working-data store.
+4. Ensure queue messages and logs contain references, not content.
+5. Send only the required data to an approved gateway/provider configuration.
+6. Validate and encrypt the result under the same expiry.
+7. Deliver the result to the app.
+8. On durable local acknowledgement, delete request, result, and job key promptly.
+9. On cancellation, permanent failure, abandonment, or expiry, delete them automatically.
+10. Retain only a content-free audit record: task category, timestamps, route, outcome, policy version, and deletion status.
+
+For a synchronous request, "delete immediately" means discarding input and output content as the response completes. For asynchronous work, it means deleting content immediately after delivery acknowledgement or terminal failure, not before the app has safely received the result. Seven days is only the hard maximum for encrypted recovery or an undelivered result; it is never the normal inference retention duration.
+
+Before production, verify for every gateway/provider route:
+
+- training and human-review policy
+- request/response logging and configurable retention
+- regional processing and subprocessors
+- cache behavior
+- abuse-monitoring exceptions
+- deletion API or contractual deletion guarantee
+- backup and observability retention
+- data-processing agreement suitability
+
+If a provider cannot meet the active privacy policy, the router must not use it. Provider claims and configuration should be captured in a versioned allowlist reviewed whenever a model route changes.
 
 ## Data Model
 
+Existing SwiftData entities remain useful, but the schema should evolve toward the following boundaries.
+
 ### UserProfile
 
-- `id`
-- `name`
-- `hometown`
-- `birthYear`
-- `createdAt`
-- `updatedAt`
-- future: preferred writing style, pronouns, important life eras
+- identity and biography preferences
+- default privacy mode
+- audio-upload and cellular permissions
+- local audio/transcript retention preferences
+- writing style and important life eras
 
 ### Story
 
-Represents one user capture session.
+One capture session:
 
-- `id`
-- `captureDate`
-- `rawTranscript`
-- `rawTranscriptExpiresAt`
-- `biographyProse`
-- `title`
-- `promptId`
-- `audioAssetId`
-- `metadataId`
-- `processingStatus`
-- `createdAt`
-- `updatedAt`
+- `id`, `captureDate`, `createdAt`, `updatedAt`
+- transcript artifact/version references and `rawTranscriptExpiresAt`
+- `title`, prompt reference, audio and metadata references
+- processing summary derived from jobs
 
-Important: `captureDate` is when the user told the story, not necessarily when the event happened.
+`captureDate` is when the story was told, not necessarily when its events occurred.
+
+### TranscriptArtifact and TranscriptVersion
+
+The transcript is durable source material and should not remain a single mutable string on `Story`.
+
+`TranscriptArtifact` records the first committed transcription:
+
+- immutable raw text and normalized segments with stable IDs/timestamps when available
+- source audio ID and content hash
+- local or remote route, engine/model/version, locale, and transcription timestamp
+- quality indicators, warnings, and validation outcome
+- whether audio deletion completed
+
+`TranscriptVersion` records the current corrected reading without destroying the source:
+
+- artifact ID, monotonically increasing revision, and full corrected text or deterministic edit operations
+- editor (`user` or an explicitly accepted suggestion), timestamps, and superseded revision
+- hash used by downstream job idempotency and stale-result checks
+
+Model-generated corrections are proposals until accepted. Downstream memory and prose jobs cite transcript artifact, version, and segment IDs.
 
 ### AudioAsset
 
-- `id`
-- `fileURL`
-- `createdAt`
-- `expiresAt`
-- `duration`
-- `isDeleted`
+- protected local file reference
+- created/expiry dates, duration, deletion state
+- transcription and upload permission state
 
-### StoryMetadata
+### ProcessingJob
 
-- `id`
-- `captureDate`
-- `timezone`
-- `locationName`
-- `latitude`
-- `longitude`
-- `weatherSummary`
-- `temperature`
-- `weatherSource`
-- `permissionSnapshot`
+- state-machine and idempotency fields described above
+- route decision and capability snapshot version
+- input/output schema revisions
+- remote lifecycle references and deletion status
 
-### LifeEvent
+Job payloads do not belong in analytics logs.
 
-The backbone of the biography graph.
+### LifeEvent, Person, Place, Theme, Relationship, and MemoryFact
 
-- `id`
-- `title`
-- `summary`
-- `eventDateKind`: exact, approximate, range, unknown
-- `eventStartDate`
-- `eventEndDate`
-- `approximateLabel`
-- `confidence`
-- `sourceStoryIds`
-- `createdAt`
-- `updatedAt`
+Graph entities include confidence and source provenance. `MemoryFact` represents one source-grounded claim with subject, predicate, object/text, temporal bounds, certainty, source story and source span, creation metadata, and supersession/contradiction links.
 
-Examples:
+### BiographyFragment and BiographyChapter
 
-- "Moved to Seattle"
-- "Met Priya"
-- "Started first company"
-- "Childhood summers in Hyderabad"
+Fragments link prose to story, facts, life events, model/prompt version, and style. Chapters assemble fragments and record which sources support their current revision. Generated prose should migrate out of a single `Story.biographyProse` field as chapter reconciliation matures.
 
-### Person
+### GenerationProvenance
 
-- `id`
-- `displayName`
-- `aliases`
-- `relationshipToUser`
-- `summary`
-- `confidence`
-- `sourceStoryIds`
+For each accepted result:
 
-### Place
+- task and schema version
+- local/remote route
+- model alias and resolved model/version when available
+- prompt-template version and input revision
+- source story/fact IDs
+- generation timestamp
+- validation outcome and user correction/supersession state
 
-- `id`
-- `displayName`
-- `placeKind`
-- `locationHint`
-- `summary`
-- `sourceStoryIds`
+Do not store hidden reasoning or provider secrets.
 
-### Theme
+## Retrieval and Context Construction
 
-- `id`
-- `name`
-- `summary`
-- `sourceStoryIds`
+Retrieval stays local by default:
 
-Examples:
+- chronology for timelines
+- local full-text search for exact names and phrases
+- local embeddings or lexical similarity for fuzzy recall
+- graph traversal for relationships, events, contradictions, and affected passages
 
-- ambition
-- grief
-- family duty
-- migration
-- reinvention
+For remote generation, the iPhone or a trusted local context builder sends a bounded context package rather than the whole archive. Source IDs in the package are opaque outside the device. The result must cite those IDs so the app can validate provenance.
 
-### MemoryFact
+As archives grow, hierarchical local summaries can reduce context size, but summaries never replace underlying source records while those records are retained.
 
-Represents a source-grounded claim.
+## Failure, Offline, and Consistency Behavior
 
-- `id`
-- `subjectId`
-- `predicate`
-- `objectId`
-- `text`
-- `validFrom`
-- `validTo`
-- `timeCertainty`
-- `confidence`
-- `sourceStoryId`
-- `sourceTextSpan`
-- `createdAt`
-- `supersededByFactId`
+- Recording and local persistence work offline.
+- Local-capable jobs may run offline; remote jobs enter `deferred` and resume under user network policy.
+- If a route fails, the router may retry or choose another allowed provider/model within the same local or remote execution class. Changing a failed local job to remote requires the explicit retry action described above, even in Adaptive mode, and no retry may cross the user's privacy boundary.
+- Background termination is safe because job state and input revision are persisted.
+- Results are committed transactionally with graph mutations and provenance.
+- Duplicate remote responses are harmless because commits use job idempotency keys.
+- A result for a stale transcript revision is retained only for diagnostics or discarded; it is never merged as current truth.
+- If remote processing completed but acknowledgement was lost, the server retains encrypted working data only until acknowledgement or TTL expiry.
+- Users can read, export, correct, and delete local content while AI services are unavailable.
+- The UI distinguishes waiting for network, waiting for a local model, processing, retryable failure, privacy restriction, and permanent failure. Retry and cancel are first-class actions.
 
-Examples:
+## Security and Privacy Controls
 
-- `user lived_in Hyderabad during childhood`
-- `user moved_to Seattle around 2018`
-- `father encouraged user to study engineering`
+- Store local data with iOS Data Protection; decide whether optional app-level encryption is needed before launch.
+- Use TLS and authenticated app sessions; keep gateway/provider secrets server-side.
+- Rate-limit and abuse-protect by pseudonymous account or installation without logging story content.
+- Redact request bodies, prompts, transcripts, audio, and model outputs from application, gateway, analytics, and crash logs.
+- Separate content-free operational telemetry from biography data.
+- Rotate credentials and model policy centrally.
+- Provide an in-app explanation and consent before first remote text transfer and separately before first audio upload.
+- Make export and delete-all available regardless of subscription state.
+- Test retention with synthetic canary jobs and alert when deletion misses its deadline.
 
-### BiographyFragment
+## Current Implementation Snapshot
 
-- `id`
-- `storyId`
-- `lifeEventIds`
-- `chapterId`
-- `prose`
-- `style`
-- `modelName`
-- `modelVersion`
-- `createdAt`
-- `updatedAt`
+Implemented in the current app:
 
-### BiographyChapter
+- onboarding and user profile
+- audio recording and Apple on-device speech recognition
+- SwiftData persistence and legacy migration
+- local audio-file expiry metadata and cleanup
+- transcript expiry metadata
+- optional location, timezone, and WeatherKit capture
+- downloadable 1.7B, 4B, and 8B Ternary Bonsai tiers
+- MLX Swift local generation behind `GenerationService`
+- per-story biography prose generation
+- extraction and persistence of people, places, themes, and life events
+- basic graph merging and chronological Stories UI
+- model unloading on memory/background events
 
-- `id`
-- `title`
-- `chapterKind`: chronological, theme, relationship, place
-- `orderIndex`
-- `prose`
-- `supportingFragmentIds`
-- `createdAt`
-- `updatedAt`
+Important gaps:
 
-## Retrieval Strategy
+- the launch navigation is not yet the focused Notes, Biography, and Settings shell
+- speech recognition still needs an iOS 26 `SpeechAnalyzer` path plus locale-aware capability checks and a hardened legacy path for iOS 18 through 25
+- audio cleanup is driven by expiry metadata rather than a verified transcript-commit event with a visible recovery state
+- generation is local-only and coupled to local model readiness at composition points
+- queued stories do not reliably resume after model setup; retry/cancel and interrupted-job recovery are incomplete
+- there is no capability router, remote processing API, or privacy-mode UI
+- `processingStatus` is a string on `Story`, not a durable multi-job state machine
+- transcript expiry metadata reflects an older policy; the durable source archive should instead remain local until user deletion
+- the raw transcript is a mutable `Story.text` field rather than an immutable artifact plus corrected versions
+- `BiographyFragment` exists but generated prose is primarily stored on `Story`
+- memory extraction does not yet persist the full intended fact/relationship model
+- graph merging is basic normalized-name matching
+- biography/timeline/people/place/theme experiences are not yet the primary product surface
+- physical-device model, memory, battery, and thermal validation remains incomplete
 
-Use hybrid local retrieval:
+## Delivery Phases
 
-- Chronology for timeline views.
-- Full-text search for names and exact phrases.
-- Embeddings for fuzzy recall.
-- Graph traversal for relationships and life events.
+### Phase A: Reliable local foundation
 
-The first implementation can store embeddings locally and run brute-force cosine search because the expected data size is small. Later, move to a local vector index if needed.
+1. Establish the Notes, Biography, and Settings navigation shell without slowing capture.
+2. Replace story-level status strings with durable `ProcessingJob` records.
+3. Add `TranscriptArtifact`/`TranscriptVersion`, transcription provenance, and immutable source hashes.
+4. Add automatic queue resumption, retry, cancellation, idempotent commits, and interrupted-work recovery.
+5. Delete audio after verified transcript commit and implement provenance-aware user deletion propagation.
+6. Measure transcription and local model tasks across the supported device set.
+7. Add storage/integrity checks, real download progress, and model removal.
 
-## Handling Non-Linear Storytelling
+### Phase B: Provider-neutral adaptive compute
 
-Users will not tell their life in order. The architecture must separate:
+1. Generalize `GenerationService` and transcription behind shared route-aware result types.
+2. Add `DeviceCapabilityService` and policy-driven `ComputeRouter`.
+3. Build the Lore Processing API and direct provider adapters behind `ModelGateway`, beginning with Groq and an evaluated Fireworks fallback for text.
+4. Start with approved hosted open-weight models for structured text extraction and daily-entry writing; add Groq Whisper remote speech only after separate audio consent, benchmark, and retention validation.
+5. Add privacy modes, data-transfer disclosure, cellular controls, remote job status, cancellation, and deletion receipts.
+6. Validate providers, logging, TTL cleanup, backups, and deletion using synthetic end-to-end tests before sending real user stories.
 
-- `captureDate`: when the story was recorded.
-- `eventDate`: when the remembered event happened.
-- `eventDateKind`: exact, approximate, range, unknown.
-- `approximateLabel`: "childhood", "college years", "around 2012", "before moving to Seattle".
+### Phase C: Evolving biography
 
-The Stories screen can start as capture-date chronological. The Life timeline should use event dates and approximate periods when available.
+1. Complete `MemoryFact`, relationship, contradiction, and source-span persistence.
+2. Move generated prose into versioned, source-grounded biography fragments.
+3. Build life timeline, chapter, people, place, and theme surfaces.
+4. Add correction, entity merge/split, uncertain-date, and contradiction workflows.
+5. Reconcile affected passages when new evidence or corrections arrive.
 
-## Business Model Support
+### Phase D: Scale and self-hosting
 
-The app should support:
+1. Measure cost, quality, latency, and privacy by task/model route.
+2. Add model evaluation suites using synthetic and consented test corpora.
+3. Introduce self-hosted inference behind the same `ModelGateway` for workloads where it improves control or economics.
+4. Add regional routing, capacity management, and safe provider failover without weakening privacy policy.
+5. Develop the source-grounded interviewer and chapter revision loop.
 
-- Monthly subscription, approximately $10/month.
-- Lifetime unlock, approximately $250 one-time purchase.
+## Release Gates
 
-Entitlement checks should gate premium features, not local data access. If a subscription lapses, the user's existing local stories and biography should remain readable. Premium gating should apply to ongoing model-powered processing, new chapter generation, advanced memory views, and future two-way interviewer features.
+Before enabling remote processing for production users:
 
-## First Implementation Slice
+- privacy copy accurately describes text and audio routes
+- no content appears in logs, traces, analytics, or crash reports
+- provider routes satisfy the versioned retention allowlist
+- acknowledgement, cancellation, expiry, and delete-all paths pass end-to-end tests
+- local archive commits and idempotent retries survive app/server interruption
+- routing never violates Device Only or cellular/audio-upload settings and never silently uploads after local failure
+- structured outputs are schema-validated and provenance-checked before merge
+- export and local delete behavior are verified
+- a security/privacy review covers authentication, storage, gateway, providers, and incident response
 
-1. [x] Add SwiftData models for `UserProfile`, `Story`, `AudioAsset`, `StoryMetadata`, and `BiographyFragment`.
-2. [x] Rename UI language from Recordings to Stories.
-3. [x] Add onboarding for name, hometown, and birth year.
-4. [x] Add audio asset lifecycle and 7-day deletion.
-5. [x] Add 120-day raw transcript retention metadata.
-6. [x] Add local model download shell for Ternary Bonsai 4B.
-7. [x] Add `GenerationService` abstraction.
-8. [x] Implement transcript-to-biography-prose generation with real local MLX inference.
-9. [ ] Add initial graph candidate extraction for people, places, themes, and life events.
-10. [ ] Display chronological Stories with generated biography prose from the real local model.
+## Product Decisions Still Required
+
+- Whether Adaptive mode is the launch default or explicit opt-in.
+- Whether users need an account for remote compute, or can use a pseudonymous installation credential until backup/sync exists.
+- Which languages and older devices define the supported launch matrix.
+- Whether audio upload is offered at launch or text-only remote processing ships first.
+- Which hosted open-weight models have suitable licenses and meet quality, schema, cost, regional, and privacy requirements.
+- Whether optional encrypted backup/sync is in scope; it must remain distinct from ephemeral processing.
+- Subscription limits, fair-use policy, and whether lifetime access includes ongoing remote compute.

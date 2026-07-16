@@ -11,7 +11,11 @@ enum LoreModelContainer {
         LifeEvent.self,
         Person.self,
         Place.self,
-        Theme.self
+        Theme.self,
+        TranscriptArtifact.self,
+        TranscriptVersion.self,
+        ProcessingJob.self,
+        VocabularyEntry.self
     ])
 
     static func make(inMemory: Bool = false) throws -> ModelContainer {
