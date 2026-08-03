@@ -1,6 +1,6 @@
 import { LoreApiError } from "../../http/errors.js";
 
-export async function groqError(response: Response): Promise<LoreApiError> {
+export function groqError(response: Response): LoreApiError {
   const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
 
   switch (response.status) {
@@ -30,6 +30,5 @@ export async function groqError(response: Response): Promise<LoreApiError> {
 function parseRetryAfter(value: string | null): number | null {
   if (!value) return null;
   const seconds = Number(value);
-  if (Number.isInteger(seconds) && seconds > 0) return seconds;
-  return null;
+  return Number.isInteger(seconds) && seconds > 0 ? seconds : null;
 }

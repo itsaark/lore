@@ -36,6 +36,8 @@ final class TranscriptArtifact {
     private(set) var providerId: String?
     private(set) var providerModelId: String?
     private(set) var providerRequestId: String?
+    private(set) var sourceSegmentsJSON: String?
+    private(set) var providerProvenanceJSON: String?
     private(set) var capturedAt: Date
     private(set) var transcribedAt: Date
     private(set) var audioDuration: TimeInterval
@@ -51,6 +53,8 @@ final class TranscriptArtifact {
         providerId: String? = nil,
         providerModelId: String? = nil,
         providerRequestId: String? = nil,
+        sourceSegmentsJSON: String? = nil,
+        providerProvenanceJSON: String? = nil,
         capturedAt: Date,
         transcribedAt: Date = Date(),
         audioDuration: TimeInterval,
@@ -65,6 +69,8 @@ final class TranscriptArtifact {
         self.providerId = providerId
         self.providerModelId = providerModelId
         self.providerRequestId = providerRequestId
+        self.sourceSegmentsJSON = sourceSegmentsJSON
+        self.providerProvenanceJSON = providerProvenanceJSON
         self.capturedAt = capturedAt
         self.transcribedAt = transcribedAt
         self.audioDuration = audioDuration
@@ -277,12 +283,45 @@ final class ProcessingJob {
         updatedAt = date
     }
 
+    /// Returns an interrupted attempt to the durable queue after its lease expires.
+    /// The attempt count is intentionally preserved so relaunch recovery cannot retry forever.
+    @discardableResult
+    func recoverExpiredLease(at date: Date = Date()) -> Bool {
+        guard state == .running,
+              let leaseExpiresAt,
+              leaseExpiresAt <= date else {
+            return false
+        }
+
+        let attemptsExhausted = attemptCount >= maximumAttempts
+        stateValue = attemptsExhausted
+            ? ProcessingJobState.failed.rawValue
+            : ProcessingJobState.queued.rawValue
+        completedAt = attemptsExhausted ? date : nil
+        nextAttemptAt = attemptsExhausted ? nil : date
+        self.leaseExpiresAt = nil
+        lastErrorCode = "interrupted_attempt"
+        updatedAt = date
+        return true
+    }
+
+    func isReadyForAttempt(at date: Date = Date()) -> Bool {
+        guard state == .queued, attemptCount < maximumAttempts else {
+            return false
+        }
+        return nextAttemptAt.map { $0 <= date } ?? true
+    }
+
     func markSucceeded(
         outputReferenceId: UUID? = nil,
+        transcriptArtifactId: UUID? = nil,
         resultSchemaVersion: String? = nil,
         at date: Date = Date()
     ) {
         self.outputReferenceId = outputReferenceId
+        if let transcriptArtifactId {
+            self.transcriptArtifactId = transcriptArtifactId
+        }
         self.resultSchemaVersion = resultSchemaVersion
         stateValue = ProcessingJobState.succeeded.rawValue
         completedAt = date

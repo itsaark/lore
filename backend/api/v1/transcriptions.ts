@@ -1,10 +1,11 @@
 import { loadGroqRuntimeConfig } from "../../src/config.js";
+import { acquireProcessingLease } from "../../src/auth/processing-lease.js";
 import {
   MAX_AUDIO_CHUNK_BYTES,
   MAX_MULTIPART_BODY_BYTES,
   TranscriptionMetadataSchema
 } from "../../src/contracts/transcription.js";
-import { requirePreviewAuthorization } from "../../src/http/auth.js";
+import { requireProcessingAuthorization, type ProcessingAuthorizationDependencies } from "../../src/http/auth.js";
 import { errorResponse, LoreApiError } from "../../src/http/errors.js";
 import { writeSafeLog } from "../../src/http/logger.js";
 import {
@@ -12,6 +13,7 @@ import {
   processingSignal,
   requestId,
   requireContentLengthBelow,
+  requireIdempotencyKey,
   requireMethod
 } from "../../src/http/request.js";
 import { GroqClient } from "../../src/providers/groq/client.js";
@@ -30,6 +32,7 @@ const SUPPORTED_AUDIO_TYPES = new Set([
 export type TranscriptionHandlerDependencies = {
   environment?: NodeJS.ProcessEnv;
   fetch?: typeof globalThis.fetch;
+  auth?: Omit<ProcessingAuthorizationDependencies, "environment">;
 };
 
 export async function handleTranscription(
@@ -40,7 +43,10 @@ export async function handleTranscription(
   const startedAt = performance.now();
   try {
     requireMethod(request, "POST");
-    requirePreviewAuthorization(request, dependencies.environment);
+    const authorization = await requireProcessingAuthorization(request, {
+      ...(dependencies.environment ? { environment: dependencies.environment } : {}),
+      ...dependencies.auth
+    });
     requireContentLengthBelow(request, MAX_MULTIPART_BODY_BYTES);
     if (!request.headers.get("content-type")?.toLowerCase().startsWith("multipart/form-data")) {
       throw new LoreApiError("invalid_request", 415, false);
@@ -80,25 +86,43 @@ export async function handleTranscription(
       );
     }
 
-    writeSafeLog({ event: "provider_started", request_id: id, route: "transcription", provider: "groq", model_alias: "transcription-fallback-v1" });
-    const client = new GroqClient({
-      config: loadGroqRuntimeConfig(dependencies.environment),
-      ...(dependencies.fetch ? { fetch: dependencies.fetch } : {})
+    const idempotencyKey = requireIdempotencyKey(request);
+    if (idempotencyKey !== metadata.data.idempotency_key) {
+      throw new LoreApiError("invalid_request", 400, false);
+    }
+
+    const providerConfig = loadGroqRuntimeConfig(dependencies.environment);
+    const lease = await acquireProcessingLease({
+      authorization,
+      task: "transcription",
+      taskId: `${metadata.data.job_id.toLowerCase()}:${metadata.data.chunk_id}`,
+      idempotencyKey,
+      ...(dependencies.auth?.now ? { now: dependencies.auth.now } : {})
     });
-    const response = await client.transcribe(
-      id,
-      metadata.data,
-      { bytes: audio, filename: audio.name, mimeType: audio.type },
-      processingSignal(request)
-    );
-    writeSafeLog({
-      event: "request_completed",
-      request_id: id,
-      route: "transcription",
-      status: 200,
-      duration_ms: Math.round(performance.now() - startedAt)
-    });
-    return jsonSuccess(response, id);
+
+    try {
+      writeSafeLog({ event: "provider_started", request_id: id, route: "transcription", provider: "groq", model_alias: "transcription-fallback-v1" });
+      const client = new GroqClient({
+        config: providerConfig,
+        ...(dependencies.fetch ? { fetch: dependencies.fetch } : {})
+      });
+      const response = await client.transcribe(
+        id,
+        metadata.data,
+        { bytes: audio, filename: audio.name, mimeType: audio.type },
+        processingSignal(request)
+      );
+      writeSafeLog({
+        event: "request_completed",
+        request_id: id,
+        route: "transcription",
+        status: 200,
+        duration_ms: Math.round(performance.now() - startedAt)
+      });
+      return jsonSuccess(response, id);
+    } finally {
+      await lease.release().catch(() => false);
+    }
   } catch (error) {
     const apiError = error instanceof LoreApiError ? error : new LoreApiError("internal_error", 500, true);
     writeSafeLog({

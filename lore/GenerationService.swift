@@ -61,6 +61,7 @@ enum RemoteGenerationRequestFactory {
         for story: Story,
         userProfile: UserProfile,
         in modelContext: ModelContext,
+        jobId: UUID = UUID(),
         locale: Locale = .current
     ) throws -> DailyEntryGenerationRequest {
         let artifacts = try modelContext.fetch(FetchDescriptor<TranscriptArtifact>())
@@ -96,7 +97,7 @@ enum RemoteGenerationRequestFactory {
         dateFormatter.dateFormat = "yyyy-MM-dd"
 
         return DailyEntryGenerationRequest(
-            jobId: UUID(),
+            jobId: jobId,
             noteId: story.id,
             transcriptArtifactId: artifact.id,
             transcriptVersionId: currentVersion.id,

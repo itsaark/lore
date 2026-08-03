@@ -185,6 +185,23 @@ struct loreTests {
         #expect(job.nextAttemptAt == retryDate)
     }
 
+    @Test func exhaustedInterruptedJobBecomesTerminalFailure() {
+        let job = ProcessingJob(
+            idempotencyKey: "transcription:interrupted",
+            kind: .transcription,
+            route: .remote,
+            maximumAttempts: 1
+        )
+        let attemptDate = Date(timeIntervalSince1970: 1_800_000_000)
+        job.beginAttempt(at: attemptDate, leaseDuration: 30)
+
+        #expect(job.recoverExpiredLease(at: attemptDate.addingTimeInterval(31)))
+        #expect(job.state == .failed)
+        #expect(job.nextAttemptAt == nil)
+        #expect(job.completedAt == attemptDate.addingTimeInterval(31))
+        #expect(job.lastErrorCode == "interrupted_attempt")
+    }
+
     @Test func remoteProcessingContractsRoundTripWithoutProviderCredentials() throws {
         let request = DailyEntryGenerationRequest(
             jobId: UUID(),
@@ -724,36 +741,33 @@ struct loreTests {
     }
 
     @MainActor
-    @Test func cleanupMarksExpiredAudioAssetsDeletedAndRemovesFiles() throws {
+    @Test func cleanupDeletesOnlyAudioWithCommittedImmutableTranscript() throws {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)
         let fileManager = FileManager.default
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let expiredFileURL = fileManager.temporaryDirectory
+        let committedFileURL = fileManager.temporaryDirectory
             .appendingPathComponent("lore-audio-cleanup-\(UUID().uuidString).caf")
-        try Data([0, 1, 2]).write(to: expiredFileURL)
+        let pendingFileURL = fileManager.temporaryDirectory
+            .appendingPathComponent("lore-audio-pending-cleanup-\(UUID().uuidString).caf")
+        try Data([0, 1, 2]).write(to: committedFileURL)
+        try Data([3, 4, 5]).write(to: pendingFileURL)
 
-        let expiredFileAsset = AudioAsset(
-            fileURL: expiredFileURL.absoluteString,
-            createdAt: now.addingTimeInterval(-9 * 24 * 60 * 60),
-            expiresAt: now.addingTimeInterval(-1),
-            duration: 9
+        _ = try SpeechRecognitionViewModel.persistCapturedStoryImmediately(
+            transcript: "This transcript is durable.",
+            startTime: now.addingTimeInterval(-10),
+            endTime: now.addingTimeInterval(-9),
+            audioFileURL: committedFileURL,
+            modelContext: context
         )
-        let expiredPlaceholderAsset = SpeechRecognitionViewModel.makePlaceholderAudioAsset(
-            storyID: UUID(),
-            createdAt: now.addingTimeInterval(-8 * 24 * 60 * 60),
-            duration: 12
+        let (_, pendingJob) = try SpeechRecognitionViewModel.persistRemoteCaptureForTranscription(
+            startTime: now.addingTimeInterval(-8),
+            endTime: now.addingTimeInterval(-7),
+            audioFileURL: pendingFileURL,
+            modelContext: context
         )
-        expiredPlaceholderAsset.expiresAt = now.addingTimeInterval(-1)
-        let activeAsset = SpeechRecognitionViewModel.makePlaceholderAudioAsset(
-            storyID: UUID(),
-            createdAt: now,
-            duration: 4
-        )
-
-        context.insert(expiredFileAsset)
-        context.insert(expiredPlaceholderAsset)
-        context.insert(activeAsset)
+        let assets = try context.fetch(FetchDescriptor<AudioAsset>())
+        assets.forEach { $0.expiresAt = now.addingTimeInterval(-1) }
         try context.save()
 
         let cleanedCount = try SpeechRecognitionViewModel.cleanupExpiredAudioAssets(
@@ -762,8 +776,11 @@ struct loreTests {
             fileManager: fileManager
         )
 
-        #expect(cleanedCount == 2)
-        #expect(fileManager.fileExists(atPath: expiredFileURL.path) == false)
+        #expect(cleanedCount == 1)
+        #expect(fileManager.fileExists(atPath: committedFileURL.path) == false)
+        #expect(fileManager.fileExists(atPath: pendingFileURL.path))
+        #expect(pendingJob.state == .queued)
+        try? fileManager.removeItem(at: pendingFileURL)
     }
 
     @MainActor
@@ -1121,6 +1138,135 @@ struct loreTests {
         #expect(policy.route(for: capabilities) == .remote(reason: .hardwareNotValidated))
     }
 
+    @Test func processingPrivacyChoiceAndSeparateConsentsPersistLocally() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let textConsentDate = Date(timeIntervalSince1970: 1_800_000_000)
+        let audioConsentDate = textConsentDate.addingTimeInterval(5)
+        let profile = UserProfile(
+            name: "Aark",
+            hometown: "Hyderabad",
+            birthYear: 1994,
+            processingMode: .adaptive,
+            remoteTextProcessingConsentedAt: textConsentDate,
+            remoteAudioUploadConsentedAt: audioConsentDate,
+            allowsCellularRemoteProcessing: true
+        )
+
+        context.insert(profile)
+        try context.save()
+
+        let persisted = try #require(try context.fetch(FetchDescriptor<UserProfile>()).first)
+        #expect(persisted.processingMode == .adaptive)
+        #expect(persisted.remoteTextProcessingConsentedAt == textConsentDate)
+        #expect(persisted.remoteAudioUploadConsentedAt == audioConsentDate)
+        #expect(persisted.allowsCellularRemoteProcessing)
+
+        persisted.setRemoteTextProcessingConsent(false, at: audioConsentDate.addingTimeInterval(5))
+        #expect(persisted.hasRemoteTextProcessingConsent == false)
+        #expect(persisted.hasRemoteAudioUploadConsent == false)
+    }
+
+    @Test func deviceOnlyModeNeverRoutesUnvalidatedHardwareToRemote() {
+        let decision = makeSpeechRoutingDecision(
+            mode: .deviceOnly,
+            hasTextConsent: true,
+            hasAudioConsent: true,
+            connection: .wifi
+        )
+
+        #expect(decision == .deferred(reason: .deviceOnlyRequiresLocalTranscription))
+    }
+
+    @Test func adaptiveRemoteSpeechRequiresTextDisclosureConsent() {
+        let decision = makeSpeechRoutingDecision(
+            hasTextConsent: false,
+            hasAudioConsent: true,
+            connection: .wifi
+        )
+
+        #expect(decision == .deferred(reason: .remoteTextConsentRequired))
+    }
+
+    @Test func adaptiveRemoteSpeechRequiresSeparateAudioConsent() {
+        let decision = makeSpeechRoutingDecision(
+            hasTextConsent: true,
+            hasAudioConsent: false,
+            connection: .wifi
+        )
+
+        #expect(decision == .deferred(reason: .remoteAudioConsentRequired))
+    }
+
+    @Test func cellularToggleBlocksRemoteSpeechBeforeUpload() {
+        let decision = makeSpeechRoutingDecision(
+            hasTextConsent: true,
+            hasAudioConsent: true,
+            allowsCellular: false,
+            connection: .cellular
+        )
+
+        #expect(decision == .deferred(reason: .cellularProcessingDisabled))
+    }
+
+    @Test func adaptiveRemoteSpeechAllowsConsentedCellularRoute() {
+        let decision = makeSpeechRoutingDecision(
+            hasTextConsent: true,
+            hasAudioConsent: true,
+            allowsCellular: true,
+            connection: .cellular
+        )
+
+        #expect(decision == .remote(reason: .hardwareNotValidated))
+    }
+
+    @Test func unknownNetworkFailsClosedBeforeRemoteSpeech() {
+        let decision = makeSpeechRoutingDecision(
+            hasTextConsent: true,
+            hasAudioConsent: true,
+            allowsCellular: true,
+            connection: .unknown
+        )
+
+        #expect(decision == .deferred(reason: .networkUnknown))
+    }
+
+    @Test func localFailureDoesNotSilentlyFallBackToRemoteSpeech() {
+        let policy = SpeechTranscriptionPolicy(validatedLocalHardwareIdentifiers: [])
+        let capabilities = SpeechTranscriptionCapabilities(
+            hardwareIdentifier: "iPhone18,1",
+            osMajorVersion: 26,
+            supportsOnDeviceRecognition: true
+        )
+        let preferences = RemoteProcessingPreferences(
+            mode: .adaptive,
+            hasRemoteTextProcessingConsent: true,
+            hasRemoteAudioUploadConsent: true,
+            allowsCellularRemoteProcessing: true
+        )
+
+        let blocked = policy.route(
+            for: SpeechTranscriptionRoutingInput(
+                capabilities: capabilities,
+                preferences: preferences,
+                networkConnection: .wifi,
+                followsFailedLocalAttempt: true
+            )
+        )
+        let approved = policy.route(
+            for: SpeechTranscriptionRoutingInput(
+                capabilities: capabilities,
+                preferences: preferences,
+                networkConnection: .wifi,
+                followsFailedLocalAttempt: true,
+                userConfirmedRemoteFallback: true
+            )
+        )
+
+        #expect(blocked == .deferred(reason: .remoteFallbackConfirmationRequired))
+        #expect(approved == .remote(reason: .localRecognizerUnavailable))
+    }
+
     @Test func marketedIPhone17FamilyUsesLocalBiographyGeneration() {
         let policy = BiographyGenerationPolicy()
         let capabilities = BiographyGenerationCapabilities(
@@ -1159,6 +1305,35 @@ struct loreTests {
         )
 
         #expect(policy.route(for: capabilities) == .remote)
+    }
+
+    private func makeSpeechRoutingDecision(
+        mode: LoreProcessingMode = .adaptive,
+        hasTextConsent: Bool,
+        hasAudioConsent: Bool,
+        allowsCellular: Bool = false,
+        connection: SpeechNetworkConnection
+    ) -> SpeechTranscriptionRoute {
+        let policy = SpeechTranscriptionPolicy(validatedLocalHardwareIdentifiers: [])
+        let capabilities = SpeechTranscriptionCapabilities(
+            hardwareIdentifier: "iPhone16,2",
+            osMajorVersion: 26,
+            supportsOnDeviceRecognition: true
+        )
+        let preferences = RemoteProcessingPreferences(
+            mode: mode,
+            hasRemoteTextProcessingConsent: hasTextConsent,
+            hasRemoteAudioUploadConsent: hasAudioConsent,
+            allowsCellularRemoteProcessing: allowsCellular
+        )
+
+        return policy.route(
+            for: SpeechTranscriptionRoutingInput(
+                capabilities: capabilities,
+                preferences: preferences,
+                networkConnection: connection
+            )
+        )
     }
 
     @MainActor
@@ -1292,6 +1467,202 @@ struct loreTests {
         try? FileManager.default.removeItem(at: audioURL)
     }
 
+    @MainActor
+    @Test func remoteTranscriptionPersistsCaptureAndRunningJobBeforeUpload() async throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lore-ordering-\(UUID().uuidString).caf")
+        try Data([1, 2, 3]).write(to: audioURL)
+        let (story, job) = try SpeechRecognitionViewModel.persistRemoteCaptureForTranscription(
+            startTime: Date(timeIntervalSince1970: 1_800_000_000),
+            endTime: Date(timeIntervalSince1970: 1_800_000_010),
+            audioFileURL: audioURL,
+            modelContext: context
+        )
+        var observedDurableOrderingBarrier = false
+        let transcriber = InspectingRemoteSpeechTranscriber { requestedURL, localeIdentifier in
+            let storedStories = try context.fetch(FetchDescriptor<Story>())
+            let storedAssets = try context.fetch(FetchDescriptor<AudioAsset>())
+            let storedJobs = try context.fetch(FetchDescriptor<ProcessingJob>())
+            let storedArtifacts = try context.fetch(FetchDescriptor<TranscriptArtifact>())
+            observedDurableOrderingBarrier = storedStories.contains { $0.id == story.id }
+                && storedAssets.contains { $0.id == story.id && !$0.isDeleted }
+                && storedJobs.first(where: { $0.id == job.id })?.state == .running
+                && storedArtifacts.isEmpty
+            #expect(requestedURL == audioURL)
+            #expect(localeIdentifier == "en-US")
+            return RemoteSpeechTranscription(
+                transcript: "The provider returned a durable memory.",
+                provider: "groq",
+                model: "whisper-large-v3-turbo",
+                requestID: "groq-request-1"
+            )
+        }
+
+        let completedStory = try await SpeechRecognitionViewModel.runTranscriptionJob(
+            jobID: job.id,
+            remoteTranscriber: transcriber,
+            localeIdentifier: "en-US",
+            modelContext: context
+        )
+
+        let artifacts = try context.fetch(FetchDescriptor<TranscriptArtifact>())
+        let versions = try context.fetch(FetchDescriptor<TranscriptVersion>())
+        let storedJobs = try context.fetch(FetchDescriptor<ProcessingJob>())
+        #expect(observedDurableOrderingBarrier)
+        #expect(completedStory.text == "The provider returned a durable memory.")
+        #expect(artifacts.count == 1)
+        #expect(versions.count == 1)
+        #expect(storedJobs.first?.state == .succeeded)
+        #expect(storedJobs.first?.transcriptArtifactId == artifacts.first?.id)
+        #expect(try context.fetch(FetchDescriptor<AudioAsset>()).isEmpty)
+        #expect(FileManager.default.fileExists(atPath: audioURL.path) == false)
+    }
+
+    @MainActor
+    @Test func remoteFailureQueuesRetryAndRetainsAudioUntilAttemptsExhaust() async throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lore-retry-\(UUID().uuidString).caf")
+        try Data([4, 5, 6]).write(to: audioURL)
+        let (_, job) = try SpeechRecognitionViewModel.persistRemoteCaptureForTranscription(
+            startTime: Date(),
+            endTime: Date().addingTimeInterval(4),
+            audioFileURL: audioURL,
+            modelContext: context
+        )
+        let transcriber = InspectingRemoteSpeechTranscriber { _, _ in
+            throw TestRemoteTranscriptionFailure.networkUnavailable
+        }
+
+        for attempt in 0..<3 {
+            do {
+                _ = try await SpeechRecognitionViewModel.runTranscriptionJob(
+                    jobID: job.id,
+                    remoteTranscriber: transcriber,
+                    localeIdentifier: "en-US",
+                    modelContext: context,
+                    now: Date().addingTimeInterval(Double(attempt) * 1_000)
+                )
+                Issue.record("The failing provider unexpectedly succeeded")
+            } catch TestRemoteTranscriptionFailure.networkUnavailable {
+                // Expected.
+            }
+
+            #expect(FileManager.default.fileExists(atPath: audioURL.path))
+            #expect(try context.fetch(FetchDescriptor<AudioAsset>()).count == 1)
+            #expect(job.attemptCount == attempt + 1)
+            #expect(job.state == (attempt == 2 ? .failed : .queued))
+        }
+
+        #expect(job.lastErrorCode == "remote_transcription_failed")
+        #expect(try context.fetch(FetchDescriptor<TranscriptArtifact>()).isEmpty)
+        try? FileManager.default.removeItem(at: audioURL)
+    }
+
+    @MainActor
+    @Test func remoteTranscriptCommitIsIdempotent() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lore-idempotent-\(UUID().uuidString).caf")
+        try Data([7, 8, 9]).write(to: audioURL)
+        let (story, job) = try SpeechRecognitionViewModel.persistRemoteCaptureForTranscription(
+            startTime: Date(timeIntervalSince1970: 1_800_000_000),
+            endTime: Date(timeIntervalSince1970: 1_800_000_003),
+            audioFileURL: audioURL,
+            modelContext: context
+        )
+        let audioAsset = try #require(try context.fetch(FetchDescriptor<AudioAsset>()).first)
+        job.beginAttempt()
+        try context.save()
+        let response = RemoteSpeechTranscription(
+            transcript: "Only one immutable source snapshot.",
+            provider: "groq",
+            model: "whisper-large-v3-turbo",
+            requestID: "same-response"
+        )
+
+        _ = try SpeechRecognitionViewModel.commitRemoteTranscription(
+            response,
+            for: story,
+            audioAsset: audioAsset,
+            job: job,
+            localeIdentifier: "en-US",
+            modelContext: context
+        )
+        _ = try SpeechRecognitionViewModel.commitRemoteTranscription(
+            response,
+            for: story,
+            audioAsset: audioAsset,
+            job: job,
+            localeIdentifier: "en-US",
+            modelContext: context
+        )
+
+        #expect(try context.fetch(FetchDescriptor<TranscriptArtifact>()).count == 1)
+        #expect(try context.fetch(FetchDescriptor<TranscriptVersion>()).count == 1)
+        #expect(job.state == .succeeded)
+        try? FileManager.default.removeItem(at: audioURL)
+    }
+
+    @MainActor
+    @Test func cancellingTranscriptionRetainsAudioAndPersistsCancelledState() async throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lore-cancelled-\(UUID().uuidString).caf")
+        try Data([10, 11]).write(to: audioURL)
+        let (story, job) = try SpeechRecognitionViewModel.persistRemoteCaptureForTranscription(
+            startTime: Date(),
+            endTime: Date().addingTimeInterval(2),
+            audioFileURL: audioURL,
+            modelContext: context
+        )
+        let transcriber = InspectingRemoteSpeechTranscriber { _, _ in
+            throw CancellationError()
+        }
+
+        do {
+            _ = try await SpeechRecognitionViewModel.runTranscriptionJob(
+                jobID: job.id,
+                remoteTranscriber: transcriber,
+                localeIdentifier: "en-US",
+                modelContext: context
+            )
+            Issue.record("The cancelled provider unexpectedly succeeded")
+        } catch is CancellationError {
+            // Expected.
+        }
+
+        #expect(job.state == .cancelled)
+        #expect(FileManager.default.fileExists(atPath: audioURL.path))
+        #expect(try context.fetch(FetchDescriptor<AudioAsset>()).count == 1)
+        #expect(try context.fetch(FetchDescriptor<TranscriptArtifact>()).isEmpty)
+        let audioAsset = try #require(try context.fetch(FetchDescriptor<AudioAsset>()).first)
+        do {
+            _ = try SpeechRecognitionViewModel.commitRemoteTranscription(
+                RemoteSpeechTranscription(
+                    transcript: "A late response that must be ignored.",
+                    provider: "groq",
+                    model: "whisper-large-v3-turbo"
+                ),
+                for: story,
+                audioAsset: audioAsset,
+                job: job,
+                localeIdentifier: "en-US",
+                modelContext: context
+            )
+            Issue.record("A cancelled job committed a late provider response")
+        } catch TranscriptionJobRunnerError.jobCancelled {
+            // Expected.
+        }
+        #expect(try context.fetch(FetchDescriptor<TranscriptArtifact>()).isEmpty)
+        try? FileManager.default.removeItem(at: audioURL)
+    }
+
     private func makeIsolatedDefaults() throws -> UserDefaults {
         let suiteName = "loreTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -1303,6 +1674,27 @@ struct loreTests {
         let calendar = Calendar(identifier: .gregorian)
         let components = DateComponents(calendar: calendar, year: year, month: month, day: day)
         return try #require(components.date)
+    }
+}
+
+private enum TestRemoteTranscriptionFailure: Error {
+    case networkUnavailable
+}
+
+private final class InspectingRemoteSpeechTranscriber: RemoteSpeechTranscribing, @unchecked Sendable {
+    typealias Handler = @MainActor (URL, String) throws -> RemoteSpeechTranscription
+
+    private let handler: Handler
+
+    init(handler: @escaping Handler) {
+        self.handler = handler
+    }
+
+    func transcribe(
+        audioFileURL: URL,
+        localeIdentifier: String
+    ) async throws -> RemoteSpeechTranscription {
+        try await handler(audioFileURL, localeIdentifier)
     }
 }
 

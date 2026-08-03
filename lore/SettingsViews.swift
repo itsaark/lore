@@ -23,12 +23,12 @@ struct SettingsHomeView: View {
                     .accessibilityIdentifier("vocabularySettingsLink")
 
                     NavigationLink {
-                        TranscriptionModeSettingsView()
+                        TranscriptionModeSettingsView(userProfile: userProfile)
                     } label: {
                         SettingsNavigationLabel(
                             title: "Modes",
                             systemImage: "arrow.triangle.branch",
-                            detail: "Automatic"
+                            detail: userProfile.processingMode.title
                         )
                     }
                     .accessibilityIdentifier("transcriptionModesSettingsLink")
@@ -49,7 +49,7 @@ struct SettingsHomeView: View {
 
                 Section("Preferences") {
                     NavigationLink {
-                        PrivacyDataSettingsView()
+                        PrivacyDataSettingsView(userProfile: userProfile)
                     } label: {
                         SettingsNavigationLabel(
                             title: "Privacy & Data",
@@ -417,40 +417,112 @@ private struct VocabularySecondaryButtonStyle: ButtonStyle {
 }
 
 private struct TranscriptionModeSettingsView: View {
-    @AppStorage("LoreAllowsCellularProcessing") private var allowsCellularProcessing = false
+    let userProfile: UserProfile
+    @Environment(\.modelContext) private var modelContext
 
     var body: some View {
         Form {
             Section {
-                LabeledContent("Mode", value: "Automatic")
+                Picker("Mode", selection: processingModeBinding) {
+                    ForEach(LoreProcessingMode.allCases, id: \.self) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .accessibilityIdentifier("processingModePicker")
 
-                Toggle("Use mobile data", isOn: $allowsCellularProcessing)
+                Toggle("Use mobile data", isOn: cellularBinding)
+                    .disabled(userProfile.processingMode != .adaptive)
                     .accessibilityIdentifier("cellularProcessingToggle")
             } header: {
-                Text("Automatic routing")
+                Text("Processing")
             } footer: {
-                Text("Lore automatically chooses on-device or private cloud transcription for your iPhone.")
+                Text("Device Only never sends audio or transcript text. Adaptive can use approved private services when your permissions and connection allow it.")
             }
         }
         .navigationTitle("Modes")
         .navigationBarTitleDisplayMode(.inline)
     }
+
+    private var processingModeBinding: Binding<LoreProcessingMode> {
+        Binding(
+            get: { userProfile.processingMode },
+            set: { mode in
+                userProfile.processingMode = mode
+                save()
+            }
+        )
+    }
+
+    private var cellularBinding: Binding<Bool> {
+        Binding(
+            get: { userProfile.allowsCellularRemoteProcessing },
+            set: { isAllowed in
+                userProfile.allowsCellularRemoteProcessing = isAllowed
+                userProfile.updatedAt = Date()
+                save()
+            }
+        )
+    }
+
+    private func save() {
+        try? modelContext.save()
+    }
 }
 
 private struct PrivacyDataSettingsView: View {
+    let userProfile: UserProfile
+    @Environment(\.modelContext) private var modelContext
+
     var body: some View {
         Form {
             Section {
                 Label("Transcripts stay on this iPhone", systemImage: "iphone.gen3")
-                Label("Audio is deleted after transcription", systemImage: "trash")
+                Label("Audio is deleted after its transcript is saved", systemImage: "trash")
             } header: {
                 Text("Local archive")
             } footer: {
                 Text("If transcription fails, encrypted audio may be kept briefly so you can retry without losing the note.")
             }
+
+            Section {
+                Toggle("Private text processing", isOn: remoteTextConsentBinding)
+                    .accessibilityIdentifier("settingsRemoteTextConsentToggle")
+
+                Toggle("Audio upload when needed", isOn: remoteAudioConsentBinding)
+                    .disabled(!userProfile.hasRemoteTextProcessingConsent)
+                    .accessibilityIdentifier("settingsRemoteAudioConsentToggle")
+            } header: {
+                Text("Adaptive permissions")
+            } footer: {
+                Text("Text or audio may pass briefly through Lore and an approved provider only while processing. Turning either permission off blocks future transfers.")
+            }
         }
         .navigationTitle("Privacy & Data")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var remoteTextConsentBinding: Binding<Bool> {
+        Binding(
+            get: { userProfile.hasRemoteTextProcessingConsent },
+            set: { isGranted in
+                userProfile.setRemoteTextProcessingConsent(isGranted)
+                save()
+            }
+        )
+    }
+
+    private var remoteAudioConsentBinding: Binding<Bool> {
+        Binding(
+            get: { userProfile.hasRemoteAudioUploadConsent },
+            set: { isGranted in
+                userProfile.setRemoteAudioUploadConsent(isGranted)
+                save()
+            }
+        )
+    }
+
+    private func save() {
+        try? modelContext.save()
     }
 }
 
