@@ -1,5 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "*": false,
+      "main": true
+    }
+  },
   "rewrites": [
     {
       "source": "/v1/:path*",
@@ -10,5 +16,11 @@
     "api/**/*.ts": {
       "maxDuration": 60
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/internal/security-metadata-cleanup",
+      "schedule": "17 * * * *"
+    }
+  ]
 }

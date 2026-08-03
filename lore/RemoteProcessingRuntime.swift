@@ -65,54 +65,35 @@ final class FixedSpeechNetworkConnectionProvider: SpeechNetworkConnectionProvidi
 }
 
 struct LoreRemoteServices {
+    private static let productionOrigin = "https://lore-tan.vercel.app"
+
     let dailyEntryGenerator: any DailyEntryGenerationService
     let speechTranscriber: any RemoteSpeechTranscribing
 
     @MainActor
     static func configuredForCurrentBuild(
-        environment: [String: String] = ProcessInfo.processInfo.environment,
-        bundle: Bundle = .main
+        environment _: [String: String] = ProcessInfo.processInfo.environment,
+        bundle _: Bundle = .main
     ) -> Self {
-        guard let baseURL = configuredBaseURL(environment: environment, bundle: bundle) else {
+#if DEBUG
+        // Debug and Simulator builds stay fully local. Production remote
+        // processing is exercised through TestFlight with App Attest.
+        return unconfigured
+#else
+        guard let baseURL = URL(string: productionOrigin) else {
             return unconfigured
         }
 
-#if DEBUG
-        let usesAppAttest = usesAppAttestForCurrentBuild(environment: environment)
-        let deployment: LoreBackendHTTPClientConfiguration.Deployment = usesAppAttest
-            ? .production
-            : .preview
-        let previewToken = usesAppAttest ? nil : environment["LORE_PREVIEW_BEARER_TOKEN"]
-#else
-        let deployment: LoreBackendHTTPClientConfiguration.Deployment = .production
-        let previewToken: String? = nil
-#endif
-
         do {
             let configuration = try LoreBackendHTTPClientConfiguration(
-                baseURL: baseURL,
-                deployment: deployment,
-                previewBearerToken: previewToken
+                baseURL: baseURL
             )
             let transport = LoreBackendHTTPTransport.ephemeral()
-            let authorizer: (any LoreBackendAuthorizing)?
-#if DEBUG
-            if usesAppAttest {
-                let authAPI = try LoreAppAttestHTTPAPIClient(
-                    baseURL: configuration.baseURL,
-                    transport: transport
-                )
-                authorizer = LoreAppAttestSessionAuthorizer(api: authAPI)
-            } else {
-                authorizer = nil
-            }
-#else
             let authAPI = try LoreAppAttestHTTPAPIClient(
                 baseURL: configuration.baseURL,
                 transport: transport
             )
-            authorizer = LoreAppAttestSessionAuthorizer(api: authAPI)
-#endif
+            let authorizer = LoreAppAttestSessionAuthorizer(api: authAPI)
             let backend = LoreBackendHTTPClient(
                 configuration: configuration,
                 transport: transport,
@@ -125,13 +106,6 @@ struct LoreRemoteServices {
         } catch {
             return unconfigured
         }
-    }
-
-    static func usesAppAttestForCurrentBuild(environment: [String: String]) -> Bool {
-#if DEBUG
-        environment["LORE_USE_APP_ATTEST"]?.lowercased() == "true"
-#else
-        true
 #endif
     }
 
@@ -143,29 +117,4 @@ struct LoreRemoteServices {
         )
     }
 
-    private static func configuredBaseURL(
-        environment: [String: String],
-        bundle: Bundle
-    ) -> URL? {
-#if DEBUG
-        if let value = environment["LORE_BACKEND_BASE_URL"],
-           let url = validHTTPSURL(value) {
-            return url
-        }
-#endif
-        guard let value = bundle.object(forInfoDictionaryKey: "LoreBackendBaseURL") as? String else {
-            return nil
-        }
-        return validHTTPSURL(value)
-    }
-
-    private static func validHTTPSURL(_ value: String) -> URL? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed),
-              url.scheme?.lowercased() == "https",
-              url.host?.isEmpty == false else {
-            return nil
-        }
-        return url
-    }
 }

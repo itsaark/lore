@@ -24,7 +24,7 @@ The backend will:
 3. Store the verified public key and monotonically increasing assertion counter in a durable, content-free security store.
 4. Bind assertion client data to the challenge, purpose, key, and session request before atomically advancing the counter.
 5. Issue short-lived HMAC-signed session tokens scoped to Lore's `request_ephemeral` processing routes.
-6. Reject Preview bearer credentials in Production and fail closed when App Attest or its durable security store is unavailable.
+6. Accept only App Attest-backed sessions and fail closed when App Attest or its durable security store is unavailable.
 
 Apple's client and server procedures are authoritative: [establishing app integrity](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity), [validating apps that connect to a server](https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server), and the [attestation validation guide](https://developer.apple.com/documentation/devicecheck/attestation-object-validation-guide).
 
@@ -84,9 +84,8 @@ Vercel Functions cannot use process memory or their filesystem as authoritative 
 
 ## Distribution policy
 
-- Physical Development build: development App Attest environment and a separate development security namespace.
-- TestFlight and App Store: production App Attest environment; development attestations are rejected.
-- Simulator: Preview bearer may be used against Preview only. Production rejects it.
+- Debug and Simulator builds are local-only and never connect to the Lore processing API.
+- TestFlight and App Store builds use Apple's production App Attest environment; development attestations and static application credentials are rejected.
 - `isSupported == false`: recording and local processing remain available, but anonymous remote inference is unavailable in Production. A future authenticated-account fallback requires a separate threat and quota decision.
 - Reinstall, device restore, or key loss: create and attest a new key. Old keys are not silently reused or immediately assumed malicious.
 
@@ -106,14 +105,13 @@ The key identifier uses a `ThisDeviceOnly` Keychain accessibility class and is n
 
 Production remote processing remains disabled until all of these are proven:
 
-- App Attest capability and environment entitlements exist in Development, TestFlight, and App Store signing profiles.
+- App Attest capability and the production environment entitlement exist in TestFlight and App Store signing profiles.
 - The backend has the exact Lore App ID prefix/team ID, bundle ID, allowed iOS 27+ build versions/categories, strong signing/HMAC/encryption keys, and the migrated Neon security store.
-- Development and production namespaces are isolated.
 - Apple validation vectors and malformed CBOR/ASN.1 cases pass.
 - Expired, replayed, wrong-purpose, wrong-key, wrong-app, wrong-environment, and non-increasing-counter requests fail before provider invocation.
-- Concurrent challenge/counter/idempotency tests prove a single winner against the real Preview data store.
+- Concurrent challenge/counter/idempotency tests prove a single winner against the real Production data store using synthetic content.
 - Logs and traces contain no auth artifacts or user content.
-- A physical Development build and a TestFlight build complete the enrollment and renewal flows.
+- A TestFlight build completes the enrollment and renewal flows on a physical device.
 
 ## Consequences
 

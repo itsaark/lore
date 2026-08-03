@@ -524,7 +524,7 @@ This snapshot deliberately distinguishes code that exists from a feature that wo
 - a TypeScript `lore-api` Vercel Functions project with strict Zod contracts, OpenAPI documentation, content-free logging, health routing, multipart transcription validation, and grounded daily-entry validation
 - a direct Fireworks GPT-OSS text adapter with mocked success/error coverage, strict structured output, source-reference validation, and fail-closed provider-policy configuration
 - a direct Groq speech adapter with bounded multipart input, timestamped output, provider-neutral provenance, fail-closed ZDR configuration, and mocked success/error coverage
-- anonymous App Attest bootstrap and renewal on iOS, with a this-device-only key identifier, serialized assertions, memory-only short sessions, explicit key-loss recovery, Release enforcement, and a physical-development Preview override
+- anonymous production App Attest bootstrap and renewal on iOS, with a this-device-only key identifier, serialized assertions, memory-only short sessions, explicit key-loss recovery, and Release enforcement; Debug and Simulator builds remain local-only
 - backend App Attest challenge, attestation, and session routes with Apple cryptographic validation, replay-safe counters, short signed sessions, content-free installation rate limits, encrypted receipts, and atomic Neon state transitions
 - durable, content-free one-winner Neon leases that prevent concurrent duplicate provider calls per attested installation/task/idempotency key, with expiry takeover and token-conditional release
 
@@ -535,14 +535,14 @@ This snapshot deliberately distinguishes code that exists from a feature that wo
 - The hardware policy exists, but its allowlist is local rather than signed/remotely managed. iOS 26 `SpeechAnalyzer`, locale assets, thermal/power inputs, and physical-device validation remain incomplete.
 - The durable runners recover work on app relaunch, but iOS background execution/interruption behavior still needs physical-device proof.
 - Story compatibility status fields remain for UI/migration purposes; `ProcessingJob` is the remote workflow record and must remain the sole retry/recovery authority.
-- App Attest, the Neon adapter, and processing leases are locally implemented and mocked, but the Apple capability/signing profiles, real database migration/concurrency behavior, physical enrollment, TestFlight renewal, WAF policy, and operational cleanup still require live proof.
+- App Attest, the Neon adapter, processing leases, and bounded stale-security-metadata cleanup are locally implemented and mocked, but the Apple capability/signing profiles, real database migration/concurrency behavior, physical enrollment, TestFlight renewal, and WAF policy still require live proof.
 
 ### External and live gates only
 
-- The GitHub-connected Vercel project has not been imported, so no canonical Preview or Production deployment exists.
+- The GitHub-connected Vercel project `lore` exists with `backend` as its root and a healthy Production deployment, but that deployment is behind the current branch and does not yet expose the App Attest routes.
 - No Fireworks or Groq credential has been configured and no synthetic request has traversed the real app, Vercel, and provider path.
-- Fireworks cache-policy acceptance and Groq organization-level ZDR for the exact endpoint/model have not been recorded as release evidence. The global switch/versioned policy configuration fails closed for both providers, and Groq has an additional explicit ZDR configuration gate.
-- Production authentication code now uses App Attest-backed installation sessions and rejects Preview bearer credentials, but the Apple capability, signing profiles, Neon store, and physical-device flows have not yet been configured or proven live.
+- Fireworks cache-policy acceptance and Groq organization-level ZDR for the exact endpoint/model have not been recorded as release evidence. These remain release gates before real user content is sent; the provider/model policy identifier is source-controlled rather than duplicated in deployment variables.
+- Production authentication code now accepts only App Attest-backed installation sessions, but the Apple capability, signing profiles, Neon store, and physical-device flows have not yet been configured or proven live.
 - `UnavailableRemoteSpeechTranscriber` and `UnconfiguredLoreBackendProcessingClient` remain intentional fail-closed configurations when no approved API origin or credential is present.
 
 ### Production-capable status
@@ -555,12 +555,12 @@ This snapshot deliberately distinguishes code that exists from a feature that wo
 
 The next slice is release integration, not an iOS orchestration rebuild:
 
-1. Import the GitHub repository into Vercel with `backend` as the root, install an isolated Neon store, apply the auth migration, and configure a fail-closed Preview environment.
-2. Enable the App Attest capability/signing profiles, then prove development enrollment and renewal on a physical iPhone against Preview.
-3. Prove processing-lease concurrency against the real Preview database and add production WAF/cleanup controls.
+1. Merge the current backend branch into the GitHub-connected `lore` Vercel project, install one Production Neon store, apply migrations `001`–`003`, and configure the fail-closed Production environment.
+2. Enable the App Attest capability and production signing profiles, then prove enrollment and renewal from a TestFlight build on a physical iPhone.
+3. Prove processing-lease concurrency and bounded security-metadata cleanup against the real Production database using synthetic content, then add Production WAF controls.
 4. Verify direct Groq and Fireworks paths with synthetic content through the real iOS client, including error, retry, cancellation, provenance, retention-attestation, and deletion-ordering evidence.
 5. Complete background transfer restoration and reduce peak memory for extremely long chunked recordings.
-6. Benchmark Apple local transcription versus the Groq route and validate the complete workflow on supported and older physical iPhones, then repeat App Attest renewal in TestFlight.
+6. Benchmark Apple local transcription versus the Groq route and validate the complete workflow on supported and older physical iPhones through TestFlight.
 7. Approve provider/privacy policy evidence and final user-facing copy before enabling real user content.
 
 ## Delivery Phases

@@ -13,11 +13,7 @@ const baseTime = new Date("2026-08-03T20:00:00.000Z");
 const keyRef = "a".repeat(64);
 const environment = {
   FIREWORKS_API_KEY: "test-fireworks-key-never-use-live",
-  GROQ_API_KEY: "test-groq-key-never-use-live",
-  LORE_GROQ_ZDR_VERIFIED: "true",
-  LORE_PROVIDER_POLICY_VERSION: "test-policy-v1",
-  LORE_REMOTE_PROCESSING_ENABLED: "true",
-  VERCEL_ENV: "production"
+  GROQ_API_KEY: "test-groq-key-never-use-live"
 };
 
 describe("durable processing leases", () => {
@@ -137,12 +133,14 @@ describe("durable processing leases", () => {
   });
 
   it("rejects mismatched transcription idempotency headers before provider invocation", async () => {
+    const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>();
     const response = await handleTranscription(
-      transcriptionRequest("preview-token", "different-idempotency-key"),
+      transcriptionRequest(harness.token, "different-idempotency-key"),
       {
-        environment: { ...environment, VERCEL_ENV: "preview", LORE_PREVIEW_BEARER_TOKEN: "preview-token" },
-        fetch: provider
+        environment,
+        fetch: provider,
+        auth: { config: harness.config, store: harness.store, now: baseTime }
       }
     );
 
@@ -151,11 +149,13 @@ describe("durable processing leases", () => {
   });
 
   it("rejects a daily-entry header not scoped to job_id before provider invocation", async () => {
+    const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>();
-    const request = dailyRequest("preview-token", "daily-entry:wrong-job-id");
+    const request = dailyRequest(harness.token, "daily-entry:wrong-job-id");
     const response = await handleDailyEntry(request, {
-      environment: { ...environment, VERCEL_ENV: "preview", LORE_PREVIEW_BEARER_TOKEN: "preview-token" },
-      fetch: provider
+      environment,
+      fetch: provider,
+      auth: { config: harness.config, store: harness.store, now: baseTime }
     });
 
     expect(response.status).toBe(400);
@@ -240,7 +240,6 @@ function testConfig(): AppAttestRuntimeConfig {
     teamIdentifier: "ABCDE12345",
     bundleIdentifier: "cascadianpines.lore",
     environment: "production",
-    allowedBundleVersions: new Set(["1"]),
     allowedValidationCategories: new Set([4]),
     sessionSigningSecret: "session-signing-secret-at-least-32-bytes",
     stateHmacSecret: "state-reference-secret-at-least-32-bytes",

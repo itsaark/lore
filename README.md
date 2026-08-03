@@ -9,6 +9,7 @@ Lore is a privacy-first iPhone journal that turns voice notes into a durable loc
 - `web/`: reserved for the future public website and account portal; it should be a separate Vercel project when created
 - `architecture.md`: system architecture and product boundaries
 - `backend-delivery-plan.md`: requirements, acceptance criteria, and verification gates for remote processing
+- `production-runbook.md`: Production-only deployment, verification, rotation, rollback, and incident procedures
 - `inference-strategy.md`: local/remote model and routing strategy
 - `vision.md`: product vision and near-term scope
 
@@ -24,8 +25,8 @@ Create Vercel projects by importing this GitHub repository. Do not create a disc
 - Production branch: `main`
 - Root directory: `backend`
 - Framework preset: Other
-- Node.js version: 22.x
-- Suggested project name: `lore-api`
+- Node.js version: 24.x
+- Project name: `lore`
 
 The API project owns only API domains and server-side secrets. See `backend/README.md` for environment variables and verification commands.
 
@@ -35,14 +36,10 @@ Create `web/` as a Next.js application when the landing page work starts. Import
 
 The public website and API should remain separate Vercel projects even if both live in this repository. This preserves independent deployments, environment scopes, domains, observability, and rollback.
 
-## Connect the iOS app to a Preview API
+## Production remote processing
 
 The iOS app contains a provider-neutral HTTPS client. Fireworks and Groq keys stay in Vercel and are never added to the Xcode project.
 
-For a local Debug build, set these scheme environment variables:
+Debug and Simulator builds are deliberately local-only. They ignore backend URL and token environment variables, so there is no Preview credential or remote Debug mode to configure.
 
-- `LORE_BACKEND_BASE_URL`: the HTTPS origin of the Git-connected Vercel Preview deployment
-- `LORE_PREVIEW_BEARER_TOKEN`: the same synthetic-testing token configured in that Preview environment
-- `LORE_USE_APP_ATTEST=true`: optional physical-development override that exercises development App Attest against Preview instead of the bearer
-
-For release builds, configure the `LORE_BACKEND_BASE_URL` build setting to the production API origin. Release builds always use App Attest-backed, short-lived installation sessions and ignore the preview bearer token. If App Attest is unsupported or enrollment fails, remote processing fails closed while local recording and processing remain available.
+Release builds use the source-controlled Production API origin and App Attest-backed, short-lived installation sessions. If the origin changes, update `LoreRemoteServices.productionOrigin` in `RemoteProcessingRuntime.swift`. If App Attest is unsupported or enrollment fails, remote processing fails closed while local recording and local processing remain available.

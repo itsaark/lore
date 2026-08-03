@@ -10,11 +10,11 @@ As of 2026-08-03:
 
 - `RP-P0` is implemented and unit-tested: the app commits the local `Story`, protected `AudioAsset`, and queued transcription `ProcessingJob` before opening a remote request.
 - `RP-00` is implemented locally: TypeScript and Swift use explicit snake-case wire contracts, strict enums/schemas, stable aliases, retention fields, and cross-boundary fixture tests. Live deployment compatibility remains part of `RP-09`.
-- `RP-01` is partial: the API foundation, health route, fail-closed configuration, and content-free logger are implemented and tested. The canonical Vercel project must still be imported from GitHub with `backend` as its root directory.
-- `RP-02` is implemented locally but not live-proven: iOS and backend now implement App Attest bootstrap/renewal, short installation sessions, Production rejection of Preview bearer credentials, content-free rate limits, encrypted receipts, atomic Neon challenge/counter state, and one-winner processing leases. Apple capability/profile setup, real Neon concurrency, WAF/cleanup, physical enrollment, and TestFlight evidence remain open.
+- `RP-01` is partial: the API foundation, health route, fail-closed configuration, and content-free logger are implemented and tested. The GitHub-connected `lore` Vercel project exists with `backend` as its root, but Production is behind the current branch.
+- `RP-02` is implemented locally but not live-proven: iOS and backend now implement Production App Attest bootstrap/renewal, short installation sessions, content-free rate limits, encrypted receipts, atomic Neon challenge/counter state, one-winner processing leases, and bounded cleanup. Static bearer credentials do not exist. Apple capability/profile setup, real Neon concurrency, WAF, physical enrollment, and TestFlight evidence remain open.
 - `RP-03` is implemented for foreground processing: iOS transcodes unsupported recordings to M4A, creates bounded deterministic chunks, uploads multipart binary sequentially, and assembles ordered text and segment provenance. Background transfer restoration and a streaming implementation that avoids retaining every prepared chunk in memory remain production-hardening work.
 - `RP-04` is implemented behind the policy gate: the direct Groq adapter and real iOS HTTP/transcription client handle bounded multipart input, timestamped output, chunk provenance, errors, retries, and cancellation. A live ZDR-enabled synthetic canary remains required.
-- `RP-05` is implemented behind the global remote switch and versioned policy configuration: the direct Fireworks adapter, strict grounded result contract, iOS request path, and complete local result persistence are covered by mocked tests. Live synthetic verification and production cache-policy approval remain required.
+- `RP-05` is implemented behind the global remote switch and a source-controlled provider/model policy identifier: the direct Fireworks adapter, strict grounded result contract, iOS request path, and complete local result persistence are covered by mocked tests. Live synthetic verification and production cache-policy approval remain required.
 - `RP-06` is implemented locally with an ephemeral, HTTPS-only iOS client, strict request/response validation, provider-neutral errors, idempotency, and no provider credentials in the app.
 - `RP-07` is implemented locally: onboarding and Settings provide Device Only/Adaptive selection, revocable text and separate audio-upload consent, and routing enforces current network and cellular policy.
 - `RP-08` is implemented for in-app/relaunch execution: durable jobs own leases, retry/backoff, cancellation, consent/network waiting, idempotent transcript commits, complete daily-entry commits, and commit-driven audio deletion. Background URLSession restoration remains release hardening.
@@ -22,7 +22,7 @@ As of 2026-08-03:
 
 No Fireworks or Groq credential or live user content has been sent. Processing routes remain fail-closed.
 
-The earlier manually created Vercel project is not the canonical deployment. The owner will delete it; after this work is merged, import the GitHub repository into Vercel as a new project with `backend` as the root directory. All future Preview and Production evidence must come from that Git-connected project.
+The canonical deployment is the GitHub-connected Vercel project `lore`, with `backend` as its root directory and `main` as its only deployment-enabled branch. Lore maintains no separate Preview backend, and provider/auth secrets are scoped only to Production.
 
 ## End Goal
 
@@ -78,14 +78,14 @@ The remote-processing milestone is complete only when all of the following are t
 These are external prerequisites, not tasks an implementation agent should guess:
 
 - Vercel team/project ownership and the production domain.
-- A Fireworks API key for Preview and Production, plus approval of the verified ZDR, cache, DPA, region, and subprocessor configuration.
+- A Production Fireworks API key, plus approval of the verified ZDR, cache, DPA, region, and subprocessor configuration.
 - A Groq API key for synthetic speech testing and confirmation that organization Data Controls have ZDR enabled for the selected Audio Transcriptions endpoint/models.
-- Enable App Attest for `cascadianpines.lore` and regenerate Development/Distribution profiles after the committed entitlements are reviewed.
-- Provision isolated Preview and Production Neon stores through Vercel Marketplace and apply `backend/migrations/001_app_attest_auth.sql` followed by `backend/migrations/002_processing_leases.sql`.
+- Enable App Attest for `cascadianpines.lore` and generate Distribution profiles after the committed Production entitlement is reviewed.
+- Provision one Production Neon store through Vercel Marketplace and apply migrations `001`, `002`, and `003` in filename order.
 - The supported minimum iOS version and at least one physical older iPhone for the release test.
 - Approval of final privacy copy before real user content is enabled.
 
-Until those inputs exist, agents may complete local development and synthetic preview testing, but must report production tasks as blocked rather than complete.
+Until those inputs exist, agents may complete local development and offline synthetic testing, but must report production tasks as blocked rather than complete.
 
 ## Immediate Execution Slice
 
@@ -93,11 +93,11 @@ The existing recording UI, audio engine, transcript models, route policies, and 
 
 The local implementation slice through `RP-08` now exists. Execute the remaining release path in this order:
 
-1. Import the GitHub repository into Vercel with `backend` as the project root, install an isolated Neon Preview store, run the auth migration, and configure fail-closed Preview provider/policy/auth variables.
-2. Enable App Attest for Lore, refresh signing profiles, and prove development enrollment plus session renewal from a physical iPhone against Preview.
-3. Prove the content-free processing leases under real-database concurrency, then add production WAF rules and stale-auth-state cleanup.
-4. Run `RP-09` synthetic Groq and Fireworks canaries through the real iOS HTTP client; capture schema, privacy, retry, cancellation, and no-content-log evidence.
-5. Configure the isolated Production auth/provider environment and repeat authentication plus canaries with TestFlight.
+1. Merge the current branch so the GitHub-connected `lore` project deploys the current backend, install one Production Neon store, apply migrations `001`–`003`, and configure only Production provider/auth variables.
+2. Enable App Attest for Lore, refresh Distribution signing, and prove enrollment plus session renewal from a physical iPhone through TestFlight.
+3. Prove content-free processing leases and bounded cleanup under real Production database concurrency with synthetic data, then add Production WAF rules.
+4. Run `RP-09` synthetic Groq and Fireworks canaries through the real TestFlight iOS HTTP client; capture schema, privacy, retry, cancellation, and no-content-log evidence.
+5. Keep real-user processing disabled until those Production canaries and provider-policy approvals pass.
 6. Harden background transfer restoration and long-recording memory behavior without changing the frozen public contract.
 7. Complete `RP-10` physical-device transcription accuracy, latency, interruption, thermal, and deletion validation before enabling real user content.
 
@@ -172,7 +172,7 @@ RP-00 contracts                                          |
                                                    -> RP-10 production deployment and release evidence
 ```
 
-The dependency graph records the order used to build the local foundation. `RP-P0` and `RP-00` through `RP-08` now have local implementations. The active dependency edge is from Git-connected Preview plus live App Attest/Neon/provider policy evidence into `RP-09`, then TestFlight and physical-device evidence into `RP-10`.
+The dependency graph records the order used to build the local foundation. `RP-P0` and `RP-00` through `RP-08` now have local implementations. The active dependency edge is from the Git-connected Production deployment plus live App Attest/Neon/provider-policy evidence into `RP-09`, then TestFlight and physical-device evidence into `RP-10`.
 
 ## RP-P0 — Persist Remote Capture Before Processing
 
@@ -230,7 +230,7 @@ Verification evidence:
 
 ## RP-01 — Build the Vercel Foundation
 
-End goal: a preview Vercel deployment runs the API shell with validated configuration and content-free observability.
+End goal: the Production Vercel deployment runs the API shell with validated configuration and content-free observability.
 
 Requirements:
 
@@ -238,19 +238,19 @@ Requirements:
 - Implement `/v1/health`, request IDs, timeouts, abort propagation, response security headers, and normalized errors.
 - Validate environment variables at cold start without printing their values.
 - Implement a logger with an allowlist of content-free fields. Logging arbitrary objects or provider errors is forbidden.
-- Add a kill switch that disables all content-processing routes without disabling health checks.
-- Do not add a database, Blob store, queue, analytics SDK, error-reporting SDK, or request-body capture.
+- Keep Production processing available whenever provider credentials are configured; emergency shutdown uses provider-key revocation or a deployment rollback without affecting the local app.
+- Do not add a content-bearing database, Blob store, queue, analytics SDK, error-reporting SDK, or request-body capture. A transactional store is required only for the bounded, content-free security state defined in `app-attest-auth.md`.
 
 Acceptance criteria:
 
-- Preview deployment health check passes.
+- Production deployment health check passes.
 - Missing configuration fails startup or returns `provider_policy_unverified`; it never silently uses a default provider.
 - Tests prove the logger drops known sensitive field names and never serializes request bodies.
 - A repository scan finds no committed secrets.
 
 Verification evidence:
 
-- Preview deployment URL.
+- Production deployment URL.
 - Deployment command and output.
 - Logger/redaction test output.
 - Sanitized environment-variable inventory containing names only.
@@ -264,7 +264,7 @@ Requirements:
 - Write an ADR for the production installation/session authentication flow.
 - Recommended design: validate Apple App Attest during bootstrap, issue a short-lived signed Lore session token, and rotate/expire it without requiring a biography account.
 - Production routes must not accept a shared secret embedded in the app.
-- Preview-only test authentication must be explicitly disabled in Production.
+- Processing routes accept only short-lived App Attest-backed sessions; shared or static bearer credentials are forbidden in every environment.
 - Rate-limit by a keyed pseudonymous installation hash and route; never by transcript, name, or raw device identifier.
 - If idempotency metadata is persisted, store only a keyed idempotency hash, task kind, timestamps, status class, and TTL. Never store input or output content.
 
@@ -279,7 +279,7 @@ Verification evidence:
 
 - ADR and threat-model update.
 - Automated auth/replay/rate-limit test output.
-- Production-versus-preview configuration test.
+- Production-only authentication configuration test.
 
 ## RP-03 — Implement Bounded Audio Transport
 
@@ -377,15 +377,15 @@ End goal: dependency injection selects a real Lore HTTP client for Groq-backed t
 Requirements:
 
 - Implement a URLSession-based `LoreBackendProcessingClient` for health, multipart transcription, and daily-entry routes.
-- Configure base URL, API environment, pinned schema versions, and feature kill switch without embedding provider credentials.
+- Configure the source-controlled Production base URL and pinned schema versions without embedding provider credentials.
 - Apply request timeouts, cancellation, TLS-only transport, safe error mapping, and bounded response decoding.
 - Inject the live HTTP client into `SpeechRecognitionViewModel`; remove production reliance on the unconfigured defaults when remote processing is enabled.
-- Keep unconfigured and mock clients available for previews and tests.
+- Keep unconfigured and mock clients available for SwiftUI previews and tests; they never authenticate to a live backend.
 - Never log request bodies, response bodies, transcript excerpts, vocabulary entries, authorization headers, or raw server errors.
 
 Acceptance criteria:
 
-- A configured build reaches preview health, completes a synthetic multipart transcription, and reaches the daily-entry route.
+- A TestFlight build reaches Production health, completes a synthetic multipart transcription, and reaches the daily-entry route.
 - An unconfigured build still fails closed and preserves audio.
 - Cancellation propagates to URLSession requests and retains the finalized local source.
 - Oversized or unsupported responses fail before excessive allocation or local commit.
@@ -395,7 +395,7 @@ Verification evidence:
 
 - URLProtocol-based client tests.
 - XcodeBuildMCP build/test output.
-- Preview end-to-end request IDs and local persistence assertions.
+- Production synthetic-canary request IDs and local persistence assertions.
 
 ## RP-07 — Enforce Privacy, Consent, and Network Routing
 
@@ -422,7 +422,7 @@ Acceptance criteria:
 
 Verification evidence:
 
-- Routing matrix tests covering privacy mode, consent, device class, network type, local failure, and kill switch.
+- Routing matrix tests covering privacy mode, consent, device class, network type, and local failure.
 - Simulator screenshots/accessibility snapshots of consent and deferred states.
 
 ## RP-08 — Complete Durable Jobs, Commits, and Deletion Semantics
@@ -456,17 +456,17 @@ Verification evidence:
 
 ## RP-09 — Add Automated End-to-End and Privacy Verification
 
-End goal: one command verifies the normal path and the dangerous failure paths against a preview deployment; guarded commands verify direct Fireworks text and direct Groq speech with synthetic content.
+End goal: one guarded command verifies the normal path and dangerous failure paths against Production using synthetic content, including direct Fireworks text and direct Groq speech.
 
 Requirements:
 
 - Add backend unit, contract, adapter, security, and log-redaction suites.
 - Add iOS contract, client, routing, persistence, retry, cancellation, and deletion suites.
 - Add a synthetic audio fixture with no real personal data.
-- Add a preview E2E test: remote-routed device -> Vercel -> mocked or sandbox provider -> local transcript -> daily entry -> local commit -> audio deletion.
+- Add a guarded Production synthetic E2E test: TestFlight remote-routed device -> Vercel -> provider -> local transcript -> daily entry -> local commit -> audio deletion.
 - Add guarded live canaries using production-shaped Fireworks and Groq settings with synthetic content only.
 - Scan source, built app strings, logs, and test artifacts for seeded canary phrases and secrets.
-- Test 401, 413, 429, timeout, provider 5xx, malformed JSON, invalid source IDs, empty transcript, cancellation, response loss, and kill switch.
+- Test 401, 413, 429, timeout, provider 5xx, malformed JSON, invalid source IDs, empty transcript, cancellation, and response loss.
 
 Acceptance criteria:
 
@@ -491,7 +491,7 @@ Requirements:
 
 - Provision production Vercel configuration with dedicated Fireworks and Groq keys scoped as narrowly as each provider permits.
 - Verify Fireworks ZDR, cache policy, residency, DPA scope, and disabled persistence features for production; separately verify Groq organization-level ZDR for the exact Audio Transcriptions endpoint and model aliases.
-- Configure the API domain, environment separation, kill switch, rate limits, alerts, and key-rotation procedure.
+- Configure the API domain, Production-only environment, rate limits, alerts, and key-rotation procedure.
 - Run the synthetic production canary.
 - Test an explicitly remote-routed physical iPhone through transcription and daily-entry generation.
 - Inspect local artifacts/provenance and confirm successful audio deletion.

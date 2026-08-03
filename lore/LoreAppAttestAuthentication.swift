@@ -5,6 +5,11 @@ import Security
 
 protocol LoreBackendAuthorizing: Sendable {
     func authorizationHeaderValue() async throws -> String
+    func invalidateSession() async
+}
+
+extension LoreBackendAuthorizing {
+    func invalidateSession() async {}
 }
 
 enum LoreAppAttestError: Error, LocalizedError, Equatable {

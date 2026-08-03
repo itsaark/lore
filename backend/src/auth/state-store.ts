@@ -28,6 +28,12 @@ export type ProcessingLeaseAcquireResult =
   | { status: "acquired"; expiresAt: Date }
   | { status: "active"; expiresAt: Date };
 
+export type SecurityMetadataCleanupResult = {
+  challenges: number;
+  rateLimitBuckets: number;
+  processingLeases: number;
+};
+
 export interface AuthStateStore {
   putChallenge(record: ChallengeRecord): Promise<void>;
   inspectChallenge(input: {
@@ -55,6 +61,7 @@ export interface AuthStateStore {
   }): Promise<ProcessingLeaseAcquireResult>;
   releaseProcessingLease(input: { claimRef: string; leaseToken: string }): Promise<boolean>;
   incrementRateLimit(bucketRef: string, now: Date, windowSeconds: number, maximum: number): Promise<boolean>;
+  cleanupExpiredSecurityMetadata(now: Date, batchSize: number): Promise<SecurityMetadataCleanupResult>;
 }
 
 export class NeonAuthStateStore implements AuthStateStore {
@@ -200,6 +207,20 @@ export class NeonAuthStateStore implements AuthStateStore {
     ) as Array<Record<string, unknown>>;
     return Number(rows[0]?.request_count ?? maximum + 1) <= maximum;
   }
+
+  async cleanupExpiredSecurityMetadata(now: Date, batchSize: number): Promise<SecurityMetadataCleanupResult> {
+    const rows = await this.sql.query(
+      `SELECT deleted_challenges, deleted_rate_limit_buckets, deleted_processing_leases
+       FROM lore_cleanup_expired_security_metadata($1, $2)`,
+      [now.toISOString(), batchSize]
+    ) as Array<Record<string, unknown>>;
+    const row = rows[0];
+    return {
+      challenges: parseCleanupCount(row?.deleted_challenges, batchSize),
+      rateLimitBuckets: parseCleanupCount(row?.deleted_rate_limit_buckets, batchSize),
+      processingLeases: parseCleanupCount(row?.deleted_processing_leases, batchSize)
+    };
+  }
 }
 
 function parseStoreStatus<const Status extends string>(value: unknown, allowed: readonly Status[]): Status {
@@ -207,10 +228,18 @@ function parseStoreStatus<const Status extends string>(value: unknown, allowed: 
   throw new Error("Auth state transaction returned an invalid status");
 }
 
+function parseCleanupCount(value: unknown, batchSize: number): number {
+  const count = Number(value);
+  if (!Number.isInteger(count) || count < 0 || count > batchSize) {
+    throw new Error("Security metadata cleanup returned an invalid count");
+  }
+  return count;
+}
+
 export class MemoryAuthStateStore implements AuthStateStore {
   private readonly challenges = new Map<string, ChallengeRecord & { consumedAt: Date | null }>();
   private readonly keys = new Map<string, AppAttestKeyRecord>();
-  private readonly rateLimits = new Map<string, number>();
+  private readonly rateLimits = new Map<string, { count: number; expiresAt: Date }>();
   private readonly processingLeases = new Map<string, { leaseToken: string; expiresAt: Date }>();
 
   async putChallenge(record: ChallengeRecord): Promise<void> {
@@ -299,8 +328,37 @@ export class MemoryAuthStateStore implements AuthStateStore {
   async incrementRateLimit(bucketRef: string, now: Date, windowSeconds: number, maximum: number): Promise<boolean> {
     const window = Math.floor(now.getTime() / (windowSeconds * 1_000));
     const key = `${bucketRef}:${window}`;
-    const next = (this.rateLimits.get(key) ?? 0) + 1;
-    this.rateLimits.set(key, next);
+    const next = (this.rateLimits.get(key)?.count ?? 0) + 1;
+    this.rateLimits.set(key, {
+      count: next,
+      expiresAt: new Date((window + 2) * windowSeconds * 1_000)
+    });
     return next <= maximum;
   }
+
+  async cleanupExpiredSecurityMetadata(now: Date, batchSize: number): Promise<SecurityMetadataCleanupResult> {
+    if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 1000) {
+      throw new Error("Security metadata cleanup batch must be between 1 and 1000");
+    }
+    return {
+      challenges: deleteExpiredFromMap(this.challenges, batchSize, (value) => value.expiresAt <= now),
+      rateLimitBuckets: deleteExpiredFromMap(this.rateLimits, batchSize, (value) => value.expiresAt <= now),
+      processingLeases: deleteExpiredFromMap(this.processingLeases, batchSize, (value) => value.expiresAt <= now)
+    };
+  }
+}
+
+function deleteExpiredFromMap<Value>(
+  values: Map<string, Value>,
+  batchSize: number,
+  isExpired: (value: Value) => boolean
+): number {
+  let deleted = 0;
+  for (const [key, value] of values) {
+    if (!isExpired(value)) continue;
+    values.delete(key);
+    deleted += 1;
+    if (deleted === batchSize) break;
+  }
+  return deleted;
 }

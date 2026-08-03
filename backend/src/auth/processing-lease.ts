@@ -10,10 +10,7 @@ export type HeldProcessingLease = {
   release: () => Promise<boolean>;
 };
 
-/**
- * Acquires the one-winner boundary for a provider invocation. Preview bearer
- * traffic is deliberately test-only and does not create durable claims.
- */
+/** Acquires the one-winner boundary for an authenticated provider invocation. */
 export async function acquireProcessingLease(input: {
   authorization: ProcessingAuthorization;
   task: ProcessingTask;
@@ -21,8 +18,7 @@ export async function acquireProcessingLease(input: {
   idempotencyKey: string;
   now?: Date;
   randomToken?: () => string;
-}): Promise<HeldProcessingLease | null> {
-  if (input.authorization.kind === "preview") return null;
+}): Promise<HeldProcessingLease> {
   const authorization = input.authorization;
 
   const now = input.now ?? new Date();

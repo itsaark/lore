@@ -150,7 +150,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Short-lived HS256 token issued only after App Attest attestation or assertion verification. Preview bearer credentials are rejected in production.
+      description: Short-lived HS256 token issued only after production App Attest attestation or assertion verification. Static application bearer credentials are not accepted.
   responses:
     ApiError:
       description: Stable content-free error response.

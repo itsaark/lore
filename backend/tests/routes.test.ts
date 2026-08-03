@@ -1,15 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleDailyEntry } from "../api/v1/daily-entries.js";
 import { handleTranscription } from "../api/v1/transcriptions.js";
+import { issueSessionToken } from "../src/auth/session-token.js";
+import { MemoryAuthStateStore, type AppAttestKeyRecord } from "../src/auth/state-store.js";
+import { PROVIDER_POLICY_VERSION, type AppAttestRuntimeConfig } from "../src/config.js";
 
+const baseTime = new Date("2026-08-03T20:00:00.000Z");
+const keyRef = "a".repeat(64);
 const environment = {
   FIREWORKS_API_KEY: "test-fireworks-key-never-use-live",
-  GROQ_API_KEY: "test-groq-key-never-use-live",
-  LORE_GROQ_ZDR_VERIFIED: "true",
-  LORE_PROVIDER_POLICY_VERSION: "test-policy-v1",
-  LORE_REMOTE_PROCESSING_ENABLED: "true",
-  LORE_PREVIEW_BEARER_TOKEN: "preview-token",
-  VERCEL_ENV: "preview"
+  GROQ_API_KEY: "test-groq-key-never-use-live"
 };
 
 describe("processing routes", () => {
@@ -28,6 +28,7 @@ describe("processing routes", () => {
   });
 
   it("accepts a bounded multipart transcription request", async () => {
+    const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>(async () => Response.json({
       text: "Synthetic transcript.",
       language: "en",
@@ -50,22 +51,27 @@ describe("processing routes", () => {
     const response = await handleTranscription(new Request("https://lore.invalid/v1/transcriptions", {
       method: "POST",
       headers: {
-        Authorization: "Bearer preview-token",
+        Authorization: `Bearer ${harness.token}`,
         "Idempotency-Key": "transcription:note-1:revision-1:chunk-0"
       },
       body: form
-    }), { environment, fetch: provider });
+    }), { environment, fetch: provider, auth: harness.auth });
 
     expect(response.status).toBe(200);
     expect(provider).toHaveBeenCalledOnce();
     await expect(response.json()).resolves.toMatchObject({
       transcript: "Synthetic transcript.",
       request_id: expect.any(String),
-      provenance: { provider_id: "groq", provider_request_id: "req_audio_route" }
+      provenance: {
+        provider_id: "groq",
+        provider_request_id: "req_audio_route",
+        model_policy_version: PROVIDER_POLICY_VERSION
+      }
     });
   });
 
-  it("fails closed before upload when Groq ZDR is unverified", async () => {
+  it("fails closed before upload when the Groq credential is absent", async () => {
+    const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>();
     const form = new FormData();
     form.append("audio", new File(["audio"], "note.m4a", { type: "audio/m4a" }));
@@ -84,13 +90,14 @@ describe("processing routes", () => {
     const response = await handleTranscription(new Request("https://lore.invalid/v1/transcriptions", {
       method: "POST",
       headers: {
-        Authorization: "Bearer preview-token",
+        Authorization: `Bearer ${harness.token}`,
         "Idempotency-Key": "transcription:note-1:revision-1:chunk-0"
       },
       body: form
     }), {
-      environment: { ...environment, LORE_GROQ_ZDR_VERIFIED: "false" },
-      fetch: provider
+      environment: { FIREWORKS_API_KEY: environment.FIREWORKS_API_KEY },
+      fetch: provider,
+      auth: harness.auth
     });
 
     expect(response.status).toBe(503);
@@ -100,19 +107,21 @@ describe("processing routes", () => {
     });
   });
 
-  it("fails closed when the provider policy version is unreviewed", async () => {
+  it("fails closed before generation when the Fireworks credential is absent", async () => {
+    const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>();
     const response = await handleDailyEntry(new Request("https://lore.invalid/v1/daily-entries", {
       method: "POST",
       headers: {
-        Authorization: "Bearer preview-token",
+        Authorization: `Bearer ${harness.token}`,
         "Content-Type": "application/json",
         "Idempotency-Key": "daily-entry:5f3acbd5-676e-4cb3-83a4-150b09c735a9"
       },
       body: JSON.stringify(validDailyRequest())
     }), {
-      environment: { ...environment, LORE_PROVIDER_POLICY_VERSION: "unverified" },
-      fetch: provider
+      environment: { GROQ_API_KEY: environment.GROQ_API_KEY },
+      fetch: provider,
+      auth: harness.auth
     });
 
     expect(response.status).toBe(503);
@@ -123,6 +132,7 @@ describe("processing routes", () => {
   });
 
   it("calls Fireworks directly with its server-side API key", async () => {
+    const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>(async (_input, init) => {
       expect(init?.headers).toMatchObject({ Authorization: "Bearer test-fireworks-key-never-use-live" });
       return Response.json({
@@ -160,14 +170,15 @@ describe("processing routes", () => {
     const response = await handleDailyEntry(new Request("https://lore.invalid/v1/daily-entries", {
       method: "POST",
       headers: {
-        Authorization: "Bearer preview-token",
+        Authorization: `Bearer ${harness.token}`,
         "Content-Type": "application/json",
         "Idempotency-Key": "daily-entry:5f3acbd5-676e-4cb3-83a4-150b09c735a9"
       },
       body: JSON.stringify(validDailyRequest())
     }), {
       environment,
-      fetch: provider
+      fetch: provider,
+      auth: harness.auth
     });
 
     expect(response.status).toBe(200);
@@ -175,15 +186,16 @@ describe("processing routes", () => {
   });
 
   it("returns a stable invalid-request error for malformed JSON", async () => {
+    const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>();
     const response = await handleDailyEntry(new Request("https://lore.invalid/v1/daily-entries", {
       method: "POST",
       headers: {
-        Authorization: "Bearer preview-token",
+        Authorization: `Bearer ${harness.token}`,
         "Content-Type": "application/json"
       },
       body: "{not-json"
-    }), { environment, fetch: provider });
+    }), { environment, fetch: provider, auth: harness.auth });
 
     expect(response.status).toBe(400);
     expect(provider).not.toHaveBeenCalled();
@@ -192,6 +204,53 @@ describe("processing routes", () => {
     });
   });
 });
+
+async function authenticatedHarness() {
+  const config = testConfig();
+  const store = new MemoryAuthStateStore();
+  const challengeId = "3b9cc686-e6bd-474e-99ac-85eeaf38b832";
+  await store.putChallenge({
+    id: challengeId,
+    challengeHash: "challenge-hash",
+    purpose: "attestation",
+    keyRef: null,
+    expiresAt: new Date(baseTime.getTime() + 300_000)
+  });
+  const key: AppAttestKeyRecord = {
+    keyRef,
+    keyIdHash: "d".repeat(64),
+    publicKeyPem: "synthetic-public-key",
+    receiptCiphertext: "synthetic-encrypted-receipt",
+    environment: "production",
+    validationCategory: 4,
+    bundleVersion: "1",
+    counter: 0,
+    createdAt: baseTime,
+    updatedAt: baseTime
+  };
+  await store.registerKeyWithChallenge({
+    challenge: { id: challengeId, challengeHash: "challenge-hash", purpose: "attestation", now: baseTime },
+    key
+  });
+  const token = issueSessionToken(keyRef, config, baseTime).token;
+  return { token, auth: { config, store, now: baseTime } };
+}
+
+function testConfig(): AppAttestRuntimeConfig {
+  return {
+    teamIdentifier: "ABCDE12345",
+    bundleIdentifier: "cascadianpines.lore",
+    environment: "production",
+    allowedValidationCategories: new Set([2, 4]),
+    sessionSigningSecret: "session-signing-secret-at-least-32-bytes",
+    stateHmacSecret: "state-reference-secret-at-least-32-bytes",
+    receiptEncryptionKey: Buffer.alloc(32, 7),
+    databaseUrl: "postgresql://test.invalid/lore",
+    sessionTtlSeconds: 600,
+    challengeTtlSeconds: 300,
+    processingLeaseTtlSeconds: 90
+  };
+}
 
 function validDailyRequest(): Record<string, unknown> {
   return {

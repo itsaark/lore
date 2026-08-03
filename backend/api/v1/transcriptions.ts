@@ -121,7 +121,7 @@ export async function handleTranscription(
       });
       return jsonSuccess(response, id);
     } finally {
-      await lease?.release().catch(() => false);
+      await lease.release().catch(() => false);
     }
   } catch (error) {
     const apiError = error instanceof LoreApiError ? error : new LoreApiError("internal_error", 500, true);

@@ -320,8 +320,7 @@ struct LoreAppAttestAuthenticationTests {
         let request = makeDailyRequest()
         let missingAuthTransport = AuthRequestCapture()
         let configuration = try LoreBackendHTTPClientConfiguration(
-            baseURL: URL(string: "https://lore.example/api")!,
-            deployment: .production
+            baseURL: URL(string: "https://lore.example/api")!
         )
         let clientWithoutAuth = LoreBackendHTTPClient(
             configuration: configuration,
@@ -352,8 +351,7 @@ struct LoreAppAttestAuthenticationTests {
 
     @Test func productionHTTPClientMapsAuthorizerPolicyWithoutSendingContent() async throws {
         let configuration = try LoreBackendHTTPClientConfiguration(
-            baseURL: URL(string: "https://lore.example/api")!,
-            deployment: .production
+            baseURL: URL(string: "https://lore.example/api")!
         )
         let capture = AuthRequestCapture()
         let transport = LoreBackendHTTPTransport { request, _ in
@@ -374,12 +372,54 @@ struct LoreAppAttestAuthenticationTests {
         #expect(await capture.requests.isEmpty)
     }
 
-    @Test func debugRuntimeUsesAppAttestOnlyWhenExplicitlyEnabled() {
+    @Test func productionHTTPClientRefreshesRejectedSessionExactlyOnce() async throws {
+        let configuration = try LoreBackendHTTPClientConfiguration(
+            baseURL: URL(string: "https://lore.example/api")!
+        )
+        let capture = AuthRequestCapture()
+        let authorizer = RotatingTestAuthorizer()
+        let errorBody = Data("""
+        {"schema_version":"1.0","request_id":"req_auth","error":{"code":"unauthorized","message":"Unauthorized","retryable":false}}
+        """.utf8)
+        let client = LoreBackendHTTPClient(
+            configuration: configuration,
+            transport: LoreBackendHTTPTransport { request, _ in
+                await capture.record(request)
+                return (
+                    errorBody,
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: 401,
+                        httpVersion: nil,
+                        headerFields: ["Content-Type": "application/json"]
+                    )!
+                )
+            },
+            productionAuthorizer: authorizer
+        )
+
+        await #expect(throws: LoreBackendProcessingError.rejected(
+            code: "unauthorized",
+            retryable: false,
+            retryAfterSeconds: nil
+        )) {
+            _ = try await client.generateDailyEntry(makeDailyRequest())
+        }
+        let requests = await capture.requests
+        #expect(requests.count == 2)
+        #expect(requests[0].value(forHTTPHeaderField: "Authorization") == "Bearer session-1")
+        #expect(requests[1].value(forHTTPHeaderField: "Authorization") == "Bearer session-2")
+        #expect(await authorizer.invalidationCount == 1)
+    }
+
+    @MainActor @Test func debugRuntimeIsAlwaysLocalOnly() {
 #if DEBUG
-        #expect(LoreRemoteServices.usesAppAttestForCurrentBuild(environment: [:]) == false)
-        #expect(LoreRemoteServices.usesAppAttestForCurrentBuild(
-            environment: ["LORE_USE_APP_ATTEST": "true"]
-        ))
+        let services = LoreRemoteServices.configuredForCurrentBuild(
+            environment: [
+                "LORE_BACKEND_BASE_URL": "https://should-not-be-used.example"
+            ]
+        )
+        #expect(services.speechTranscriber is UnavailableRemoteSpeechTranscriber)
 #endif
     }
 
@@ -561,4 +601,16 @@ private struct StaticTestAuthorizer: LoreBackendAuthorizing {
 private struct ThrowingTestAuthorizer: LoreBackendAuthorizing {
     let error: LoreAppAttestError
     func authorizationHeaderValue() throws -> String { throw error }
+}
+
+private actor RotatingTestAuthorizer: LoreBackendAuthorizing {
+    private(set) var invalidationCount = 0
+
+    func authorizationHeaderValue() -> String {
+        "Bearer session-\(invalidationCount + 1)"
+    }
+
+    func invalidateSession() {
+        invalidationCount += 1
+    }
 }

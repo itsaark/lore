@@ -4,18 +4,10 @@ import Testing
 
 @Suite(.serialized)
 struct LoreBackendHTTPClientTests {
-    @Test func configurationRequiresHTTPSAndRejectsPreviewBearerInProduction() throws {
+    @Test func configurationRequiresHTTPS() throws {
         #expect(throws: LoreBackendProcessingError.invalidConfiguration) {
             _ = try LoreBackendHTTPClientConfiguration(
-                baseURL: try #require(URL(string: "http://lore.example")),
-                deployment: .test
-            )
-        }
-        #expect(throws: LoreBackendProcessingError.invalidConfiguration) {
-            _ = try LoreBackendHTTPClientConfiguration(
-                baseURL: try #require(URL(string: "https://lore.example")),
-                deployment: .production,
-                previewBearerToken: "preview-only"
+                baseURL: try #require(URL(string: "http://lore.example"))
             )
         }
     }
@@ -58,7 +50,7 @@ struct LoreBackendHTTPClientTests {
         let recorded = try #require(await capture.last)
         let bodyText = String(decoding: recorded.body, as: UTF8.self)
         #expect(recorded.request.url?.absoluteString == "https://lore.example/api/v1/transcriptions")
-        #expect(recorded.request.value(forHTTPHeaderField: "Authorization") == "Bearer preview-token")
+        #expect(recorded.request.value(forHTTPHeaderField: "Authorization") == "Bearer production-session")
         #expect(recorded.request.value(forHTTPHeaderField: "Idempotency-Key") == "transcription:\(jobId.uuidString.lowercased()):chunk-0")
         #expect(recorded.request.value(forHTTPHeaderField: "X-Request-ID")?.hasPrefix("ios_") == true)
         #expect(recorded.body.count <= LoreBackendHTTPClient.maximumMultipartBodyBytes)
@@ -287,11 +279,13 @@ struct LoreBackendHTTPClientTests {
         transport: LoreBackendHTTPTransport
     ) throws -> LoreBackendHTTPClient {
         let configuration = try LoreBackendHTTPClientConfiguration(
-            baseURL: try #require(URL(string: "https://lore.example/api")),
-            deployment: .test,
-            previewBearerToken: "preview-token"
+            baseURL: try #require(URL(string: "https://lore.example/api"))
         )
-        return LoreBackendHTTPClient(configuration: configuration, transport: transport)
+        return LoreBackendHTTPClient(
+            configuration: configuration,
+            transport: transport,
+            productionAuthorizer: LoreStaticTestAuthorizer(value: "Bearer production-session")
+        )
     }
 
     private func makeDailyRequest() -> DailyEntryGenerationRequest {
@@ -367,6 +361,11 @@ struct LoreBackendHTTPClientTests {
         {"provider_id":"\(provider)","model_alias":"\(modelAlias)","model_id":"\(modelId)","model_policy_version":"test-policy-v1","provider_request_id":"provider-request","processed_at":"2026-08-03T12:00:00Z","processing_duration_milliseconds":125,"retention_attestation":{"mode":"request_ephemeral","maximum_retention_seconds":0,"policy_version":"request-ephemeral-v1","attested_at":"2026-08-03T12:00:00Z"}}
         """
     }
+}
+
+private struct LoreStaticTestAuthorizer: LoreBackendAuthorizing {
+    let value: String
+    func authorizationHeaderValue() -> String { value }
 }
 
 private actor LoreRequestCapture {

@@ -1,21 +1,11 @@
 import Foundation
 
 struct LoreBackendHTTPClientConfiguration: Equatable, Sendable {
-    enum Deployment: Sendable {
-        case preview
-        case test
-        case production
-    }
-
     let baseURL: URL
-    let deployment: Deployment
-    let previewBearerToken: String?
     let requestTimeout: TimeInterval
 
     init(
         baseURL: URL,
-        deployment: Deployment,
-        previewBearerToken: String? = nil,
         requestTimeout: TimeInterval = 60
     ) throws {
         guard
@@ -30,16 +20,6 @@ struct LoreBackendHTTPClientConfiguration: Equatable, Sendable {
             throw LoreBackendProcessingError.invalidConfiguration
         }
 
-        let normalizedToken = previewBearerToken?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if deployment == .production, normalizedToken?.isEmpty == false {
-            throw LoreBackendProcessingError.invalidConfiguration
-        }
-        if let normalizedToken,
-           normalizedToken.isEmpty || normalizedToken.contains("\n") || normalizedToken.contains("\r") {
-            throw LoreBackendProcessingError.invalidConfiguration
-        }
-
         var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)
         let normalizedPath = components?.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
         components?.path = normalizedPath.isEmpty ? "/" : "/\(normalizedPath)/"
@@ -48,8 +28,6 @@ struct LoreBackendHTTPClientConfiguration: Equatable, Sendable {
         }
 
         self.baseURL = normalizedBaseURL
-        self.deployment = deployment
-        self.previewBearerToken = normalizedToken
         self.requestTimeout = requestTimeout
     }
 }
@@ -215,36 +193,33 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         request.setValue(requestId, forHTTPHeaderField: "X-Request-ID")
         request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
-        switch configuration.deployment {
-        case .preview, .test:
-            if let token = configuration.previewBearerToken {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
-        case .production:
-            guard let productionAuthorizer else {
-                throw LoreBackendProcessingError.notConfigured
-            }
-            let authorization: String
-            do {
-                authorization = try await productionAuthorizer.authorizationHeaderValue()
-            } catch let error as LoreAppAttestError {
-                throw Self.mapAuthorizationError(error)
-            } catch is CancellationError {
-                throw LoreBackendProcessingError.cancelled
-            } catch {
-                throw LoreBackendProcessingError.transportUnavailable
-            }
-            guard
-                authorization.hasPrefix("Bearer "),
-                authorization.count > "Bearer ".count,
-                !authorization.contains("\n"),
-                !authorization.contains("\r")
-            else {
-                throw LoreBackendProcessingError.invalidConfiguration
-            }
-            request.setValue(authorization, forHTTPHeaderField: "Authorization")
-        }
+        request.setValue(try await authorizationHeaderValue(), forHTTPHeaderField: "Authorization")
         return request
+    }
+
+    private func authorizationHeaderValue() async throws -> String {
+        guard let productionAuthorizer else {
+            throw LoreBackendProcessingError.notConfigured
+        }
+        let authorization: String
+        do {
+            authorization = try await productionAuthorizer.authorizationHeaderValue()
+        } catch let error as LoreAppAttestError {
+            throw Self.mapAuthorizationError(error)
+        } catch is CancellationError {
+            throw LoreBackendProcessingError.cancelled
+        } catch {
+            throw LoreBackendProcessingError.transportUnavailable
+        }
+        guard
+            authorization.hasPrefix("Bearer "),
+            authorization.count > "Bearer ".count,
+            !authorization.contains("\n"),
+            !authorization.contains("\r")
+        else {
+            throw LoreBackendProcessingError.invalidConfiguration
+        }
+        return authorization
     }
 
     private static func mapAuthorizationError(
@@ -287,10 +262,27 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         uploadFileURL: URL? = nil
     ) async throws -> (Data, HTTPURLResponse) {
         do {
-            let (data, response) = try await transport.send(request, uploadFileURL: uploadFileURL)
+            var activeRequest = request
+            var (data, response) = try await transport.send(activeRequest, uploadFileURL: uploadFileURL)
             try Task.checkCancellation()
-            guard let httpResponse = response as? HTTPURLResponse else {
+            guard var httpResponse = response as? HTTPURLResponse else {
                 throw LoreBackendProcessingError.invalidResponse(requestId: nil)
+            }
+            if httpResponse.statusCode == 401, let productionAuthorizer {
+                await productionAuthorizer.invalidateSession()
+                activeRequest.setValue(
+                    try await authorizationHeaderValue(),
+                    forHTTPHeaderField: "Authorization"
+                )
+                (data, response) = try await transport.send(
+                    activeRequest,
+                    uploadFileURL: uploadFileURL
+                )
+                try Task.checkCancellation()
+                guard let retriedResponse = response as? HTTPURLResponse else {
+                    throw LoreBackendProcessingError.invalidResponse(requestId: nil)
+                }
+                httpResponse = retriedResponse
             }
             guard (200..<300).contains(httpResponse.statusCode) else {
                 throw decodeError(data, response: httpResponse)

@@ -186,9 +186,6 @@ function enforceExtensionPolicy(extensions: AppAttestExtensions, config: AppAtte
   if (!config.allowedValidationCategories.has(extensions.validationCategory)) {
     throw new Error("validation category not allowed");
   }
-  if (!config.allowedBundleVersions.has(extensions.bundleVersion)) {
-    throw new Error("bundle version not allowed");
-  }
 }
 
 function decodeSingleObject(bytes: Buffer, label: string): Record<string, unknown> {

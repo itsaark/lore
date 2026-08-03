@@ -94,7 +94,7 @@ describe("App Attest installation sessions", () => {
     ["partial extension state", 4, null]
   ])("rejects %s after an extension-bearing enrollment", async (_label, category, version) => {
     const harness = makeHarness({
-      config: { ...testConfig(), allowedValidationCategories: new Set([4, 5]), allowedBundleVersions: new Set(["1", "2"]) }
+      config: { ...testConfig(), allowedValidationCategories: new Set([4, 5]) }
     });
     await register(harness);
     harness.verifier.nextCounter = 1;
@@ -261,12 +261,13 @@ describe("App Attest installation sessions", () => {
     expect(sessionResponse.status).toBe(200);
   });
 
-  it("rejects the preview bearer in production before provider invocation", async () => {
+  it("rejects an arbitrary static bearer before provider invocation", async () => {
+    const harness = makeHarness();
     let providerCalled = false;
-    const response = await handleDailyEntry(jsonRequest("/v1/daily-entries", {} , {
-      Authorization: "Bearer preview-token"
+    const response = await handleDailyEntry(jsonRequest("/v1/daily-entries", {}, {
+      Authorization: "Bearer static-token"
     }), {
-      environment: { VERCEL_ENV: "production", LORE_PREVIEW_BEARER_TOKEN: "preview-token" },
+      auth: { config: harness.config, store: harness.store, now: baseTime },
       fetch: async () => { providerCalled = true; return new Response(); }
     });
     expect(response.status).toBe(401);
@@ -409,7 +410,6 @@ function testConfig(): AppAttestRuntimeConfig {
     teamIdentifier: "ABCDE12345",
     bundleIdentifier: "cascadianpines.lore",
     environment: "production",
-    allowedBundleVersions: new Set(["1"]),
     allowedValidationCategories: new Set([4]),
     sessionSigningSecret: "session-signing-secret-at-least-32-bytes",
     stateHmacSecret: "state-reference-secret-at-least-32-bytes",
