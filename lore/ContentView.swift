@@ -15,11 +15,18 @@ struct ContentView: View {
     let userProfile: UserProfile
     @Environment(\.modelContext) private var modelContext
     @StateObject private var modelManager = ModelManager()
-    @StateObject private var speechRecognizer = SpeechRecognitionViewModel()
+    @StateObject private var speechRecognizer: SpeechRecognitionViewModel
     @State private var selectedTab: LaunchTab
 
     init(userProfile: UserProfile) {
         self.userProfile = userProfile
+        let remoteServices = LoreRemoteServices.configuredForCurrentBuild()
+        _speechRecognizer = StateObject(
+            wrappedValue: SpeechRecognitionViewModel(
+                remoteDailyEntryGenerator: remoteServices.dailyEntryGenerator,
+                remoteTranscriber: remoteServices.speechTranscriber
+            )
+        )
         let opensSettings = ProcessInfo.processInfo.arguments.contains("-LoreOpenSettings")
         _selectedTab = State(initialValue: opensSettings ? .settings : .notes)
     }
@@ -57,6 +64,9 @@ struct ContentView: View {
                 generationService: LocalGenerationService(modelManager: modelManager),
                 userProfile: userProfile
             )
+        }
+        .onChange(of: userProfile.updatedAt) { _, _ in
+            speechRecognizer.refreshRemoteProcessingPolicy()
         }
 #if canImport(UIKit)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in

@@ -6,15 +6,86 @@ enum RemoteTranscriptionReason: String, Equatable, Sendable {
     case localRecognizerUnavailable
 }
 
+enum SpeechTranscriptionDeferralReason: String, Equatable, Sendable {
+    case deviceOnlyRequiresLocalTranscription
+    case remoteTextConsentRequired
+    case remoteAudioConsentRequired
+    case cellularProcessingDisabled
+    case networkUnavailable
+    case networkUnknown
+    case remoteFallbackConfirmationRequired
+}
+
 enum SpeechTranscriptionRoute: Equatable, Sendable {
     case onDevice
     case remote(reason: RemoteTranscriptionReason)
+    case deferred(reason: SpeechTranscriptionDeferralReason)
 
     var usesRemoteService: Bool {
         if case .remote = self {
             return true
         }
         return false
+    }
+}
+
+enum SpeechNetworkConnection: Equatable, Sendable {
+    case wifi
+    case cellular
+    case unavailable
+    case unknown
+}
+
+struct RemoteProcessingPreferences: Equatable, Sendable {
+    let mode: LoreProcessingMode
+    let hasRemoteTextProcessingConsent: Bool
+    let hasRemoteAudioUploadConsent: Bool
+    let allowsCellularRemoteProcessing: Bool
+
+    init(
+        mode: LoreProcessingMode,
+        hasRemoteTextProcessingConsent: Bool,
+        hasRemoteAudioUploadConsent: Bool,
+        allowsCellularRemoteProcessing: Bool
+    ) {
+        self.mode = mode
+        self.hasRemoteTextProcessingConsent = hasRemoteTextProcessingConsent
+        self.hasRemoteAudioUploadConsent = hasRemoteAudioUploadConsent
+        self.allowsCellularRemoteProcessing = allowsCellularRemoteProcessing
+    }
+
+    init(userProfile: UserProfile) {
+        self.init(
+            mode: userProfile.processingMode,
+            hasRemoteTextProcessingConsent: userProfile.hasRemoteTextProcessingConsent,
+            hasRemoteAudioUploadConsent: userProfile.hasRemoteAudioUploadConsent,
+            allowsCellularRemoteProcessing: userProfile.allowsCellularRemoteProcessing
+        )
+    }
+}
+
+struct SpeechTranscriptionRoutingInput: Equatable, Sendable {
+    let capabilities: SpeechTranscriptionCapabilities
+    let preferences: RemoteProcessingPreferences
+    let networkConnection: SpeechNetworkConnection
+    let localRecognizerIsAvailable: Bool
+    let followsFailedLocalAttempt: Bool
+    let userConfirmedRemoteFallback: Bool
+
+    init(
+        capabilities: SpeechTranscriptionCapabilities,
+        preferences: RemoteProcessingPreferences,
+        networkConnection: SpeechNetworkConnection,
+        localRecognizerIsAvailable: Bool = true,
+        followsFailedLocalAttempt: Bool = false,
+        userConfirmedRemoteFallback: Bool = false
+    ) {
+        self.capabilities = capabilities
+        self.preferences = preferences
+        self.networkConnection = networkConnection
+        self.localRecognizerIsAvailable = localRecognizerIsAvailable
+        self.followsFailedLocalAttempt = followsFailedLocalAttempt
+        self.userConfirmedRemoteFallback = userConfirmedRemoteFallback
     }
 }
 
@@ -66,6 +137,50 @@ struct SpeechTranscriptionPolicy: Equatable, Sendable {
         }
 
         return .onDevice
+    }
+
+    /// Makes the complete privacy-aware decision used before opening an audio upload.
+    /// The capability-only overload above remains useful for benchmarks and eligibility UI;
+    /// callers that can execute remote work must use this overload.
+    func route(for input: SpeechTranscriptionRoutingInput) -> SpeechTranscriptionRoute {
+        let capabilityRoute = route(for: input.capabilities)
+        if capabilityRoute == .onDevice && input.localRecognizerIsAvailable && !input.followsFailedLocalAttempt {
+            return .onDevice
+        }
+
+        guard input.preferences.mode == .adaptive else {
+            return .deferred(reason: .deviceOnlyRequiresLocalTranscription)
+        }
+
+        if input.followsFailedLocalAttempt && !input.userConfirmedRemoteFallback {
+            return .deferred(reason: .remoteFallbackConfirmationRequired)
+        }
+
+        guard input.preferences.hasRemoteTextProcessingConsent else {
+            return .deferred(reason: .remoteTextConsentRequired)
+        }
+
+        guard input.preferences.hasRemoteAudioUploadConsent else {
+            return .deferred(reason: .remoteAudioConsentRequired)
+        }
+
+        switch input.networkConnection {
+        case .wifi:
+            break
+        case .cellular:
+            guard input.preferences.allowsCellularRemoteProcessing else {
+                return .deferred(reason: .cellularProcessingDisabled)
+            }
+        case .unavailable:
+            return .deferred(reason: .networkUnavailable)
+        case .unknown:
+            return .deferred(reason: .networkUnknown)
+        }
+
+        if capabilityRoute == .onDevice {
+            return .remote(reason: .localRecognizerUnavailable)
+        }
+        return capabilityRoute
     }
 
 }
@@ -159,12 +274,23 @@ struct RemoteSpeechTranscription: Equatable, Sendable {
     let provider: String
     let model: String
     let requestID: String?
+    let segments: [TranscriptSourceSegment]
+    let provenance: [RemoteProcessingProvenance]
 
-    init(transcript: String, provider: String, model: String, requestID: String? = nil) {
+    init(
+        transcript: String,
+        provider: String,
+        model: String,
+        requestID: String? = nil,
+        segments: [TranscriptSourceSegment] = [],
+        provenance: [RemoteProcessingProvenance] = []
+    ) {
         self.transcript = transcript
         self.provider = provider
         self.model = model
         self.requestID = requestID
+        self.segments = segments
+        self.provenance = provenance
     }
 }
 

@@ -1,8 +1,10 @@
 import Foundation
 
 enum RemoteRetentionMode: String, Codable, CaseIterable, Sendable {
-    case zeroDataRetention
-    case deleteImmediatelyAfterProcessing
+    /// The backend and provider must treat request content as ephemeral and
+    /// attest that no durable content was retained.
+    case zeroDataRetention = "request_ephemeral"
+    case deleteImmediatelyAfterProcessing = "delete_immediately_after_processing"
 }
 
 struct RemoteRetentionPolicy: Codable, Equatable, Sendable {
@@ -43,6 +45,9 @@ struct RemoteTranscriptionRequest: Codable, Equatable, Sendable {
     var schemaVersion: String
     var jobId: UUID
     var audio: RemoteAudioPayload
+    var chunkIndex: Int
+    var chunkCount: Int
+    var startMilliseconds: Int
     var languageCode: String?
     var vocabularyHints: [String]
     var retentionPolicy: RemoteRetentionPolicy
@@ -51,6 +56,9 @@ struct RemoteTranscriptionRequest: Codable, Equatable, Sendable {
         schemaVersion: String = Self.currentSchemaVersion,
         jobId: UUID,
         audio: RemoteAudioPayload,
+        chunkIndex: Int = 0,
+        chunkCount: Int = 1,
+        startMilliseconds: Int = 0,
         languageCode: String? = nil,
         vocabularyHints: [String] = [],
         retentionPolicy: RemoteRetentionPolicy = RemoteRetentionPolicy()
@@ -58,6 +66,9 @@ struct RemoteTranscriptionRequest: Codable, Equatable, Sendable {
         self.schemaVersion = schemaVersion
         self.jobId = jobId
         self.audio = audio
+        self.chunkIndex = chunkIndex
+        self.chunkCount = chunkCount
+        self.startMilliseconds = startMilliseconds
         self.languageCode = languageCode
         self.vocabularyHints = vocabularyHints
         self.retentionPolicy = retentionPolicy
@@ -66,6 +77,7 @@ struct RemoteTranscriptionRequest: Codable, Equatable, Sendable {
 
 struct TranscriptSourceSegment: Codable, Equatable, Identifiable, Sendable {
     var id: String
+    var chunkId: String? = nil
     var startMilliseconds: Int
     var endMilliseconds: Int
     var text: String
@@ -73,18 +85,30 @@ struct TranscriptSourceSegment: Codable, Equatable, Identifiable, Sendable {
     var speakerLabel: String?
 }
 
-struct RemoteDeletionReceipt: Codable, Equatable, Sendable {
+struct RemoteRetentionAttestation: Codable, Equatable, Sendable {
     var mode: RemoteRetentionMode
-    var acknowledgedAt: Date
-    var providerReceiptId: String?
+    var maximumRetentionSeconds: Int
+    var policyVersion: String
+    var attestedAt: Date
 }
 
 struct RemoteProcessingProvenance: Codable, Equatable, Sendable {
     var providerId: String
+    var modelAlias: String
     var modelId: String
+    var modelPolicyVersion: String
     var providerRequestId: String?
     var processedAt: Date
-    var deletionReceipt: RemoteDeletionReceipt
+    var processingDurationMilliseconds: Int
+    var retentionAttestation: RemoteRetentionAttestation
+}
+
+struct RemoteTranscriptionChunk: Codable, Equatable, Sendable {
+    var id: String
+    var index: Int
+    var count: Int
+    var startMilliseconds: Int
+    var durationMilliseconds: Int
 }
 
 struct RemoteTranscriptionResponse: Codable, Equatable, Sendable {
@@ -92,6 +116,8 @@ struct RemoteTranscriptionResponse: Codable, Equatable, Sendable {
 
     var schemaVersion: String
     var jobId: UUID
+    var requestId: String
+    var chunk: RemoteTranscriptionChunk
     var transcript: String
     var languageCode: String?
     var segments: [TranscriptSourceSegment]
@@ -99,8 +125,8 @@ struct RemoteTranscriptionResponse: Codable, Equatable, Sendable {
 }
 
 enum JournalPerspective: String, Codable, CaseIterable, Sendable {
-    case firstPerson
-    case thirdPerson
+    case firstPerson = "first_person"
+    case thirdPerson = "third_person"
 }
 
 enum JournalTense: String, Codable, CaseIterable, Sendable {
@@ -207,9 +233,9 @@ struct GroundedJournalEntry: Codable, Equatable, Sendable {
 }
 
 enum JournalMemoryCandidateKind: String, Codable, CaseIterable, Sendable {
-    case personAlias
+    case personAlias = "person_alias"
     case relationship
-    case lifeEvent
+    case lifeEvent = "life_event"
     case place
     case date
     case theme
@@ -223,7 +249,7 @@ enum JournalMemoryCandidateOperation: String, Codable, CaseIterable, Sendable {
     case confirm
     case correct
     case supersede
-    case flagConflict
+    case flagConflict = "flag_conflict"
 }
 
 enum JournalCandidateConfidence: String, Codable, CaseIterable, Sendable {
@@ -264,7 +290,9 @@ struct DailyEntryGenerationResponse: Codable, Equatable, Sendable {
     static let currentSchemaVersion = "1.0"
 
     var schemaVersion: String
+    var promptVersion: String
     var jobId: UUID
+    var requestId: String
     var entry: GroundedJournalEntry
     var memoryCandidates: [JournalMemoryCandidate]
     var uncertainties: [JournalUncertainty]
@@ -276,16 +304,37 @@ struct DailyEntryGenerationResponse: Codable, Equatable, Sendable {
 
 enum LoreBackendProcessingError: Error, LocalizedError, Equatable {
     case notConfigured
-    case invalidResponse
-    case rejected(code: String)
+    case invalidConfiguration
+    case invalidRequest
+    case payloadTooLarge(maximumBytes: Int)
+    case cancelled
+    case transportUnavailable
+    case rateLimited(retryAfterSeconds: Int?)
+    case invalidResponse(requestId: String?)
+    case rejected(code: String, retryable: Bool, retryAfterSeconds: Int?)
 
     var errorDescription: String? {
         switch self {
         case .notConfigured:
             return "Remote processing is not configured."
+        case .invalidConfiguration:
+            return "Remote processing has an invalid configuration."
+        case .invalidRequest:
+            return "The processing request is invalid."
+        case let .payloadTooLarge(maximumBytes):
+            return "The audio is larger than the supported \(maximumBytes)-byte chunk size."
+        case .cancelled:
+            return "The processing request was cancelled."
+        case .transportUnavailable:
+            return "Remote processing is temporarily unavailable."
+        case let .rateLimited(retryAfterSeconds):
+            if let retryAfterSeconds {
+                return "Remote processing is busy. Try again in \(retryAfterSeconds) seconds."
+            }
+            return "Remote processing is busy. Please try again shortly."
         case .invalidResponse:
             return "The processing service returned an invalid response."
-        case let .rejected(code):
+        case let .rejected(code, _, _):
             return "The processing service rejected the request (\(code))."
         }
     }

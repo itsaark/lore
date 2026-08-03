@@ -10,6 +10,8 @@ Decisions remain provisional until Lore's own transcription and journal-writing 
 
 Provider capabilities, pricing, and retention claims in this document were rechecked against official documentation on 2026-08-03. They must be checked again at the production release gate.
 
+The direct-provider implementation now exists locally: the iOS app durably saves capture state before networking, enforces Adaptive/text/audio/cellular consent, uploads bounded chunks through Lore's provider-neutral HTTPS API, and persists complete transcript and daily-entry provenance before deleting audio. This is not yet a production endorsement: the Git-connected Vercel deployment, Groq ZDR evidence, Fireworks policy/cache acceptance, live synthetic canaries, production authentication, and physical-device benchmarks remain release gates.
+
 ## MVP Route Summary
 
 ### Transcription

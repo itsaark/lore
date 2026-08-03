@@ -12,6 +12,36 @@ import SwiftUI
 import Accelerate
 import SwiftData
 
+enum TranscriptionJobRunnerError: Error, LocalizedError, Equatable {
+    case jobNotFound
+    case storyNotFound
+    case audioAssetNotFound
+    case audioFileMissing
+    case jobNotReady
+    case jobCancelled
+
+    var errorDescription: String? {
+        switch self {
+        case .jobNotFound:
+            return "Lore could not find the saved transcription job."
+        case .storyNotFound:
+            return "Lore could not find the saved recording for this transcription job."
+        case .audioAssetNotFound, .audioFileMissing:
+            return "Lore could not find the locally saved audio for this transcription job."
+        case .jobNotReady:
+            return "This transcription job is not ready to run yet."
+        case .jobCancelled:
+            return "This transcription job was cancelled."
+        }
+    }
+}
+
+private enum RemoteWorkAvailability: Equatable {
+    case permitted
+    case waitingForConsent
+    case waitingForNetwork
+}
+
 /// ViewModel for handling speech recognition functionality with word-by-word display
 @MainActor
 class SpeechRecognitionViewModel: ObservableObject {
@@ -39,7 +69,9 @@ class SpeechRecognitionViewModel: ObservableObject {
     private let transcriptionPolicy: SpeechTranscriptionPolicy
     private let remoteDailyEntryGenerator: any DailyEntryGenerationService
     private let remoteTranscriber: any RemoteSpeechTranscribing
+    private let networkConnectionProvider: any SpeechNetworkConnectionProviding
     private let localeIdentifier: String
+    private let deviceHardwareIdentifier: String
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
@@ -53,6 +85,8 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var audioLevelBuffer: [Float] = []
     private var audioLevelEnvelope = AudioLevelEnvelope()
     private var pendingSaveTask: Task<Void, Never>?
+    private var transcriptionRecoveryTask: Task<Void, Never>?
+    private var dailyEntryRecoveryTask: Task<Void, Never>?
     private var modelContext: ModelContext?
     private var generationService: (any GenerationService)?
     private var userProfile: UserProfile?
@@ -72,6 +106,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             backend: UnconfiguredLoreBackendProcessingClient()
         ),
         remoteTranscriber: any RemoteSpeechTranscribing = UnavailableRemoteSpeechTranscriber(),
+        networkConnectionProvider: (any SpeechNetworkConnectionProviding)? = nil,
         localeIdentifier: String = Locale.current.identifier,
         deviceHardwareIdentifier: String = CurrentSpeechDevice.hardwareIdentifier,
         supportsLocalGenerationRuntime: Bool = LocalModelRuntimeAvailability.isAvailable
@@ -80,7 +115,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         self.transcriptionPolicy = transcriptionPolicy
         self.remoteDailyEntryGenerator = remoteDailyEntryGenerator
         self.remoteTranscriber = remoteTranscriber
+        self.networkConnectionProvider = networkConnectionProvider ?? SystemSpeechNetworkMonitor()
         self.localeIdentifier = localeIdentifier
+        self.deviceHardwareIdentifier = deviceHardwareIdentifier
 
         let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
         self.speechRecognizer = recognizer
@@ -98,6 +135,11 @@ class SpeechRecognitionViewModel: ObservableObject {
                 supportsLocalRuntime: supportsLocalGenerationRuntime
             )
         )
+
+        self.networkConnectionProvider.observeChanges { [weak self] _ in
+            guard let self, self.userProfile != nil else { return }
+            self.refreshRemoteProcessingPolicy()
+        }
 
         Task {
             await requestPermissions()
@@ -142,6 +184,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         self.modelContext = modelContext
         self.generationService = generationService
         self.userProfile = userProfile
+        refreshRemoteProcessingPolicy(resumeJobs: false)
 
         guard !hasLoadedStories else {
             return
@@ -150,6 +193,265 @@ class SpeechRecognitionViewModel: ObservableObject {
         cleanupExpiredAudioAssets()
         loadStories()
         hasLoadedStories = true
+
+        Task { [weak self] in
+            await self?.resumePendingTranscriptionJobs()
+            await self?.resumePendingDailyEntryJobs()
+        }
+    }
+
+    /// Re-evaluates every remote boundary after the user changes privacy or
+    /// cellular settings. Revocation cancels an in-flight upload and leaves its
+    /// durable audio/job available for an explicit future retry.
+    func refreshRemoteProcessingPolicy() {
+        refreshRemoteProcessingPolicy(resumeJobs: true)
+    }
+
+    private func refreshRemoteProcessingPolicy(resumeJobs: Bool) {
+        transcriptionRoute = resolvedCaptureRoute()
+        currentCaptureRoute = transcriptionRoute
+        refreshAuthorizationState()
+
+        if isAwaitingRemoteTranscription,
+           remoteWorkAvailability(requiresAudioUpload: true) != .permitted {
+            pendingSaveTask?.cancel()
+        }
+
+        guard resumeJobs else { return }
+        Task { [weak self] in
+            await self?.resumePendingTranscriptionJobs()
+            await self?.resumePendingDailyEntryJobs()
+        }
+    }
+
+    /// Relaunch recovery entry point for queued work and interrupted leases.
+    /// It is safe to call repeatedly; completed transcript commits are idempotent.
+    func resumePendingTranscriptionJobs(now: Date = Date()) async {
+        guard let modelContext else { return }
+
+        transcriptionRecoveryTask?.cancel()
+        transcriptionRecoveryTask = nil
+
+        do {
+            let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+                .filter { $0.kind == .transcription }
+                .sorted { $0.createdAt < $1.createdAt }
+
+            for job in jobs {
+                if job.state != .succeeded {
+                    switch remoteWorkAvailability(requiresAudioUpload: true) {
+                    case .permitted:
+                        if job.state == .waitingForConsent || job.state == .waitingForNetwork {
+                            job.state = .queued
+                            job.nextAttemptAt = now
+                            try modelContext.save()
+                        }
+                    case .waitingForConsent:
+                        if job.state != .cancelled && job.state != .failed {
+                            job.state = .waitingForConsent
+                            job.nextAttemptAt = nil
+                            job.leaseExpiresAt = nil
+                            try modelContext.save()
+                        }
+                        continue
+                    case .waitingForNetwork:
+                        if job.state != .cancelled && job.state != .failed {
+                            job.state = .waitingForNetwork
+                            job.nextAttemptAt = nil
+                            job.leaseExpiresAt = nil
+                            try modelContext.save()
+                        }
+                        continue
+                    }
+                }
+
+                let shouldFinishDeletion = job.state == .succeeded && job.outputReferenceId != nil
+                let shouldAttempt = job.state == .queued && job.isReadyForAttempt(at: now)
+                let shouldRecoverLease = job.state == .running
+                    && job.leaseExpiresAt.map { $0 <= now } == true
+                guard shouldFinishDeletion || shouldAttempt || shouldRecoverLease else {
+                    continue
+                }
+
+                do {
+                    let story = try await Self.runTranscriptionJob(
+                        jobID: job.id,
+                        remoteTranscriber: remoteTranscriber,
+                        localeIdentifier: localeIdentifier,
+                        modelContext: modelContext,
+                        now: now
+                    )
+                    if job.state == .succeeded,
+                       story.biographyProse == nil,
+                       !story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        await processCapturedStory(story)
+                    }
+                } catch TranscriptionJobRunnerError.jobNotReady {
+                    continue
+                } catch {
+                    // The runner has already persisted retry/failure state and retained audio.
+                    print("Deferred transcription job \(job.id) did not complete: \(error)")
+                }
+            }
+            loadStories()
+            scheduleNextTranscriptionRecovery()
+        } catch {
+            print("Failed to recover transcription jobs: \(error)")
+            scheduleNextTranscriptionRecovery()
+        }
+    }
+
+    /// Arms the next durable retry while Lore stays open. Relaunch recovery remains the
+    /// fallback if iOS suspends the process before this task wakes.
+    private func scheduleNextTranscriptionRecovery(now: Date = Date()) {
+        guard let modelContext else { return }
+
+        do {
+            let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+                .filter { $0.kind == .transcription }
+            let queuedRetryDates = jobs
+                .filter {
+                    $0.state == .queued
+                        && $0.attemptCount < $0.maximumAttempts
+                }
+                .compactMap(\.nextAttemptAt)
+            let interruptedLeaseDates = jobs
+                .filter { $0.state == .running }
+                .compactMap(\.leaseExpiresAt)
+            guard let nextRetryAt = (queuedRetryDates + interruptedLeaseDates).min() else {
+                return
+            }
+
+            let delay = max(0, nextRetryAt.timeIntervalSince(now))
+            transcriptionRecoveryTask?.cancel()
+            transcriptionRecoveryTask = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                await self?.resumePendingTranscriptionJobs()
+            }
+        } catch {
+            print("Failed to schedule the next transcription retry: \(error)")
+        }
+    }
+
+    /// Recovers queued or interrupted Fireworks journal-writing jobs without
+    /// allowing a stale job to bypass current consent or network policy.
+    func resumePendingDailyEntryJobs(now: Date = Date()) async {
+        guard let modelContext, let userProfile else { return }
+
+        dailyEntryRecoveryTask?.cancel()
+        dailyEntryRecoveryTask = nil
+
+        do {
+            let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+                .filter { $0.kind == .dailyEntry }
+                .sorted { $0.createdAt < $1.createdAt }
+
+            for job in jobs where job.state != .succeeded && job.state != .cancelled && job.state != .failed {
+                switch remoteWorkAvailability(requiresAudioUpload: false) {
+                case .permitted:
+                    if job.state == .waitingForConsent || job.state == .waitingForNetwork {
+                        job.state = .queued
+                        job.nextAttemptAt = now
+                        try modelContext.save()
+                    }
+                case .waitingForConsent:
+                    job.state = .waitingForConsent
+                    job.nextAttemptAt = nil
+                    job.leaseExpiresAt = nil
+                    try modelContext.save()
+                    continue
+                case .waitingForNetwork:
+                    job.state = .waitingForNetwork
+                    job.nextAttemptAt = nil
+                    job.leaseExpiresAt = nil
+                    try modelContext.save()
+                    continue
+                }
+
+                let shouldAttempt = job.state == .queued && job.isReadyForAttempt(at: now)
+                let shouldRecoverLease = job.state == .running
+                    && job.leaseExpiresAt.map { $0 <= now } == true
+                guard shouldAttempt || shouldRecoverLease else { continue }
+
+                do {
+                    _ = try await DailyEntryJobRunner.run(
+                        jobID: job.id,
+                        userProfile: userProfile,
+                        generator: remoteDailyEntryGenerator,
+                        in: modelContext,
+                        now: now
+                    )
+                } catch DailyEntryJobRunnerError.jobNotReady {
+                    continue
+                } catch {
+                    // The runner already persisted a retryable or terminal state.
+                    print("Deferred daily-entry job \(job.id) did not complete: \(error)")
+                }
+            }
+            loadStories()
+            scheduleNextDailyEntryRecovery()
+        } catch {
+            print("Failed to recover daily-entry jobs: \(error)")
+            scheduleNextDailyEntryRecovery()
+        }
+    }
+
+    private func scheduleNextDailyEntryRecovery(now: Date = Date()) {
+        guard let modelContext else { return }
+        do {
+            let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+                .filter { $0.kind == .dailyEntry }
+            let wakeDates = jobs.compactMap { job -> Date? in
+                switch job.state {
+                case .queued:
+                    return job.attemptCount < job.maximumAttempts ? job.nextAttemptAt : nil
+                case .running:
+                    return job.leaseExpiresAt
+                default:
+                    return nil
+                }
+            }
+            guard let wakeDate = wakeDates.min() else { return }
+            let delay = max(0, wakeDate.timeIntervalSince(now))
+            dailyEntryRecoveryTask?.cancel()
+            dailyEntryRecoveryTask = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                await self?.resumePendingDailyEntryJobs()
+            }
+        } catch {
+            print("Failed to schedule the next daily-entry retry: \(error)")
+        }
+    }
+
+    static func cancelTranscriptionJob(
+        jobID: UUID,
+        in modelContext: ModelContext,
+        at date: Date = Date()
+    ) throws {
+        let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+        guard let job = jobs.first(where: { $0.id == jobID && $0.kind == .transcription }) else {
+            throw TranscriptionJobRunnerError.jobNotFound
+        }
+        guard job.state != .succeeded else { return }
+        job.cancel(at: date)
+        if let storyID = job.storyId {
+            let stories = try modelContext.fetch(FetchDescriptor<Story>())
+            if let story = stories.first(where: { $0.id == storyID }) {
+                story.processingStatus = "transcriptionCancelled"
+                story.updatedAt = date
+            }
+        }
+        try modelContext.save()
     }
     
     /// Updates the text of an existing story.
@@ -256,8 +558,18 @@ class SpeechRecognitionViewModel: ObservableObject {
         fileManager: FileManager = .default
     ) throws -> Int {
         let allAssets = try modelContext.fetch(FetchDescriptor<AudioAsset>())
+        let artifacts = try modelContext.fetch(FetchDescriptor<TranscriptArtifact>())
+        let versions = try modelContext.fetch(FetchDescriptor<TranscriptVersion>())
+        let committedAudioAssetIds = Set(artifacts.compactMap { artifact -> UUID? in
+            guard versions.contains(where: { $0.transcriptArtifactId == artifact.id }) else {
+                return nil
+            }
+            return artifact.audioAssetId
+        })
         let expiredAssets = allAssets.filter { asset in
-            !asset.isDeleted && asset.expiresAt <= now
+            !asset.isDeleted
+                && asset.expiresAt <= now
+                && committedAudioAssetIds.contains(asset.id)
         }
 
         for asset in expiredAssets {
@@ -280,6 +592,15 @@ class SpeechRecognitionViewModel: ObservableObject {
         fileManager: FileManager = .default
     ) throws -> Int {
         guard !story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return 0
+        }
+
+        let artifacts = try modelContext.fetch(FetchDescriptor<TranscriptArtifact>())
+        guard let artifact = artifacts.first(where: { $0.storyId == story.id }) else {
+            return 0
+        }
+        let versions = try modelContext.fetch(FetchDescriptor<TranscriptVersion>())
+        guard versions.contains(where: { $0.transcriptArtifactId == artifact.id }) else {
             return 0
         }
 
@@ -361,6 +682,67 @@ class SpeechRecognitionViewModel: ObservableObject {
         let routePermissionGranted = transcriptionRoute.usesRemoteService || speechPermissionGranted
         isAuthorized = microphonePermissionGranted && routePermissionGranted
     }
+
+    private func speechCapabilities() -> SpeechTranscriptionCapabilities {
+        SpeechTranscriptionCapabilities(
+            hardwareIdentifier: deviceHardwareIdentifier,
+            osMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
+            supportsOnDeviceRecognition: speechRecognizer?.supportsOnDeviceRecognition == true
+        )
+    }
+
+    private func resolvedCaptureRoute() -> SpeechTranscriptionRoute {
+        guard let userProfile else {
+            let capabilityRoute = transcriptionPolicy.route(for: speechCapabilities())
+            return capabilityRoute == .onDevice
+                ? .onDevice
+                : .deferred(reason: .remoteTextConsentRequired)
+        }
+
+        return transcriptionPolicy.route(
+            for: SpeechTranscriptionRoutingInput(
+                capabilities: speechCapabilities(),
+                preferences: RemoteProcessingPreferences(userProfile: userProfile),
+                networkConnection: networkConnectionProvider.currentConnection,
+                localRecognizerIsAvailable: speechRecognizer?.isAvailable == true
+            )
+        )
+    }
+
+    private func remoteWorkAvailability(requiresAudioUpload: Bool) -> RemoteWorkAvailability {
+        guard let userProfile,
+              userProfile.processingMode == .adaptive,
+              userProfile.hasRemoteTextProcessingConsent,
+              !requiresAudioUpload || userProfile.hasRemoteAudioUploadConsent else {
+            return .waitingForConsent
+        }
+
+        switch networkConnectionProvider.currentConnection {
+        case .wifi:
+            return .permitted
+        case .cellular:
+            return userProfile.allowsCellularRemoteProcessing ? .permitted : .waitingForNetwork
+        case .unavailable, .unknown:
+            return .waitingForNetwork
+        }
+    }
+
+    private func message(for reason: SpeechTranscriptionDeferralReason) -> String {
+        switch reason {
+        case .deviceOnlyRequiresLocalTranscription:
+            return "This iPhone needs Adaptive processing for accurate transcription. You can enable it in Settings."
+        case .remoteTextConsentRequired:
+            return "Allow private remote text processing in Settings before using Adaptive transcription."
+        case .remoteAudioConsentRequired:
+            return "Allow temporary audio upload in Settings before using Adaptive transcription."
+        case .cellularProcessingDisabled:
+            return "Connect to Wi-Fi or allow mobile data for Adaptive processing in Settings."
+        case .networkUnavailable, .networkUnknown:
+            return "Lore is offline. Your recording will stay on this iPhone until a permitted connection is available."
+        case .remoteFallbackConfirmationRequired:
+            return "Confirm Adaptive transcription before sending this recording for remote processing."
+        }
+    }
     
     /// Starts speech recognition
     private func startRecording() {
@@ -381,15 +763,12 @@ class SpeechRecognitionViewModel: ObservableObject {
             return
         }
 
-        let capabilities = SpeechTranscriptionCapabilities(
-            hardwareIdentifier: CurrentSpeechDevice.hardwareIdentifier,
-            osMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
-            supportsOnDeviceRecognition: speechRecognizer?.supportsOnDeviceRecognition == true
-        )
-        var resolvedRoute = transcriptionPolicy.route(for: capabilities)
-
-        if resolvedRoute == .onDevice && speechRecognizer?.isAvailable != true {
-            resolvedRoute = .remote(reason: .localRecognizerUnavailable)
+        let resolvedRoute = resolvedCaptureRoute()
+        if case let .deferred(reason) = resolvedRoute {
+            transcriptionRoute = resolvedRoute
+            currentCaptureRoute = resolvedRoute
+            setError(message(for: reason))
+            return
         }
 
         if resolvedRoute == .onDevice && !speechPermissionGranted {
@@ -447,6 +826,10 @@ class SpeechRecognitionViewModel: ObservableObject {
         let recordingFormat = inputNode.outputFormat(forBus: 0)
         let audioFileURL = try Self.makeAudioFileURL(forStoryID: UUID())
         let audioFile = try AVAudioFile(forWriting: audioFileURL, settings: recordingFormat.settings)
+        try FileManager.default.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: audioFileURL.path
+        )
         currentRecordingAudioFileURL = audioFileURL
         let activeRecognitionRequest = recognitionRequest
 
@@ -711,46 +1094,64 @@ class SpeechRecognitionViewModel: ObservableObject {
     /// Saves the current recording session
     private func saveCurrentRecording() async {
         guard let startTime = recordingStartTime else { return }
-        
+
         let endTime = Date()
-        var transcript = transcribedText
+        let transcript = transcribedText
         let audioFileURL = currentRecordingAudioFileURL
         let captureRoute = currentCaptureRoute
-        var transcriptionFailure: Error?
-        var remoteTranscription: RemoteSpeechTranscription?
         let story: Story
 
         if captureRoute.usesRemoteService {
+            guard let modelContext, let audioFileURL else {
+                pendingSaveTask = nil
+                setError("Lore could not secure this recording locally. The audio was kept on this iPhone.")
+                return
+            }
+
+            let job: ProcessingJob
+            do {
+                (story, job) = try Self.persistRemoteCaptureForTranscription(
+                    startTime: startTime,
+                    endTime: endTime,
+                    audioFileURL: audioFileURL,
+                    modelContext: modelContext
+                )
+            } catch {
+                pendingSaveTask = nil
+                setError("Failed to save the recording before transcription. The audio was kept on this iPhone: \(error.localizedDescription)")
+                return
+            }
+
+            clearFinishedCaptureState(keepPendingTask: true)
+            loadStories()
+            Task {
+                await enrichCaptureMetadata(for: story, captureDate: startTime)
+            }
+
             isAwaitingRemoteTranscription = true
             do {
-                guard let audioFileURL else {
-                    throw RemoteSpeechTranscriptionError.audioFileMissing
-                }
-
-                let response = try await remoteTranscriber.transcribe(
-                    audioFileURL: audioFileURL,
-                    localeIdentifier: localeIdentifier
+                let transcribedStory = try await Self.runTranscriptionJob(
+                    jobID: job.id,
+                    remoteTranscriber: remoteTranscriber,
+                    localeIdentifier: localeIdentifier,
+                    modelContext: modelContext
                 )
-                let cleanedTranscript = response.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !cleanedTranscript.isEmpty else {
-                    throw RemoteSpeechTranscriptionError.emptyTranscript
+                isAwaitingRemoteTranscription = false
+                pendingSaveTask = nil
+                loadStories()
+                Task {
+                    await processCapturedStory(transcribedStory)
                 }
-                transcript = response.transcript
-                remoteTranscription = response
             } catch {
-                transcriptionFailure = error
-                transcript = ""
+                isAwaitingRemoteTranscription = false
+                pendingSaveTask = nil
+                setError(error.localizedDescription)
+                loadStories()
+                scheduleNextTranscriptionRecovery()
             }
-            isAwaitingRemoteTranscription = false
+            return
         }
 
-        pendingSaveTask = nil
-        transcribedText = ""
-        recordingStartTime = nil
-        currentRecordingAudioFileURL = nil
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        
         if let modelContext {
             do {
                 story = try Self.persistCapturedStoryImmediately(
@@ -758,68 +1159,45 @@ class SpeechRecognitionViewModel: ObservableObject {
                     startTime: startTime,
                     endTime: endTime,
                     audioFileURL: audioFileURL,
-                    transcriptSource: captureRoute.usesRemoteService ? .remoteProvider : .appleSpeech,
+                    transcriptSource: .appleSpeech,
                     languageCode: localeIdentifier,
-                    providerId: remoteTranscription?.provider,
-                    providerModelId: remoteTranscription?.model,
-                    providerRequestId: remoteTranscription?.requestID,
                     modelContext: modelContext
                 )
-            } catch {
-                // The audio is the only recoverable source when persistence fails. Never delete it here.
-                setError("Failed to save the transcript. The audio was kept on this iPhone: \(error.localizedDescription)")
-                print("Failed to save story and audio metadata: \(error)")
-                return
-            }
-
-            let hasUsableTranscript = !story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            if hasUsableTranscript {
-                do {
-                    _ = try Self.deleteAudioAfterSuccessfulTranscription(
-                        for: story,
-                        in: modelContext
-                    )
-                } catch {
-                    setError("Transcript saved, but Lore could not delete its audio yet: \(error.localizedDescription)")
+                clearFinishedCaptureState()
+                _ = try Self.deleteAudioAfterSuccessfulTranscription(for: story, in: modelContext)
+                loadStories()
+                Task {
+                    await enrichCaptureMetadata(for: story, captureDate: startTime)
                 }
-            } else {
-                story.processingStatus = "transcriptionPending"
-                story.updatedAt = Date()
-                let pendingJob = Self.makePendingTranscriptionJob(
-                    for: story,
-                    route: captureRoute,
-                    failure: transcriptionFailure
-                )
-                modelContext.insert(pendingJob)
-                do {
-                    try modelContext.save()
-                } catch {
-                    setError("The recording was kept, but Lore could not schedule transcription retry: \(error.localizedDescription)")
-                }
-            }
-
-            loadStories()
-            Task {
-                await enrichCaptureMetadata(for: story, captureDate: startTime)
-            }
-            if hasUsableTranscript {
                 Task {
                     await processCapturedStory(story)
                 }
+            } catch {
+                pendingSaveTask = nil
+                setError("Failed to save the transcript. The audio was kept on this iPhone: \(error.localizedDescription)")
+                return
             }
         } else {
             story = Self.makeStory(transcript: transcript, startTime: startTime, endTime: endTime)
             stories.append(story)
+            clearFinishedCaptureState()
         }
 
-        if let transcriptionFailure {
-            setError(transcriptionFailure.localizedDescription)
-        }
-        
-        let displayText = story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 
-                         "No voice found in story" : 
-                         String(story.text.prefix(50)) + (story.text.count > 50 ? "..." : "")
+        let displayText = story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "No voice found in story"
+            : String(story.text.prefix(50)) + (story.text.count > 50 ? "..." : "")
         print("Story saved: \(story.formattedDuration) - \(displayText)")
+    }
+
+    private func clearFinishedCaptureState(keepPendingTask: Bool = false) {
+        if !keepPendingTask {
+            pendingSaveTask = nil
+        }
+        transcribedText = ""
+        recordingStartTime = nil
+        currentRecordingAudioFileURL = nil
+        recognitionTask?.cancel()
+        recognitionTask = nil
     }
 
     static func applyUserCorrection(
@@ -917,6 +1295,288 @@ class SpeechRecognitionViewModel: ObservableObject {
             route: route.usesRemoteService ? .remote : .local,
             lastErrorCode: errorCode
         )
+    }
+
+    /// Commits the capture envelope before any provider request is allowed to start.
+    /// Story, real audio metadata, and queued work are one SwiftData transaction.
+    static func persistRemoteCaptureForTranscription(
+        startTime: Date,
+        endTime: Date,
+        audioFileURL: URL,
+        modelContext: ModelContext
+    ) throws -> (story: Story, job: ProcessingJob) {
+        guard audioFileURL.isFileURL,
+              FileManager.default.fileExists(atPath: audioFileURL.path) else {
+            throw TranscriptionJobRunnerError.audioFileMissing
+        }
+        let metadata = makePendingCaptureMetadata(captureDate: startTime)
+        let story = makeStory(
+            transcript: "",
+            startTime: startTime,
+            endTime: endTime,
+            metadataId: metadata.id
+        )
+        story.processingStatus = "transcriptionPending"
+        let audioAsset = makeAudioAsset(
+            storyID: story.id,
+            fileURL: audioFileURL,
+            createdAt: endTime,
+            duration: story.duration
+        )
+        let job = ProcessingJob(
+            idempotencyKey: "transcription:\(story.id.uuidString)",
+            storyId: story.id,
+            kind: .transcription,
+            state: .queued,
+            route: .remote
+        )
+
+        modelContext.insert(story)
+        modelContext.insert(metadata)
+        modelContext.insert(audioAsset)
+        modelContext.insert(job)
+
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+        return (story, job)
+    }
+
+    /// Runs one durable transcription attempt. The `running` transition is saved before
+    /// the network call, and the transcript artifact/version are saved before audio deletion.
+    @discardableResult
+    static func runTranscriptionJob(
+        jobID: UUID,
+        remoteTranscriber: any RemoteSpeechTranscribing,
+        localeIdentifier: String,
+        modelContext: ModelContext,
+        now: Date = Date(),
+        leaseDuration: TimeInterval = 120
+    ) async throws -> Story {
+        let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+        guard let job = jobs.first(where: { $0.id == jobID && $0.kind == .transcription }) else {
+            throw TranscriptionJobRunnerError.jobNotFound
+        }
+        guard let storyID = job.storyId else {
+            throw TranscriptionJobRunnerError.storyNotFound
+        }
+        let stories = try modelContext.fetch(FetchDescriptor<Story>())
+        guard let story = stories.first(where: { $0.id == storyID }) else {
+            throw TranscriptionJobRunnerError.storyNotFound
+        }
+
+        if job.state == .succeeded {
+            // Relaunch may happen after the transcript commit but before file deletion.
+            _ = try? deleteAudioAfterSuccessfulTranscription(for: story, in: modelContext)
+            return story
+        }
+        guard job.state != .cancelled else {
+            throw TranscriptionJobRunnerError.jobCancelled
+        }
+
+        _ = job.recoverExpiredLease(at: now)
+        guard job.isReadyForAttempt(at: now) else {
+            throw TranscriptionJobRunnerError.jobNotReady
+        }
+
+        let audioAssets = try modelContext.fetch(FetchDescriptor<AudioAsset>())
+        guard let audioAsset = audioAssets.first(where: { $0.id == storyID && !$0.isDeleted }) else {
+            job.markFailed(errorCode: "audio_asset_missing", at: now)
+            try modelContext.save()
+            throw TranscriptionJobRunnerError.audioAssetNotFound
+        }
+        guard let audioFileURL = URL(string: audioAsset.fileURL),
+              audioFileURL.isFileURL,
+              FileManager.default.fileExists(atPath: audioFileURL.path) else {
+            job.markFailed(errorCode: "audio_file_missing", at: now)
+            try modelContext.save()
+            throw TranscriptionJobRunnerError.audioFileMissing
+        }
+
+        job.beginAttempt(at: now, leaseDuration: leaseDuration)
+        story.processingStatus = "transcribing"
+        story.updatedAt = now
+        do {
+            // This save is the ordering barrier: no provider receives bytes unless
+            // the capture envelope and running attempt are already durable.
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+
+        do {
+            let response = try await remoteTranscriber.transcribe(
+                audioFileURL: audioFileURL,
+                localeIdentifier: localeIdentifier
+            )
+            try Task.checkCancellation()
+            let committedStory = try commitRemoteTranscription(
+                response,
+                for: story,
+                audioAsset: audioAsset,
+                job: job,
+                localeIdentifier: localeIdentifier,
+                modelContext: modelContext,
+                at: Date()
+            )
+            // Failure here cannot lose the source transcript: both immutable rows and
+            // the succeeded job have already committed. Recovery will retry deletion.
+            _ = try? deleteAudioAfterSuccessfulTranscription(
+                for: committedStory,
+                in: modelContext
+            )
+            return committedStory
+        } catch is CancellationError {
+            modelContext.rollback()
+            job.cancel(at: Date())
+            story.processingStatus = "transcriptionCancelled"
+            story.updatedAt = Date()
+            try modelContext.save()
+            throw CancellationError()
+        } catch {
+            modelContext.rollback()
+            guard job.state == .running else {
+                throw error
+            }
+
+            let terminal = isTerminalTranscriptionError(error)
+                || job.attemptCount >= job.maximumAttempts
+            let failureDate = Date()
+            let retryAt = terminal ? nil : failureDate.addingTimeInterval(
+                transcriptionRetryDelay(afterAttempt: job.attemptCount)
+            )
+            job.markFailed(
+                errorCode: transcriptionErrorCode(error),
+                retryAt: retryAt,
+                at: failureDate
+            )
+            story.processingStatus = terminal ? "transcriptionFailed" : "transcriptionPending"
+            story.updatedAt = failureDate
+            try modelContext.save()
+            throw error
+        }
+    }
+
+    /// Idempotently installs the immutable provider output. Replaying the same job
+    /// returns the already committed artifact and never appends duplicate versions.
+    @discardableResult
+    static func commitRemoteTranscription(
+        _ response: RemoteSpeechTranscription,
+        for story: Story,
+        audioAsset: AudioAsset,
+        job: ProcessingJob,
+        localeIdentifier: String,
+        modelContext: ModelContext,
+        at date: Date = Date()
+    ) throws -> Story {
+        let cleanedTranscript = response.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedTranscript.isEmpty else {
+            throw RemoteSpeechTranscriptionError.emptyTranscript
+        }
+        guard job.state != .cancelled else {
+            throw TranscriptionJobRunnerError.jobCancelled
+        }
+
+        let artifacts = try modelContext.fetch(FetchDescriptor<TranscriptArtifact>())
+        let artifact: TranscriptArtifact
+        if let committedArtifact = artifacts.first(where: { $0.storyId == story.id }) {
+            artifact = committedArtifact
+        } else {
+            artifact = TranscriptArtifact(
+                storyId: story.id,
+                audioAssetId: audioAsset.id,
+                rawText: response.transcript,
+                source: .remoteProvider,
+                languageCode: localeIdentifier,
+                providerId: response.provider,
+                providerModelId: response.model,
+                providerRequestId: response.requestID,
+                sourceSegmentsJSON: encodeRemoteAuditJSON(response.segments),
+                providerProvenanceJSON: encodeRemoteAuditJSON(response.provenance),
+                capturedAt: story.date,
+                transcribedAt: date,
+                audioDuration: story.duration,
+                createdAt: date
+            )
+            modelContext.insert(artifact)
+        }
+
+        let versions = try modelContext.fetch(FetchDescriptor<TranscriptVersion>())
+        if !versions.contains(where: { $0.transcriptArtifactId == artifact.id }) {
+            modelContext.insert(
+                TranscriptVersion(
+                    transcriptArtifactId: artifact.id,
+                    storyId: story.id,
+                    revision: 1,
+                    text: artifact.rawText,
+                    kind: .sourceSnapshot,
+                    author: .source,
+                    createdAt: date
+                )
+            )
+        }
+
+        story.text = artifact.rawText
+        story.processingStatus = "awaitingModel"
+        story.updatedAt = date
+        job.providerId = artifact.providerId
+        job.providerModelId = artifact.providerModelId
+        job.markSucceeded(
+            outputReferenceId: artifact.id,
+            transcriptArtifactId: artifact.id,
+            resultSchemaVersion: "1.0",
+            at: date
+        )
+
+        do {
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            throw error
+        }
+        return story
+    }
+
+    private static func encodeRemoteAuditJSON<Value: Encodable>(_ value: Value) -> String? {
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(value) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func isTerminalTranscriptionError(_ error: Error) -> Bool {
+        if let runnerError = error as? TranscriptionJobRunnerError {
+            return runnerError == .audioAssetNotFound || runnerError == .audioFileMissing
+        }
+        guard let remoteError = error as? RemoteSpeechTranscriptionError else {
+            return false
+        }
+        return remoteError == .notConfigured || remoteError == .audioFileMissing
+    }
+
+    private static func transcriptionErrorCode(_ error: Error) -> String {
+        switch error {
+        case RemoteSpeechTranscriptionError.notConfigured:
+            return "remote_not_configured"
+        case RemoteSpeechTranscriptionError.audioFileMissing,
+             TranscriptionJobRunnerError.audioFileMissing,
+             TranscriptionJobRunnerError.audioAssetNotFound:
+            return "audio_file_missing"
+        case RemoteSpeechTranscriptionError.emptyTranscript:
+            return "empty_remote_transcript"
+        default:
+            return "remote_transcription_failed"
+        }
+    }
+
+    private static func transcriptionRetryDelay(afterAttempt attempt: Int) -> TimeInterval {
+        min(300, 15 * pow(2, Double(max(0, attempt - 1))))
     }
 
     @discardableResult
@@ -1111,6 +1771,10 @@ class SpeechRecognitionViewModel: ObservableObject {
             .appendingPathComponent("Audio", isDirectory: true)
 
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        try fileManager.setAttributes(
+            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+            ofItemAtPath: directory.path
+        )
         return directory
     }
 
@@ -1162,15 +1826,18 @@ class SpeechRecognitionViewModel: ObservableObject {
             .filter { $0.storyId == story.id || artifactIds.contains($0.transcriptArtifactId) }
         let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
             .filter { $0.storyId == story.id }
+        let dailyEntryResults = try modelContext.fetch(FetchDescriptor<DailyEntryResultArtifact>())
+            .filter { $0.storyId == story.id }
         let fragments = try modelContext.fetch(FetchDescriptor<BiographyFragment>())
             .filter { $0.storyId == story.id }
 
+        dailyEntryResults.forEach(modelContext.delete)
         versions.forEach(modelContext.delete)
         artifacts.forEach(modelContext.delete)
         jobs.forEach(modelContext.delete)
         fragments.forEach(modelContext.delete)
 
-        return versions.count + artifacts.count + jobs.count + fragments.count
+        return dailyEntryResults.count + versions.count + artifacts.count + jobs.count + fragments.count
     }
 
     private static func makeStory(
@@ -1287,17 +1954,9 @@ class SpeechRecognitionViewModel: ObservableObject {
                 }
 
             case .remote:
-                guard let modelContext else {
-                    throw RemoteGenerationRequestFactoryError.missingTranscriptArtifact
-                }
-                let request = try RemoteGenerationRequestFactory.makeRequest(
-                    for: story,
-                    userProfile: userProfile,
-                    in: modelContext
-                )
-                let response = try await remoteDailyEntryGenerator.generateDailyEntry(request)
-                story.biographyProse = response.entry.prose
-                story.title = response.entry.title
+                await processRemoteDailyEntry(for: story, userProfile: userProfile)
+                loadStories()
+                return
             }
             story.processingStatus = "processed"
         } catch GenerationError.localModelNotReady {
@@ -1310,6 +1969,67 @@ class SpeechRecognitionViewModel: ObservableObject {
         story.updatedAt = Date()
         saveContext()
         loadStories()
+    }
+
+    private func processRemoteDailyEntry(
+        for story: Story,
+        userProfile: UserProfile
+    ) async {
+        guard let modelContext else {
+            story.processingStatus = "failed"
+            story.updatedAt = Date()
+            setError(RemoteGenerationRequestFactoryError.missingTranscriptArtifact.localizedDescription)
+            return
+        }
+
+        let availability = remoteWorkAvailability(requiresAudioUpload: false)
+        let initialState: ProcessingJobState
+        switch availability {
+        case .permitted:
+            initialState = .queued
+        case .waitingForConsent:
+            initialState = .waitingForConsent
+        case .waitingForNetwork:
+            initialState = .waitingForNetwork
+        }
+
+        do {
+            let prepared = try DailyEntryJobRunner.prepare(
+                story: story,
+                userProfile: userProfile,
+                initialState: initialState,
+                in: modelContext
+            )
+
+            guard availability == .permitted else {
+                prepared.job.state = initialState
+                prepared.job.nextAttemptAt = nil
+                prepared.job.leaseExpiresAt = nil
+                story.processingStatus = initialState == .waitingForConsent
+                    ? "waitingForConsent"
+                    : "waitingForNetwork"
+                story.updatedAt = Date()
+                try modelContext.save()
+                return
+            }
+
+            if prepared.job.state == .waitingForConsent || prepared.job.state == .waitingForNetwork {
+                prepared.job.state = .queued
+                prepared.job.nextAttemptAt = Date()
+                try modelContext.save()
+            }
+            _ = try await DailyEntryJobRunner.run(
+                jobID: prepared.job.id,
+                userProfile: userProfile,
+                generator: remoteDailyEntryGenerator,
+                in: modelContext
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            setError(error.localizedDescription)
+            scheduleNextDailyEntryRecovery()
+        }
     }
     
     /// Sets error message and logs it

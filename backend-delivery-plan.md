@@ -2,20 +2,23 @@
 
 Last updated: 2026-08-03
 
-Status: implementation started. No task in this document is complete merely because an interface or mock exists.
+Status: local implementation integrated and test-covered; live provider and production release gates remain open. No task in this document is complete merely because an interface or mock exists.
 
 ## Implementation Progress
 
 As of 2026-08-03:
 
-- `RP-P0` is pending; the iOS save-before-network ordering issue remains the first client correctness task.
-- `RP-00` is partial: TypeScript contracts, strict schemas, tests, and an initial OpenAPI document exist; shared Swift fixtures and explicit Swift wire coding remain.
+- `RP-P0` is implemented and unit-tested: the app commits the local `Story`, protected `AudioAsset`, and queued transcription `ProcessingJob` before opening a remote request.
+- `RP-00` is implemented locally: TypeScript and Swift use explicit snake-case wire contracts, strict enums/schemas, stable aliases, retention fields, and cross-boundary fixture tests. Live deployment compatibility remains part of `RP-09`.
 - `RP-01` is partial: the API foundation, health route, fail-closed configuration, and content-free logger are implemented and tested. The canonical Vercel project must still be imported from GitHub with `backend` as its root directory.
 - `RP-02` is partial: preview bearer authentication exists, while Production deliberately rejects it until the production session design is implemented.
-- `RP-03` is partial: the backend accepts bounded multipart chunks; iOS CAF transcoding, chunking, assembly, and retry integration remain.
-- `RP-04` is partial: a direct Groq Audio Transcriptions adapter with bounded multipart input, timestamped output, fail-closed ZDR configuration, and mocked coverage exists; live synthetic verification and the iOS client remain.
-- `RP-05` is partial: a direct Fireworks Chat Completions adapter with GPT-OSS 120B, strict structured output, request-isolated prompt caching, and mocked coverage exists; live synthetic verification and production policy approval remain.
-- `RP-06` through `RP-10` remain pending.
+- `RP-03` is implemented for foreground processing: iOS transcodes unsupported recordings to M4A, creates bounded deterministic chunks, uploads multipart binary sequentially, and assembles ordered text and segment provenance. Background transfer restoration and a streaming implementation that avoids retaining every prepared chunk in memory remain production-hardening work.
+- `RP-04` is implemented behind the policy gate: the direct Groq adapter and real iOS HTTP/transcription client handle bounded multipart input, timestamped output, chunk provenance, errors, retries, and cancellation. A live ZDR-enabled synthetic canary remains required.
+- `RP-05` is implemented behind the policy gate: the direct Fireworks adapter, strict grounded result contract, iOS request path, and complete local result persistence are covered by mocked tests. Live synthetic verification and production policy approval remain required.
+- `RP-06` is implemented locally with an ephemeral, HTTPS-only iOS client, strict request/response validation, provider-neutral errors, idempotency, and no provider credentials in the app.
+- `RP-07` is implemented locally: onboarding and Settings provide Device Only/Adaptive selection, revocable text and separate audio-upload consent, and routing enforces current network and cellular policy.
+- `RP-08` is implemented for in-app/relaunch execution: durable jobs own leases, retry/backoff, cancellation, consent/network waiting, idempotent transcript commits, complete daily-entry commits, and commit-driven audio deletion. Background URLSession restoration remains release hardening.
+- `RP-09` and `RP-10` remain open: live synthetic canaries, production authentication, deployment evidence, privacy review, and physical-device validation have not been completed.
 
 No Fireworks or Groq credential or live user content has been sent. Processing routes remain fail-closed.
 
@@ -87,14 +90,13 @@ Until those inputs exist, agents may complete local development and synthetic pr
 
 The existing recording UI, audio engine, transcript models, route policies, and remote contracts are foundations to reuse. The immediate work is not a recording rebuild.
 
-Execute in this order:
+The local implementation slice through `RP-08` now exists. Execute the remaining release path in this order:
 
-1. `RP-P0`: make remote capture durable before any network request.
-2. `RP-00` through `RP-05`: freeze the existing contracts, stand up Vercel, verify direct Fireworks text processing, and implement direct Groq batch transcription.
-3. `RP-06`: connect those contracts to a live iOS HTTP client.
-4. `RP-07`: add the one-time Adaptive disclosure, revocable permission, and enforced cellular routing.
-5. `RP-08`: make `ProcessingJob` own retries/recovery/cancellation and commit the complete remote result.
-6. `RP-09` and `RP-10`: prove the path with synthetic canaries and physical hardware before real user content.
+1. Import the GitHub repository into Vercel with `backend` as the project root and configure Preview-only provider keys, policy gates, and bearer authentication.
+2. Run `RP-09` synthetic Groq and Fireworks canaries through the real iOS HTTP client; capture schema, privacy, retry, cancellation, and no-content-log evidence.
+3. Implement App Attest-backed installation/session authentication and abuse controls, then repeat the canary against Production.
+4. Harden background transfer restoration and long-recording memory behavior without changing the frozen public contract.
+5. Complete `RP-10` physical-device transcription accuracy, latency, interruption, thermal, and deletion validation before enabling real user content.
 
 ## API Contract
 
@@ -167,7 +169,7 @@ RP-00 contracts                                          |
                                                    -> RP-10 production deployment and release evidence
 ```
 
-RP-P0 is the first iOS correctness task and may run in parallel with RP-00/RP-01 backend foundation work. RP-03, RP-04, and RP-05 may proceed in parallel after RP-01 if agents coordinate on the frozen RP-00 fixtures. RP-06 must not invent a second contract. RP-08 depends on RP-P0 and RP-06.
+The dependency graph records the order used to build the local foundation. `RP-P0` and `RP-00` through `RP-08` now have local implementations; the active dependency edge is from the Git-connected Preview deployment and provider policy gates into `RP-09`, then production authentication and physical-device evidence into `RP-10`.
 
 ## RP-P0 — Persist Remote Capture Before Processing
 

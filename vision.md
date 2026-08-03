@@ -106,13 +106,13 @@ The product promise should be:
 - Requests use transport encryption and authenticated, short-lived app sessions.
 - The backend and model providers receive only the content needed for the specific task.
 - Normal synchronous inference uses a verified zero-data-retention route: request content is held only for the request and discarded immediately when the response completes.
-- Encrypted persistence is permitted only for explicitly asynchronous work or an undelivered result. It is deleted immediately after successful delivery or terminal failure and has a hard maximum recovery lifetime of seven days.
+- The MVP does not persist request or result content on the backend. Retry and recovery state remain on the iPhone; a lost response is recomputed idempotently.
 - Operational logs exclude story content and use pseudonymous identifiers.
 - The app shows pending remote jobs and lets the user cancel work that has not begun.
 
 This promise must be backed by the actual behavior and contracts of every infrastructure and model provider. A gateway retention setting alone is not sufficient if an upstream provider, logs pipeline, or backup system keeps content longer. A route cannot be described as zero-data-retention until the full route has been verified.
 
-Lore's backend should initially call approved providers through provider-specific adapters, with direct Groq routes as the leading MVP candidate and Fireworks as a text-generation fallback. A gateway may be added later where it improves operations without weakening the verified retention path. This is an implementation choice, not part of the product contract: Lore's processing API must remain provider-agnostic so models can change and inference can later move to infrastructure we operate ourselves.
+Lore's backend initially calls approved providers through provider-specific adapters: direct Groq Audio Transcriptions for speech and direct Fireworks Chat Completions for grounded journal generation. There is no silent provider fallback. A gateway may be added later only where it improves operations without weakening the verified retention path. Lore's processing API remains provider-neutral so approved models can change and inference can later move to infrastructure we operate ourselves.
 
 ## Transcription Strategy
 
@@ -167,7 +167,7 @@ Initial local defaults:
 - Raw transcripts and corrected transcript versions: keep locally until the user deletes them. They are the durable source archive, not disposable model input.
 - User corrections, polished prose, extracted memories, provenance records, and biography structure: keep until the user deletes them.
 - Normal synchronous remote inputs and outputs: request-ephemeral under a verified zero-data-retention route and discarded immediately when the request completes.
-- Asynchronous or undelivered remote inputs and outputs: encrypted, deleted immediately after delivery or terminal failure, and never retained beyond the seven-day recovery ceiling.
+- Lost or undelivered remote responses: not retained by the MVP backend; the iPhone keeps a content-free durable job and retries the synchronous request idempotently.
 
 Retention controls must explain consequences. Deleting source material may reduce Lore's ability to show a quote or re-evaluate a generated claim. Derived facts must either be deleted with their source or visibly marked as no longer source-verifiable.
 

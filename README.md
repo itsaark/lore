@@ -34,3 +34,14 @@ The API project owns only API domains and server-side secrets. See `backend/READ
 Create `web/` as a Next.js application when the landing page work starts. Import the same GitHub repository into a second Vercel project with `web` as its root directory. That project should own the public website domain, authentication UI, and eventual account-management experience; it must not expose Fireworks, Groq, or other backend-only inference credentials.
 
 The public website and API should remain separate Vercel projects even if both live in this repository. This preserves independent deployments, environment scopes, domains, observability, and rollback.
+
+## Connect the iOS app to a Preview API
+
+The iOS app contains a provider-neutral HTTPS client. Fireworks and Groq keys stay in Vercel and are never added to the Xcode project.
+
+For a local Debug build, set these scheme environment variables:
+
+- `LORE_BACKEND_BASE_URL`: the HTTPS origin of the Git-connected Vercel Preview deployment
+- `LORE_PREVIEW_BEARER_TOKEN`: the same synthetic-testing token configured in that Preview environment
+
+For release builds, configure the `LORE_BACKEND_BASE_URL` build setting to the production API origin. Release builds deliberately ignore the preview bearer token. Production therefore remains fail-closed until installation/session authentication replaces preview authentication.

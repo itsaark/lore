@@ -6,6 +6,9 @@ struct OnboardingView: View {
     @State private var name = ""
     @State private var hometown = ""
     @State private var birthYear = ""
+    @State private var processingMode: LoreProcessingMode = .deviceOnly
+    @State private var allowsRemoteTextProcessing = false
+    @State private var allowsRemoteAudioUpload = false
 
     var body: some View {
         NavigationView {
@@ -47,6 +50,8 @@ struct OnboardingView: View {
                             textContentType: nil
                         )
                     }
+
+                    processingChoices
 
                     if let validationMessage {
                         Text(validationMessage)
@@ -102,7 +107,10 @@ struct OnboardingView: View {
     }
 
     private var canComplete: Bool {
-        !trimmedName.isEmpty && !trimmedHometown.isEmpty && isBirthYearValid
+        !trimmedName.isEmpty
+            && !trimmedHometown.isEmpty
+            && isBirthYearValid
+            && (processingMode == .deviceOnly || allowsRemoteTextProcessing)
     }
 
     private var validationMessage: String? {
@@ -122,9 +130,61 @@ struct OnboardingView: View {
             UserProfile(
                 name: trimmedName,
                 hometown: trimmedHometown,
-                birthYear: parsedBirthYear
+                birthYear: parsedBirthYear,
+                processingMode: processingMode,
+                remoteTextProcessingConsentedAt: allowsRemoteTextProcessing ? Date() : nil,
+                remoteAudioUploadConsentedAt: allowsRemoteAudioUpload ? Date() : nil
             )
         )
+    }
+
+    private var processingChoices: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Processing")
+                .font(.headline)
+
+            Picker("Processing", selection: $processingMode) {
+                ForEach(LoreProcessingMode.allCases, id: \.self) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("onboardingProcessingModePicker")
+            .onChange(of: processingMode) { _, mode in
+                if mode == .deviceOnly {
+                    allowsRemoteTextProcessing = false
+                    allowsRemoteAudioUpload = false
+                }
+            }
+
+            Text(processingMode == .deviceOnly
+                 ? "Transcription and writing stay on this iPhone. Some features may wait for a capable device."
+                 : "Lore can use private servers when this iPhone needs more power. Your journal remains stored on this iPhone.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if processingMode == .adaptive {
+                VStack(alignment: .leading, spacing: 12) {
+                    Toggle("Allow private text processing", isOn: $allowsRemoteTextProcessing)
+                        .accessibilityIdentifier("remoteTextConsentToggle")
+
+                    Text("Transcript text may pass briefly through Lore and its processing provider. It is not added to your cloud archive.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+
+                    Toggle("Allow audio upload when needed", isOn: $allowsRemoteAudioUpload)
+                        .disabled(!allowsRemoteTextProcessing)
+                        .accessibilityIdentifier("remoteAudioConsentToggle")
+
+                    Text("Audio is uploaded only when on-device transcription is unavailable, then deleted after processing. You can change this later.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(16)
+                .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 16))
+            }
+        }
+        .animation(.smooth(duration: 0.22), value: processingMode)
     }
 }
 

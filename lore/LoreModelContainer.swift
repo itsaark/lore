@@ -15,6 +15,7 @@ enum LoreModelContainer {
         TranscriptArtifact.self,
         TranscriptVersion.self,
         ProcessingJob.self,
+        DailyEntryResultArtifact.self,
         VocabularyEntry.self
     ])
 

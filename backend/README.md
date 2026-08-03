@@ -14,7 +14,7 @@ Daily-entry requests use Fireworks' stateless Chat Completions endpoint with str
 
 Transcription requests use Groq's synchronous Audio Transcriptions endpoint with `verbose_json` segment timestamps, temperature zero, an ISO-639-1 language hint when available, and a bounded vocabulary prompt. The backend never uses Groq Files or Batch APIs.
 
-Production authentication, iOS networking, and durable job orchestration remain incomplete. Preview bearer authentication is deliberately rejected when `VERCEL_ENV=production`.
+The iOS HTTPS client and durable transcription/daily-entry job orchestration are implemented and covered by local mocked tests. Live app-to-Vercel-to-provider canaries have not run. Production authentication remains incomplete, and Preview bearer authentication is deliberately rejected when `VERCEL_ENV=production`.
 
 ## Deploy from GitHub
 
