@@ -11,14 +11,14 @@ As of 2026-08-03:
 - `RP-P0` is implemented and unit-tested: the app commits the local `Story`, protected `AudioAsset`, and queued transcription `ProcessingJob` before opening a remote request.
 - `RP-00` is implemented locally: TypeScript and Swift use explicit snake-case wire contracts, strict enums/schemas, stable aliases, retention fields, and cross-boundary fixture tests. Live deployment compatibility remains part of `RP-09`.
 - `RP-01` is partial: the API foundation, health route, fail-closed configuration, and content-free logger are implemented and tested. The canonical Vercel project must still be imported from GitHub with `backend` as its root directory.
-- `RP-02` is partial: preview bearer authentication exists, while Production deliberately rejects it until the production session design is implemented.
+- `RP-02` is implemented locally but not live-proven: iOS and backend now implement App Attest bootstrap/renewal, short installation sessions, Production rejection of Preview bearer credentials, content-free rate limits, encrypted receipts, atomic Neon challenge/counter state, and one-winner processing leases. Apple capability/profile setup, real Neon concurrency, WAF/cleanup, physical enrollment, and TestFlight evidence remain open.
 - `RP-03` is implemented for foreground processing: iOS transcodes unsupported recordings to M4A, creates bounded deterministic chunks, uploads multipart binary sequentially, and assembles ordered text and segment provenance. Background transfer restoration and a streaming implementation that avoids retaining every prepared chunk in memory remain production-hardening work.
 - `RP-04` is implemented behind the policy gate: the direct Groq adapter and real iOS HTTP/transcription client handle bounded multipart input, timestamped output, chunk provenance, errors, retries, and cancellation. A live ZDR-enabled synthetic canary remains required.
-- `RP-05` is implemented behind the policy gate: the direct Fireworks adapter, strict grounded result contract, iOS request path, and complete local result persistence are covered by mocked tests. Live synthetic verification and production policy approval remain required.
+- `RP-05` is implemented behind the global remote switch and versioned policy configuration: the direct Fireworks adapter, strict grounded result contract, iOS request path, and complete local result persistence are covered by mocked tests. Live synthetic verification and production cache-policy approval remain required.
 - `RP-06` is implemented locally with an ephemeral, HTTPS-only iOS client, strict request/response validation, provider-neutral errors, idempotency, and no provider credentials in the app.
 - `RP-07` is implemented locally: onboarding and Settings provide Device Only/Adaptive selection, revocable text and separate audio-upload consent, and routing enforces current network and cellular policy.
 - `RP-08` is implemented for in-app/relaunch execution: durable jobs own leases, retry/backoff, cancellation, consent/network waiting, idempotent transcript commits, complete daily-entry commits, and commit-driven audio deletion. Background URLSession restoration remains release hardening.
-- `RP-09` and `RP-10` remain open: live synthetic canaries, production authentication, deployment evidence, privacy review, and physical-device validation have not been completed.
+- `RP-09` and `RP-10` remain open: live synthetic canaries, live App Attest/Neon evidence, deployment evidence, privacy review, and physical-device validation have not been completed.
 
 No Fireworks or Groq credential or live user content has been sent. Processing routes remain fail-closed.
 
@@ -80,7 +80,8 @@ These are external prerequisites, not tasks an implementation agent should guess
 - Vercel team/project ownership and the production domain.
 - A Fireworks API key for Preview and Production, plus approval of the verified ZDR, cache, DPA, region, and subprocessor configuration.
 - A Groq API key for synthetic speech testing and confirmation that organization Data Controls have ZDR enabled for the selected Audio Transcriptions endpoint/models.
-- Approval of the production authentication approach. App Attest-backed anonymous installation sessions are the recommended starting point; a static shared app secret is not acceptable for production.
+- Enable App Attest for `cascadianpines.lore` and regenerate Development/Distribution profiles after the committed entitlements are reviewed.
+- Provision isolated Preview and Production Neon stores through Vercel Marketplace and apply `backend/migrations/001_app_attest_auth.sql` followed by `backend/migrations/002_processing_leases.sql`.
 - The supported minimum iOS version and at least one physical older iPhone for the release test.
 - Approval of final privacy copy before real user content is enabled.
 
@@ -92,11 +93,13 @@ The existing recording UI, audio engine, transcript models, route policies, and 
 
 The local implementation slice through `RP-08` now exists. Execute the remaining release path in this order:
 
-1. Import the GitHub repository into Vercel with `backend` as the project root and configure Preview-only provider keys, policy gates, and bearer authentication.
-2. Run `RP-09` synthetic Groq and Fireworks canaries through the real iOS HTTP client; capture schema, privacy, retry, cancellation, and no-content-log evidence.
-3. Implement App Attest-backed installation/session authentication and abuse controls, then repeat the canary against Production.
-4. Harden background transfer restoration and long-recording memory behavior without changing the frozen public contract.
-5. Complete `RP-10` physical-device transcription accuracy, latency, interruption, thermal, and deletion validation before enabling real user content.
+1. Import the GitHub repository into Vercel with `backend` as the project root, install an isolated Neon Preview store, run the auth migration, and configure fail-closed Preview provider/policy/auth variables.
+2. Enable App Attest for Lore, refresh signing profiles, and prove development enrollment plus session renewal from a physical iPhone against Preview.
+3. Prove the content-free processing leases under real-database concurrency, then add production WAF rules and stale-auth-state cleanup.
+4. Run `RP-09` synthetic Groq and Fireworks canaries through the real iOS HTTP client; capture schema, privacy, retry, cancellation, and no-content-log evidence.
+5. Configure the isolated Production auth/provider environment and repeat authentication plus canaries with TestFlight.
+6. Harden background transfer restoration and long-recording memory behavior without changing the frozen public contract.
+7. Complete `RP-10` physical-device transcription accuracy, latency, interruption, thermal, and deletion validation before enabling real user content.
 
 ## API Contract
 
@@ -169,7 +172,7 @@ RP-00 contracts                                          |
                                                    -> RP-10 production deployment and release evidence
 ```
 
-The dependency graph records the order used to build the local foundation. `RP-P0` and `RP-00` through `RP-08` now have local implementations; the active dependency edge is from the Git-connected Preview deployment and provider policy gates into `RP-09`, then production authentication and physical-device evidence into `RP-10`.
+The dependency graph records the order used to build the local foundation. `RP-P0` and `RP-00` through `RP-08` now have local implementations. The active dependency edge is from Git-connected Preview plus live App Attest/Neon/provider policy evidence into `RP-09`, then TestFlight and physical-device evidence into `RP-10`.
 
 ## RP-P0 — Persist Remote Capture Before Processing
 
@@ -539,3 +542,9 @@ An agent must use **blocked**, not **complete**, when a required production cred
 - [Groq speech-to-text](https://console.groq.com/docs/speech-to-text)
 - [Groq Audio Transcriptions API](https://console.groq.com/docs/api-reference#audio-transcriptions)
 - [Groq data controls and ZDR](https://console.groq.com/docs/your-data)
+- [Apple: establishing app integrity with App Attest](https://developer.apple.com/documentation/devicecheck/establishing-your-app-s-integrity)
+- [Apple: validating apps that connect to your server](https://developer.apple.com/documentation/devicecheck/validating-apps-that-connect-to-your-server)
+- [Apple: attestation object validation guide](https://developer.apple.com/documentation/devicecheck/attestation-object-validation-guide)
+- [Apple WWDC26: Secure your apps with App Attest](https://developer.apple.com/videos/play/wwdc2026/201/)
+- [Vercel Marketplace storage](https://vercel.com/docs/marketplace-storage)
+- [Vercel Postgres integrations](https://vercel.com/docs/postgres)

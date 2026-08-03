@@ -43,5 +43,6 @@ For a local Debug build, set these scheme environment variables:
 
 - `LORE_BACKEND_BASE_URL`: the HTTPS origin of the Git-connected Vercel Preview deployment
 - `LORE_PREVIEW_BEARER_TOKEN`: the same synthetic-testing token configured in that Preview environment
+- `LORE_USE_APP_ATTEST=true`: optional physical-development override that exercises development App Attest against Preview instead of the bearer
 
-For release builds, configure the `LORE_BACKEND_BASE_URL` build setting to the production API origin. Release builds deliberately ignore the preview bearer token. Production therefore remains fail-closed until installation/session authentication replaces preview authentication.
+For release builds, configure the `LORE_BACKEND_BASE_URL` build setting to the production API origin. Release builds always use App Attest-backed, short-lived installation sessions and ignore the preview bearer token. If App Attest is unsupported or enrollment fails, remote processing fails closed while local recording and processing remain available.

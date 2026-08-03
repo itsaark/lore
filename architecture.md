@@ -343,7 +343,7 @@ Adapters translate Lore's request into direct Fireworks text inference, direct G
 
 Structured extraction should require schema-constrained output when supported and undergo server and client validation. Invalid results are rejected rather than merged into the canonical graph.
 
-At the current evaluation date, Lore calls Fireworks Chat Completions directly with `accounts/fireworks/models/gpt-oss-120b`, requests strict JSON Schema output, validates the result and source references server-side, and allows no provider fallback. Fireworks documents ZDR by default for open-model inference, but its prompt cache is a separate transient-retention surface: a unique isolation key limits cross-request reuse without deleting cached content.
+At the current evaluation date, Lore calls Fireworks Chat Completions directly with `accounts/fireworks/models/gpt-oss-120b`, requests strict JSON Schema output, validates the result and source references server-side, and allows no provider fallback. Fireworks documents ZDR by default for open-model inference, but its default prompt cache is a separate transient-retention surface that can last from several minutes to several hours: a unique isolation key limits cross-request reuse without deleting cached content.
 
 This route is still fail-closed for production until Lore verifies the exact model endpoint, cache lifetime or cache-disable behavior, processing region, subprocessors, and a DPA scope that covers Lore consumer content and expected sensitive data.
 
@@ -524,6 +524,9 @@ This snapshot deliberately distinguishes code that exists from a feature that wo
 - a TypeScript `lore-api` Vercel Functions project with strict Zod contracts, OpenAPI documentation, content-free logging, health routing, multipart transcription validation, and grounded daily-entry validation
 - a direct Fireworks GPT-OSS text adapter with mocked success/error coverage, strict structured output, source-reference validation, and fail-closed provider-policy configuration
 - a direct Groq speech adapter with bounded multipart input, timestamped output, provider-neutral provenance, fail-closed ZDR configuration, and mocked success/error coverage
+- anonymous App Attest bootstrap and renewal on iOS, with a this-device-only key identifier, serialized assertions, memory-only short sessions, explicit key-loss recovery, Release enforcement, and a physical-development Preview override
+- backend App Attest challenge, attestation, and session routes with Apple cryptographic validation, replay-safe counters, short signed sessions, content-free installation rate limits, encrypted receipts, and atomic Neon state transitions
+- durable, content-free one-winner Neon leases that prevent concurrent duplicate provider calls per attested installation/task/idempotency key, with expiry takeover and token-conditional release
 
 ### Partially production-hardened systems
 
@@ -532,31 +535,33 @@ This snapshot deliberately distinguishes code that exists from a feature that wo
 - The hardware policy exists, but its allowlist is local rather than signed/remotely managed. iOS 26 `SpeechAnalyzer`, locale assets, thermal/power inputs, and physical-device validation remain incomplete.
 - The durable runners recover work on app relaunch, but iOS background execution/interruption behavior still needs physical-device proof.
 - Story compatibility status fields remain for UI/migration purposes; `ProcessingJob` is the remote workflow record and must remain the sole retry/recovery authority.
+- App Attest, the Neon adapter, and processing leases are locally implemented and mocked, but the Apple capability/signing profiles, real database migration/concurrency behavior, physical enrollment, TestFlight renewal, WAF policy, and operational cleanup still require live proof.
 
 ### External and live gates only
 
 - The GitHub-connected Vercel project has not been imported, so no canonical Preview or Production deployment exists.
 - No Fireworks or Groq credential has been configured and no synthetic request has traversed the real app, Vercel, and provider path.
-- Fireworks data-policy/cache acceptance and Groq organization-level ZDR for the exact endpoint/model have not been recorded as release evidence; both backend adapters fail closed without those gates.
-- Backend authentication is preview-only bearer scaffolding. Production deliberately rejects it until the App Attest-backed installation/session design is implemented.
+- Fireworks cache-policy acceptance and Groq organization-level ZDR for the exact endpoint/model have not been recorded as release evidence. The global switch/versioned policy configuration fails closed for both providers, and Groq has an additional explicit ZDR configuration gate.
+- Production authentication code now uses App Attest-backed installation sessions and rejects Preview bearer credentials, but the Apple capability, signing profiles, Neon store, and physical-device flows have not yet been configured or proven live.
 - `UnavailableRemoteSpeechTranscriber` and `UnconfiguredLoreBackendProcessingClient` remain intentional fail-closed configurations when no approved API origin or credential is present.
 
 ### Production-capable status
 
 - No Adaptive remote-processing path is production-capable today.
-- The local capture/archive and Adaptive orchestration foundations are functional and test-covered, but release readiness still requires live provider/deployment evidence, production authentication, background/interruption hardening, policy approval, and physical-device validation.
+- The local capture/archive, Adaptive orchestration, production-authentication, and server lease foundations are functional and test-covered, but release readiness still requires live Apple/Neon/provider/deployment evidence, background/interruption hardening, policy approval, and physical-device validation.
 - No real user audio or transcript should be sent remotely until authentication, consent, content-free logging, the applicable provider approval, transactional local commits, and the end-to-end synthetic canary pass their release gates. Audio additionally requires Groq organization-level ZDR verification for the exact transcription endpoint and model.
 
 ### Immediate next steps
 
 The next slice is release integration, not an iOS orchestration rebuild:
 
-1. Import the GitHub repository into Vercel with `backend` as the root and configure a fail-closed Preview environment.
-2. Verify the direct Groq and Fireworks paths with synthetic content through the real iOS client, including error, retry, cancellation, idempotency, provenance, retention-attestation, and deletion-ordering evidence.
-3. Replace preview bearer authentication with App Attest-backed installation/session authentication and add production abuse controls.
-4. Complete background transfer restoration and reduce peak memory for extremely long chunked recordings.
-5. Benchmark Apple local transcription versus the Groq route and validate the complete workflow on supported and older physical iPhones.
-6. Approve provider/privacy policy evidence and final user-facing copy before enabling real user content.
+1. Import the GitHub repository into Vercel with `backend` as the root, install an isolated Neon store, apply the auth migration, and configure a fail-closed Preview environment.
+2. Enable the App Attest capability/signing profiles, then prove development enrollment and renewal on a physical iPhone against Preview.
+3. Prove processing-lease concurrency against the real Preview database and add production WAF/cleanup controls.
+4. Verify direct Groq and Fireworks paths with synthetic content through the real iOS client, including error, retry, cancellation, provenance, retention-attestation, and deletion-ordering evidence.
+5. Complete background transfer restoration and reduce peak memory for extremely long chunked recordings.
+6. Benchmark Apple local transcription versus the Groq route and validate the complete workflow on supported and older physical iPhones, then repeat App Attest renewal in TestFlight.
+7. Approve provider/privacy policy evidence and final user-facing copy before enabling real user content.
 
 ## Delivery Phases
 

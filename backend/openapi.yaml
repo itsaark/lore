@@ -26,11 +26,70 @@ paths:
                   model_aliases:
                     type: array
                     items: { type: string }
+  /v1/auth/challenges:
+    post:
+      operationId: createAppAttestChallenge
+      description: Issues a randomized single-use challenge. Assertion challenges are bound to an opaque App Attest key reference.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChallengeRequest"
+      responses:
+        "200":
+          description: A challenge that expires within five minutes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChallengeResponse"
+        default:
+          $ref: "#/components/responses/ApiError"
+  /v1/auth/attestations:
+    post:
+      operationId: registerAppAttestKey
+      description: Atomically consumes an attestation challenge, registers verified key state, and issues an anonymous installation session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttestationRequest"
+      responses:
+        "200":
+          description: Short-lived anonymous installation session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        default:
+          $ref: "#/components/responses/ApiError"
+  /v1/auth/sessions:
+    post:
+      operationId: renewAppAttestSession
+      description: Verifies a fresh App Attest assertion and atomically consumes its challenge while advancing the key counter.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionRequest"
+      responses:
+        "200":
+          description: Renewed short-lived anonymous installation session.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionResponse"
+        default:
+          $ref: "#/components/responses/ApiError"
   /v1/transcriptions:
     post:
       operationId: createTranscription
       description: Provider-neutral request contract currently fulfilled by direct Groq Whisper transcription.
       security: [{ bearerSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -44,6 +103,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RemoteTranscriptionResponse"
+        "409":
+          $ref: "#/components/responses/ApiError"
         default:
           $ref: "#/components/responses/ApiError"
   /v1/daily-entries:
@@ -51,6 +112,8 @@ paths:
       operationId: createDailyEntry
       description: Provider-neutral request contract currently fulfilled by direct Fireworks Chat Completions.
       security: [{ bearerSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -66,13 +129,28 @@ paths:
               schema:
                 type: object
                 description: DailyEntryGenerationResponse v1.0; canonical validation lives in src/contracts/daily-entry.ts.
+        "409":
+          $ref: "#/components/responses/ApiError"
         default:
           $ref: "#/components/responses/ApiError"
 components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Bounded caller job identity. Daily entry requires `daily-entry:<job_id>`; transcription must exactly match the multipart field.
+      schema:
+        type: string
+        minLength: 8
+        maxLength: 200
+        pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
   securitySchemes:
     bearerSession:
       type: http
       scheme: bearer
+      bearerFormat: JWT
+      description: Short-lived HS256 token issued only after App Attest attestation or assertion verification. Preview bearer credentials are rejected in production.
   responses:
     ApiError:
       description: Stable content-free error response.
@@ -81,6 +159,59 @@ components:
           schema:
             $ref: "#/components/schemas/ApiError"
   schemas:
+    ChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, purpose, key_id]
+      properties:
+        schema_version: { const: "1.0" }
+        purpose: { enum: [attestation, assertion] }
+        key_id:
+          type: [string, "null"]
+          description: Canonical standard-base64 32-byte key identifier; required only for assertion challenges.
+    ChallengeResponse:
+      type: object
+      additionalProperties: false
+      required: [schema_version, challenge_id, challenge, purpose, expires_at]
+      properties:
+        schema_version: { const: "1.0" }
+        challenge_id: { type: string, format: uuid }
+        challenge: { type: string, description: Base64url text hashed as UTF-8 by the App Attest client. }
+        purpose: { enum: [attestation, assertion] }
+        expires_at: { type: string, format: date-time }
+    AttestationRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, challenge_id, challenge, key_id, attestation_object]
+      properties:
+        schema_version: { const: "1.0" }
+        challenge_id: { type: string, format: uuid }
+        challenge: { type: string }
+        key_id: { type: string }
+        attestation_object: { type: string, contentEncoding: base64 }
+    SessionRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, challenge_id, challenge, key_id, assertion_object, client_data]
+      properties:
+        schema_version: { const: "1.0" }
+        challenge_id: { type: string, format: uuid }
+        challenge: { type: string }
+        key_id: { type: string }
+        assertion_object: { type: string, contentEncoding: base64 }
+        client_data:
+          type: string
+          contentEncoding: base64
+          description: Exact UTF-8 JSON bytes signed by App Attest; strict schema is {schema_version, action=create_session, challenge_id, challenge}.
+    SessionResponse:
+      type: object
+      additionalProperties: false
+      required: [schema_version, token_type, session_token, expires_at]
+      properties:
+        schema_version: { const: "1.0" }
+        token_type: { const: Bearer }
+        session_token: { type: string }
+        expires_at: { type: string, format: date-time }
     RetentionPolicy:
       type: object
       additionalProperties: false
@@ -107,7 +238,12 @@ components:
         audio: { type: string, contentEncoding: binary }
         schema_version: { const: "1.0" }
         job_id: { type: string, format: uuid }
-        idempotency_key: { type: string }
+        idempotency_key:
+          type: string
+          minLength: 8
+          maxLength: 200
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+          description: Must exactly match the Idempotency-Key header.
         chunk_id: { type: string }
         chunk_index: { type: integer, minimum: 0 }
         chunk_count: { type: integer, minimum: 1 }

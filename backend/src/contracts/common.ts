@@ -13,6 +13,10 @@ export const ProcessingProviderIdSchema = z.enum([
 ]);
 
 export const UuidSchema = z.string().uuid();
+export const IdempotencyKeySchema = z.string()
+  .min(8)
+  .max(200)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
 export const IsoDateSchema = z.iso.datetime({ offset: true });
 
 export const RetentionPolicySchema = z.object({
@@ -40,6 +44,15 @@ export const ProcessingProvenanceSchema = z.object({
 
 export const ApiErrorCodeSchema = z.enum([
   "unauthorized",
+  "auth_unavailable",
+  "challenge_expired",
+  "challenge_replayed",
+  "attestation_invalid",
+  "assertion_invalid",
+  "app_attest_key_unknown",
+  "counter_replayed",
+  "rate_limited",
+  "processing_in_progress",
   "consent_required",
   "unsupported_schema",
   "invalid_request",

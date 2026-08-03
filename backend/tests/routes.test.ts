@@ -5,7 +5,6 @@ import { handleTranscription } from "../api/v1/transcriptions.js";
 const environment = {
   FIREWORKS_API_KEY: "test-fireworks-key-never-use-live",
   GROQ_API_KEY: "test-groq-key-never-use-live",
-  LORE_FIREWORKS_DATA_POLICY_VERIFIED: "true",
   LORE_GROQ_ZDR_VERIFIED: "true",
   LORE_PROVIDER_POLICY_VERSION: "test-policy-v1",
   LORE_REMOTE_PROCESSING_ENABLED: "true",
@@ -50,7 +49,10 @@ describe("processing routes", () => {
 
     const response = await handleTranscription(new Request("https://lore.invalid/v1/transcriptions", {
       method: "POST",
-      headers: { Authorization: "Bearer preview-token" },
+      headers: {
+        Authorization: "Bearer preview-token",
+        "Idempotency-Key": "transcription:note-1:revision-1:chunk-0"
+      },
       body: form
     }), { environment, fetch: provider });
 
@@ -81,7 +83,10 @@ describe("processing routes", () => {
 
     const response = await handleTranscription(new Request("https://lore.invalid/v1/transcriptions", {
       method: "POST",
-      headers: { Authorization: "Bearer preview-token" },
+      headers: {
+        Authorization: "Bearer preview-token",
+        "Idempotency-Key": "transcription:note-1:revision-1:chunk-0"
+      },
       body: form
     }), {
       environment: { ...environment, LORE_GROQ_ZDR_VERIFIED: "false" },
@@ -95,17 +100,18 @@ describe("processing routes", () => {
     });
   });
 
-  it("fails closed when the Fireworks data policy configuration is missing", async () => {
+  it("fails closed when the provider policy version is unreviewed", async () => {
     const provider = vi.fn<typeof fetch>();
     const response = await handleDailyEntry(new Request("https://lore.invalid/v1/daily-entries", {
       method: "POST",
       headers: {
         Authorization: "Bearer preview-token",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Idempotency-Key": "daily-entry:5f3acbd5-676e-4cb3-83a4-150b09c735a9"
       },
       body: JSON.stringify(validDailyRequest())
     }), {
-      environment: { ...environment, LORE_FIREWORKS_DATA_POLICY_VERIFIED: "false" },
+      environment: { ...environment, LORE_PROVIDER_POLICY_VERSION: "unverified" },
       fetch: provider
     });
 
@@ -155,7 +161,8 @@ describe("processing routes", () => {
       method: "POST",
       headers: {
         Authorization: "Bearer preview-token",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Idempotency-Key": "daily-entry:5f3acbd5-676e-4cb3-83a4-150b09c735a9"
       },
       body: JSON.stringify(validDailyRequest())
     }), {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   API_SCHEMA_VERSION,
+  IdempotencyKeySchema,
   ProcessingProvenanceSchema,
   RetentionPolicySchema,
   UuidSchema
@@ -13,7 +14,7 @@ export const MAX_VOCABULARY_HINTS = 100;
 export const TranscriptionMetadataSchema = z.object({
   schema_version: z.literal(API_SCHEMA_VERSION),
   job_id: UuidSchema,
-  idempotency_key: z.string().min(8).max(200),
+  idempotency_key: IdempotencyKeySchema,
   chunk_id: z.string().min(1).max(100),
   chunk_index: z.coerce.number().int().min(0),
   chunk_count: z.coerce.number().int().min(1).max(10_000),

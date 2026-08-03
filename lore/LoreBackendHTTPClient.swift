@@ -99,15 +99,18 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
     private let configuration: LoreBackendHTTPClientConfiguration
     private let transport: LoreBackendHTTPTransport
     private let temporaryDirectory: URL
+    private let productionAuthorizer: (any LoreBackendAuthorizing)?
 
     init(
         configuration: LoreBackendHTTPClientConfiguration,
         transport: LoreBackendHTTPTransport = .ephemeral(),
-        temporaryDirectory: URL = FileManager.default.temporaryDirectory
+        temporaryDirectory: URL = FileManager.default.temporaryDirectory,
+        productionAuthorizer: (any LoreBackendAuthorizing)? = nil
     ) {
         self.configuration = configuration
         self.transport = transport
         self.temporaryDirectory = temporaryDirectory
+        self.productionAuthorizer = productionAuthorizer
     }
 
     func transcribe(_ request: RemoteTranscriptionRequest) async throws -> RemoteTranscriptionResponse {
@@ -138,7 +141,7 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         }
         defer { try? FileManager.default.removeItem(at: bodyURL) }
 
-        var urlRequest = try makeRequest(
+        var urlRequest = try await makeRequest(
             path: "v1/transcriptions",
             requestId: requestId,
             idempotencyKey: idempotencyKey
@@ -179,7 +182,7 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
             throw LoreBackendProcessingError.payloadTooLarge(maximumBytes: Self.maximumDailyEntryBodyBytes)
         }
 
-        var urlRequest = try makeRequest(
+        var urlRequest = try await makeRequest(
             path: "v1/daily-entries",
             requestId: requestId,
             idempotencyKey: idempotencyKey
@@ -197,7 +200,7 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         path: String,
         requestId: String,
         idempotencyKey: String
-    ) throws -> URLRequest {
+    ) async throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: configuration.baseURL)?.absoluteURL,
               url.scheme?.lowercased() == "https" else {
             throw LoreBackendProcessingError.invalidConfiguration
@@ -212,11 +215,71 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         request.setValue("no-store", forHTTPHeaderField: "Cache-Control")
         request.setValue(requestId, forHTTPHeaderField: "X-Request-ID")
         request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key")
-        if configuration.deployment != .production,
-           let token = configuration.previewBearerToken {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        switch configuration.deployment {
+        case .preview, .test:
+            if let token = configuration.previewBearerToken {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+        case .production:
+            guard let productionAuthorizer else {
+                throw LoreBackendProcessingError.notConfigured
+            }
+            let authorization: String
+            do {
+                authorization = try await productionAuthorizer.authorizationHeaderValue()
+            } catch let error as LoreAppAttestError {
+                throw Self.mapAuthorizationError(error)
+            } catch is CancellationError {
+                throw LoreBackendProcessingError.cancelled
+            } catch {
+                throw LoreBackendProcessingError.transportUnavailable
+            }
+            guard
+                authorization.hasPrefix("Bearer "),
+                authorization.count > "Bearer ".count,
+                !authorization.contains("\n"),
+                !authorization.contains("\r")
+            else {
+                throw LoreBackendProcessingError.invalidConfiguration
+            }
+            request.setValue(authorization, forHTTPHeaderField: "Authorization")
         }
         return request
+    }
+
+    private static func mapAuthorizationError(
+        _ error: LoreAppAttestError
+    ) -> LoreBackendProcessingError {
+        switch error {
+        case .cancelled:
+            .cancelled
+        case .unavailable:
+            .transportUnavailable
+        case .unsupported:
+            .notConfigured
+        case .keyStorageFailed:
+            .rejected(
+                code: "app_attest_key_storage_failed",
+                retryable: false,
+                retryAfterSeconds: nil
+            )
+        case .invalidKey:
+            .rejected(
+                code: "app_attest_key_invalid",
+                retryable: false,
+                retryAfterSeconds: nil
+            )
+        case .invalidChallenge, .invalidResponse:
+            .invalidResponse(requestId: nil)
+        case let .rateLimited(retryAfterSeconds):
+            .rateLimited(retryAfterSeconds: retryAfterSeconds)
+        case let .rejected(code, retryable, retryAfterSeconds):
+            .rejected(
+                code: code,
+                retryable: retryable,
+                retryAfterSeconds: retryAfterSeconds
+            )
+        }
     }
 
     private func perform(

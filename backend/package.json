@@ -12,6 +12,9 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
+    "cbor": "^10.0.12",
+    "node-app-attest": "^1.0.1",
     "zod": "^4.3.5"
   },
   "devDependencies": {

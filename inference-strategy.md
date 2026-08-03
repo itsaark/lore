@@ -79,7 +79,7 @@ For every hosted route:
 - Keep permanent provider keys in Lore's backend. Neither Fireworks nor Groq credentials may ship in the app.
 - Enable or verify each provider's route-specific ZDR controls and confirm the exact endpoint/model is eligible.
 - Use direct Fireworks Chat Completions with a fixed approved model and prohibit silent provider fallback.
-- Treat Fireworks prompt caching as transient retention: per-request isolation reduces reuse across requests but does not delete cached content. Obtain a contractual maximum lifetime or disable caching before promising immediate deletion.
+- Treat Fireworks prompt caching as transient retention: Fireworks documents a several-minutes-to-several-hours volatile lifetime. Per-request isolation reduces reuse across requests but does not delete cached content. Obtain an acceptable contractual maximum lifetime or disable caching before promising immediate deletion.
 - Disable batch, files, fine-tuning, feedback capture, training sharing, web/search tools, provider conversation state, and persistent caches.
 - Keep payloads in memory for synchronous work; do not include content in queues, logs, traces, analytics, crash reports, URLs, or support tools.
 - Use fixed model IDs and an approved provider allowlist. Fail closed when the approved route is unavailable.

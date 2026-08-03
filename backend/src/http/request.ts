@@ -1,3 +1,4 @@
+import { IdempotencyKeySchema } from "../contracts/common.js";
 import { LoreApiError } from "./errors.js";
 
 export function requestId(request: Request): string {
@@ -28,6 +29,14 @@ export function requireContentLengthBelow(request: Request, maximumBytes: number
   if (length > maximumBytes) {
     throw new LoreApiError("payload_too_large", 413, false);
   }
+}
+
+export function requireIdempotencyKey(request: Request): string {
+  const parsed = IdempotencyKeySchema.safeParse(request.headers.get("idempotency-key"));
+  if (!parsed.success) {
+    throw new LoreApiError("invalid_request", 400, false);
+  }
+  return parsed.data;
 }
 
 export function jsonSuccess(body: unknown, id: string): Response {

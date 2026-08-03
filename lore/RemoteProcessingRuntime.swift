@@ -78,8 +78,11 @@ struct LoreRemoteServices {
         }
 
 #if DEBUG
-        let deployment: LoreBackendHTTPClientConfiguration.Deployment = .preview
-        let previewToken = environment["LORE_PREVIEW_BEARER_TOKEN"]
+        let usesAppAttest = usesAppAttestForCurrentBuild(environment: environment)
+        let deployment: LoreBackendHTTPClientConfiguration.Deployment = usesAppAttest
+            ? .production
+            : .preview
+        let previewToken = usesAppAttest ? nil : environment["LORE_PREVIEW_BEARER_TOKEN"]
 #else
         let deployment: LoreBackendHTTPClientConfiguration.Deployment = .production
         let previewToken: String? = nil
@@ -91,7 +94,30 @@ struct LoreRemoteServices {
                 deployment: deployment,
                 previewBearerToken: previewToken
             )
-            let backend = LoreBackendHTTPClient(configuration: configuration)
+            let transport = LoreBackendHTTPTransport.ephemeral()
+            let authorizer: (any LoreBackendAuthorizing)?
+#if DEBUG
+            if usesAppAttest {
+                let authAPI = try LoreAppAttestHTTPAPIClient(
+                    baseURL: configuration.baseURL,
+                    transport: transport
+                )
+                authorizer = LoreAppAttestSessionAuthorizer(api: authAPI)
+            } else {
+                authorizer = nil
+            }
+#else
+            let authAPI = try LoreAppAttestHTTPAPIClient(
+                baseURL: configuration.baseURL,
+                transport: transport
+            )
+            authorizer = LoreAppAttestSessionAuthorizer(api: authAPI)
+#endif
+            let backend = LoreBackendHTTPClient(
+                configuration: configuration,
+                transport: transport,
+                productionAuthorizer: authorizer
+            )
             return Self(
                 dailyEntryGenerator: RemoteDailyEntryGenerationService(backend: backend),
                 speechTranscriber: LoreBackendRemoteSpeechTranscriber(backend: backend)
@@ -99,6 +125,14 @@ struct LoreRemoteServices {
         } catch {
             return unconfigured
         }
+    }
+
+    static func usesAppAttestForCurrentBuild(environment: [String: String]) -> Bool {
+#if DEBUG
+        environment["LORE_USE_APP_ATTEST"]?.lowercased() == "true"
+#else
+        true
+#endif
     }
 
     private static var unconfigured: Self {
