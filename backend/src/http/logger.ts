@@ -7,7 +7,7 @@ const SafeLogEventSchema = z.object({
   status: z.number().int().min(100).max(599).optional(),
   duration_ms: z.number().int().min(0).optional(),
   error_code: z.string().regex(/^[a-z0-9_]{1,80}$/).optional(),
-  provider: z.literal("groq").optional(),
+  provider: z.enum(["fireworks", "groq", "deepgram", "google", "openai", "self_hosted"]).optional(),
   model_alias: z.enum(["transcription-fallback-v1", "daily-entry-v1"]).optional()
 }).strict();
 

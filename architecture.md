@@ -1,6 +1,6 @@
 # Lore Architecture
 
-Last updated: 2026-07-16
+Last updated: 2026-08-03
 
 ## System Goal
 
@@ -18,7 +18,7 @@ The execution location must not change the product data model. Capture, processi
 - **Separate evidence from narrative.** Source stories and user corrections ground a memory graph; generated prose is a replaceable view.
 - **Preserve uncertainty and disagreement.** Approximate dates and conflicting accounts remain explicit.
 - **Provenance survives model changes.** Every derived fact and passage links to source stories and records how it was produced.
-- **Provider details stay behind ports.** Feature code does not depend directly on MLX, Vercel AI Gateway, or a model vendor.
+- **Provider details stay behind ports.** Feature code does not depend directly on MLX, Fireworks, Groq, or another model vendor.
 - **Offline capture always works.** Connectivity may delay processing but must not block recording or reading the archive.
 - **Privacy claims are testable system properties.** Retention, log redaction, provider settings, and deletion acknowledgements require verification.
 
@@ -46,7 +46,7 @@ The backend is a task orchestrator, not the user's archive. It authenticates the
 
 ### Model router and inference provider
 
-Lore's backend owns provider adapters and may call an approved inference provider directly or through a gateway. Direct Groq is the leading MVP candidate for hosted Whisper transcription and GPT-OSS text generation; Fireworks is the leading text fallback. Vercel AI Gateway remains an optional text-routing tool rather than an architectural requirement and should be bypassed for MVP transcription because it does not expose the preferred Groq route and adds another processor.
+Lore's backend owns provider policy and adapters. The MVP calls Fireworks Chat Completions directly for open-weight journal generation and Groq Audio Transcriptions directly for remote speech. This intentionally keeps the processor list and request topology small while Lore validates the product.
 
 The selected upstream model may be open-weight and hosted by a third party. "Open-weight" does not by itself establish license suitability or privacy; the exact model license, host, gateway, endpoint, feature configuration, and provider route must all be approved. Every intermediary is a separate data processor with separate logging and retention behavior.
 
@@ -84,7 +84,7 @@ The initial app shell has three top-level destinations:
 | --- | --- | --- |
 | Notes | Provide a minimal, focused start/stop recording surface and communicate capture state without visual clutter | Transcript lists, graph browsing, and long-form composition |
 | Biography | Show short daily narrative entries and provide access to their raw transcript sources | Full chapter editor, people/place/theme explorers |
-| Settings | Privacy and network modes, audio fallback consent, writing perspective/style, retention, export/delete, optional local models | General-purpose assistant configuration |
+| Settings | Privacy and network modes, audio-upload consent, writing perspective/style, retention, export/delete, optional local models | General-purpose assistant configuration |
 
 Capture must remain one tap away and must not wait for model initialization or network reachability. Notes stays focused on capture; Biography is a derived, revisable surface that also provides access to source material.
 
@@ -263,9 +263,9 @@ iPhone
        -> policy + retention guard
        -> prompt/context builder
        -> ModelGateway port
-            -> approved direct provider adapter (Groq initially)
-            -> approved fallback adapter (Fireworks candidate)
-            -> optional text gateway adapter
+            -> direct Fireworks Chat Completions for text inference
+            -> direct Groq Audio Transcriptions for completed audio
+            -> approved fallback adapter (none enabled by default)
             -> self-hosted inference later
        -> schema/safety validation
        -> request-ephemeral result delivery
@@ -279,7 +279,7 @@ The request-ephemeral MVP interfaces should include:
 - `POST /v1/daily-entries` as a versioned JSON request
 - `GET /v1/health` with no content or provider details
 
-Both processing endpoints require a pseudonymous authenticated session, an idempotency key, an explicit `requestEphemeral` retention policy, and versioned response schemas. They return the result synchronously and persist no request or result content. The app's durable local `ProcessingJob` remains the recovery and retry record.
+All processing endpoints require a pseudonymous authenticated session, an idempotency key, an explicit `requestEphemeral` retention policy, and versioned response schemas. They persist no request or result content. The app's durable local `ProcessingJob` remains the recovery and retry record.
 
 If asynchronous recovery is introduced later, the backend may add:
 
@@ -292,9 +292,9 @@ Exact endpoints may change, but the semantics should remain stable.
 
 ### Vercel MVP transport constraints
 
-The first Lore backend is planned as TypeScript Vercel Functions using the Node.js runtime and direct Groq adapters. Vercel AI Gateway is not on the MVP data path.
+The first Lore backend uses TypeScript Vercel Functions and the Node.js runtime. It calls Fireworks Chat Completions directly for text and Groq Audio Transcriptions directly for finalized recordings or bounded chunks. Both permanent provider keys stay in Vercel environment variables. There is no AI Gateway hop, client-side provider credential, or long-lived speech WebSocket in the MVP.
 
-Vercel currently documents a 4.5 MB function request/response body limit. Groq accepts direct speech attachments up to 25 MB and larger files by URL, but using a provider URL would require a separate temporary object store and weaken the request-ephemeral design. Therefore:
+Vercel currently documents a 4.5 MB function request/response body limit. Groq transcription is synchronous batch processing, so the bounded multipart endpoint is the primary remote speech path. Therefore:
 
 - the app must encode speech efficiently and split long recordings into independently transcribable chunks
 - each complete multipart request must remain at or below 3.5 MB; Lore currently reserves 3.25 MB for the audio part and the remainder for form overhead
@@ -303,7 +303,7 @@ Vercel currently documents a 4.5 MB function request/response body limit. Groq a
 - transcript segments must retain stable chunk/time identifiers so the app can assemble them deterministically and preserve provenance
 - a later dedicated upload service is an architectural change requiring a new retention review
 
-Relevant platform references are [Vercel's function payload guidance](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions), [Groq speech file limits](https://console.groq.com/docs/speech-to-text), and [Groq data controls](https://console.groq.com/docs/your-data). These constraints must be rechecked before production release.
+Relevant references are [Vercel's function payload guidance](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions), [Groq speech-to-text](https://console.groq.com/docs/speech-to-text), [Groq Audio Transcriptions](https://console.groq.com/docs/api-reference#audio-transcriptions), and [Groq data controls](https://console.groq.com/docs/your-data).
 
 ### Repository and deployment topology
 
@@ -339,23 +339,29 @@ protocol ModelGateway {
 }
 ```
 
-Adapters translate Lore's request into direct Groq, Fireworks, an optional gateway, or self-hosted inference calls. Model aliases such as `daily-entry-v1`, `memory-extraction-v1`, and `transcription-fallback-v1` are configured server-side; the app does not depend on provider model IDs.
+Adapters translate Lore's request into direct Fireworks text inference, direct Groq batch transcription, an optional approved fallback, or later self-hosted inference. Model aliases such as `daily-entry-v1`, `memory-extraction-v1`, and `transcription-fallback-v1` are configured server-side; the app does not depend on provider model IDs.
 
 Structured extraction should require schema-constrained output when supported and undergo server and client validation. Invalid results are rejected rather than merged into the canonical graph.
 
-At the current evaluation date, Groq exposes self-serve organization-level ZDR for its transcription endpoints and very low-cost Whisper Large V3 routes, making a direct adapter the strongest remote-audio candidate. That configuration still requires a dedicated consent and privacy release gate; ZDR means transient plaintext processing, not that PII was never disclosed. OpenAI transcription is an accuracy escalation candidate. Remote audio must never pass through an unapproved fallback.
+At the current evaluation date, Lore calls Fireworks Chat Completions directly with `accounts/fireworks/models/gpt-oss-120b`, requests strict JSON Schema output, validates the result and source references server-side, and allows no provider fallback. Fireworks documents ZDR by default for open-model inference, but its prompt cache is a separate transient-retention surface: a unique isolation key limits cross-request reuse without deleting cached content.
+
+This route is still fail-closed for production until Lore verifies the exact model endpoint, cache lifetime or cache-disable behavior, processing region, subprocessors, and a DPA scope that covers Lore consumer content and expected sensitive data.
+
+Groq is the production speech choice. The initial `transcription-fallback-v1` alias maps to `whisper-large-v3-turbo`, currently listed at $0.04 per audio hour with a 216x real-time factor and 12% published WER. `whisper-large-v3` is the measured accuracy candidate at $0.111 per hour, 189x, and 10.3% published WER. Both are direct-file, batch transcription routes; Lore must not label them live streaming or promise first-partial latency.
+
+Groq speech production remains blocked until organization Data Controls enable ZDR, the exact Audio Transcriptions endpoints are confirmed eligible, and Lore's accuracy/latency benchmark passes. With eligible ZDR enabled and no Lore persistence, audio exists only for synchronous processing; there is no durable provider object for a later deletion request.
 
 ## Remote Data Lifecycle
 
 The deletion promise spans Lore's API, queues, object storage, gateway, inference provider, observability, crash reporting, and backups. There are two permitted retention classes:
 
-- `requestEphemeral`: the normal synchronous route. Content remains in volatile request scope, the full gateway/provider path is verified for zero data retention, and input/output content is discarded immediately when the request completes.
+- `requestEphemeral`: the normal synchronous route. Lore creates no durable content record and reports zero seconds of persistent retention. Content may exist in provider-controlled volatile inference memory—and, only when explicitly approved, an isolated volatile prompt cache—for the provider's documented bounded lifetime.
 - `asyncRecovery`: only for explicitly asynchronous work or an undelivered result. Content is encrypted with a job-scoped key, deleted immediately after delivery acknowledgement or terminal failure, and subject to a hard seven-day TTL.
 
 Target lifecycle:
 
 1. Receive an authenticated request with an allowed retention class.
-2. For `requestEphemeral`, keep content only in memory, use a verified zero-data-retention provider route, stream/return the result, and discard all content as the request completes.
+2. For `requestEphemeral`, keep content only in Lore's request memory, use a verified zero-data-retention provider route, return the result, and discard Lore's copy as the request completes. Record and approve any provider-side volatile cache lifetime separately; never describe cache isolation as deletion.
 3. For `asyncRecovery`, assign an absolute expiry no later than seven days, encrypt the payload with a job-scoped key, and store it in a TTL-enforced working-data store.
 4. Ensure queue messages and logs contain references, not content.
 5. Send only the required data to an approved gateway/provider configuration.
@@ -517,7 +523,8 @@ This snapshot deliberately distinguishes code that exists from a feature that wo
 - vocabulary, automatic-mode, cellular preference, journal-style, privacy-copy, and local-model settings surfaces
 - unit coverage for routing, contracts, transcript immutability, successful audio deletion, and failed-transcription recovery
 - a TypeScript `lore-api` Vercel Functions project with strict Zod contracts, OpenAPI documentation, content-free logging, health routing, multipart transcription validation, and grounded daily-entry validation
-- direct Groq Whisper and GPT-OSS adapters with mocked success/error coverage, strict JSON Schema output, source-reference validation, and fail-closed provider-policy configuration
+- a direct Fireworks GPT-OSS text adapter with mocked success/error coverage, strict structured output, source-reference validation, and fail-closed provider-policy configuration
+- a direct Groq speech adapter with bounded multipart input, timestamped output, provider-neutral provenance, fail-closed ZDR configuration, and mocked success/error coverage
 
 ### Partially wired systems
 
@@ -528,29 +535,29 @@ This snapshot deliberately distinguishes code that exists from a feature that wo
 - Settings expose an automatic mode, cellular toggle, and privacy explanation, but they do not yet provide revocable Device Only/Adaptive permission, separate audio-upload consent, or enforce the cellular preference in routing.
 - Transcript evidence is additive and immutable, but generated prose is still primarily stored on `Story`; complete sentence provenance, memory candidates, provider provenance, retention attestations, and versioned `BiographyFragment` commits are unfinished.
 - The hardware policy exists, but the allowlist is local rather than a signed remotely managed policy, and iOS 26 `SpeechAnalyzer`, locale checks, thermal/power inputs, and physical-device validation remain incomplete.
-- The backend builds and its health route has been verified in an ephemeral Vercel deployment, but the canonical GitHub-connected Vercel project has not been imported and no Groq credential or live provider test has been configured. Processing endpoints remain disabled/fail-closed.
+- The backend builds and its health route has been verified in an ephemeral Vercel deployment, but the canonical GitHub-connected Vercel project has not been imported and no Fireworks or Groq credential or live provider test has been configured. Both provider adapters are policy-gated; the iOS multipart client does not yet exist.
 - Backend authentication is preview-only scaffolding. Production deliberately rejects it until the App Attest/session design is implemented.
 
 ### Contracts and stubs only
 
-- Provider-neutral transcription and daily-entry request/response types, retention fields, provenance types, and deletion-receipt types exist.
+- Provider-neutral transcription and daily-entry request/response shapes, retention fields, provenance types, deletion-receipt types, and an allowlisted multi-provider provenance identifier exist.
 - `LoreBackendProcessingClient`, `RemoteDailyEntryGenerationService`, and remote speech protocols exist.
 - `UnavailableRemoteSpeechTranscriber` and `UnconfiguredLoreBackendProcessingClient` intentionally fail closed.
-- There is no live iOS HTTP implementation, production authentication/session flow, configured Groq organization, live provider result, or synthetic end-to-end canary through the app.
+- There is no live iOS HTTP implementation, production authentication/session flow, approved Fireworks text agreement, verified Groq ZDR configuration, live provider result, or synthetic end-to-end canary through the app.
 
 ### Production-capable status
 
 - No Adaptive remote-processing path is production-capable today.
 - The local capture and archive foundation is functional and test-covered, but release readiness still requires the speech compatibility work, background/interruption hardening, privacy controls, and physical-device validation described above.
-- No real user audio or transcript should be sent remotely until authentication, consent, content-free logging, Groq ZDR configuration, transactional local commits, and the end-to-end synthetic canary pass their release gates.
+- No real user audio or transcript should be sent remotely until authentication, consent, content-free logging, the applicable provider approval, transactional local commits, and the end-to-end synthetic canary pass their release gates. Audio additionally requires Groq organization-level ZDR verification for the exact transcription endpoint and model.
 
 ### Immediate next steps
 
 The next implementation slice should build on the existing foundations rather than rebuild recording:
 
 1. Correct remote persistence ordering: commit the local `Story`, `AudioAsset`, and queued `ProcessingJob` before opening any network request.
-2. Build the Lore Vercel backend and direct Groq transcription/daily-entry adapters.
-3. Wire the existing provider-neutral contracts into a real iOS HTTP client.
+2. Complete synthetic verification of the direct Fireworks daily-entry adapter.
+3. Complete synthetic verification of the direct Groq Audio Transcriptions adapter and connect the existing multipart endpoint to a real iOS HTTP client.
 4. Add a one-time Adaptive processing disclosure during onboarding, with separate audio-upload permission and a revocable Device Only/Adaptive choice in Settings.
 5. Make the existing cellular toggle an enforced input to route selection.
 6. Make `ProcessingJob` the real runner for retry, restart recovery, cancellation, and idempotent commit.
@@ -573,8 +580,8 @@ The next implementation slice should build on the existing foundations rather th
 
 1. **Partial:** generalize generation and transcription behind provider-neutral, route-aware result types.
 2. **Partial:** capability policies exist; add the full `DeviceCapabilityService`, signed remote policy, privacy/network inputs, and diagnostic routing reasons.
-3. Build the Lore Processing API and direct provider adapters behind `ModelGateway`, beginning with Groq and an evaluated Fireworks fallback for text.
-4. Start with approved hosted open-weight models for structured text extraction and daily-entry writing; add Groq Whisper remote speech only after separate audio consent, benchmark, and retention validation.
+3. Build the Lore Processing API and provider adapters behind `ModelGateway`, using direct Fireworks for open-weight text and direct Groq batch transcription for remote speech.
+4. Start with approved hosted open-weight models for structured text extraction and daily-entry writing; enable remote speech only after separate audio consent, latency/accuracy/reliability benchmarks, a current provider contract, and retention/residency validation.
 5. Add privacy modes, data-transfer disclosure, cellular controls, remote job status, cancellation, and deletion receipts.
 6. Validate providers, logging, TTL cleanup, backups, and deletion using synthetic end-to-end tests before sending real user stories.
 

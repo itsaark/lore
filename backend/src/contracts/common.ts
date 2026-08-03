@@ -3,6 +3,15 @@ import { z } from "zod";
 export const API_SCHEMA_VERSION = "1.0" as const;
 export const RETENTION_POLICY_VERSION = "request-ephemeral-v1" as const;
 
+export const ProcessingProviderIdSchema = z.enum([
+  "fireworks",
+  "groq",
+  "deepgram",
+  "google",
+  "openai",
+  "self_hosted"
+]);
+
 export const UuidSchema = z.string().uuid();
 export const IsoDateSchema = z.iso.datetime({ offset: true });
 
@@ -19,7 +28,7 @@ export const RetentionAttestationSchema = z.object({
 }).strict();
 
 export const ProcessingProvenanceSchema = z.object({
-  provider_id: z.literal("groq"),
+  provider_id: ProcessingProviderIdSchema,
   model_alias: z.string().min(1).max(80),
   model_id: z.string().min(1).max(120),
   model_policy_version: z.string().min(1).max(80),

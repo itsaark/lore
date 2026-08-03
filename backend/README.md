@@ -2,21 +2,19 @@
 
 Provider-neutral, request-ephemeral backend for Lore transcription and grounded daily-entry generation.
 
-## Current status
+## Current provider topology
 
-- Vercel Functions scaffold and health endpoint
-- strict versioned Zod contracts
-- bounded multipart transcription endpoint
-- grounded daily-entry endpoint
-- direct Groq Whisper and GPT-OSS adapters
-- strict JSON Schema provider output
-- source-reference validation
-- preview-only bearer authentication
-- fail-closed ZDR/provider configuration
-- content-free operational logging
-- mocked provider and route tests
+- Daily entries: direct Fireworks Chat Completions using `accounts/fireworks/models/gpt-oss-120b`
+- Transcription: direct Groq Audio Transcriptions using `whisper-large-v3-turbo`
+- No provider-side files, batch jobs, stored response objects, or extra routing layer
 
-Production authentication, iOS networking, durable job orchestration, and live Groq/Vercel verification remain incomplete. Preview bearer authentication is deliberately rejected when `VERCEL_ENV=production`.
+The public Lore request and response contracts remain provider-neutral. Provider names and exact model IDs are recorded only in processing provenance. The model aliases `daily-entry-v1` and `transcription-fallback-v1` are stable app-facing identifiers.
+
+Daily-entry requests use Fireworks' stateless Chat Completions endpoint with strict JSON Schema output. The backend re-validates the complete output and rejects invented source or fact references. It does not use Fireworks Responses API storage or conversation state.
+
+Transcription requests use Groq's synchronous Audio Transcriptions endpoint with `verbose_json` segment timestamps, temperature zero, an ISO-639-1 language hint when available, and a bounded vocabulary prompt. The backend never uses Groq Files or Batch APIs.
+
+Production authentication, iOS networking, and durable job orchestration remain incomplete. Preview bearer authentication is deliberately rejected when `VERCEL_ENV=production`.
 
 ## Deploy from GitHub
 
@@ -49,12 +47,22 @@ See `openapi.yaml` for the public HTTP contract.
 
 Copy `.env.example` to a local untracked environment file. Never commit credentials.
 
-- `GROQ_API_KEY`: server-only Groq key
-- `LORE_GROQ_ZDR_VERIFIED`: must be exactly `true`
-- `LORE_PROVIDER_POLICY_VERSION`: owner-reviewed policy identifier
-- `LORE_REMOTE_PROCESSING_ENABLED`: must be exactly `true`
+- `FIREWORKS_API_KEY`: server-only Fireworks API key for daily-entry generation
+- `GROQ_API_KEY`: server-only Groq API key for audio transcription
+- `LORE_FIREWORKS_DATA_POLICY_VERIFIED`: must be exactly `true` only after Fireworks' applicable data policy is reviewed for the intended Lore environment
+- `LORE_GROQ_ZDR_VERIFIED`: must be exactly `true` only after Zero Data Retention is enabled and verified for the Groq organization/project handling Lore requests
+- `LORE_PROVIDER_POLICY_VERSION`: owner-reviewed policy identifier; cannot be `unverified`
+- `LORE_REMOTE_PROCESSING_ENABLED`: global fail-closed switch; must be exactly `true`
 - `LORE_PREVIEW_BEARER_TOKEN`: preview/local synthetic testing only
 
-Groq does not return a per-request ZDR flag or deletion receipt. The Lore retention attestation states which reviewed deployment policy handled the request; it is not represented as a provider-issued receipt.
+Set both provider keys and policy gates separately in every intended Vercel environment. Do not enable production content processing until production installation/session authentication replaces the preview bearer.
 
-Set `GROQ_API_KEY`, `LORE_GROQ_ZDR_VERIFIED`, `LORE_PROVIDER_POLICY_VERSION`, and `LORE_REMOTE_PROCESSING_ENABLED` separately for each intended Vercel environment. `LORE_PREVIEW_BEARER_TOKEN` belongs only in Preview/local environments. Production content processing must remain disabled until production installation/session authentication replaces the preview bearer.
+The retention attestation returned by Lore records the policy configuration under which the request ran. It is not a provider-issued deletion receipt. Its zero-second value refers to persistent content retention, not the time plaintext exists in volatile inference memory. Request-ephemeral processing means Lore does not intentionally persist provider-bound audio, prompts, or outputs on the server. Groq's ZDR setting must prevent inference inputs and outputs from being retained for reliability or abuse monitoring; usage metadata may still be retained. Fireworks' open-model inference policy and any prompt-cache behavior must remain covered by the reviewed policy version. A unique prompt-cache isolation key prevents reuse across Lore requests, but it does not delete the volatile cache; do not enable the Fireworks policy gate until that lifetime is accepted or a cache-disabled route is available.
+
+## Official API and data-policy references
+
+- <https://docs.fireworks.ai/api-reference/post-chatcompletions>
+- <https://docs.fireworks.ai/structured-responses/structured-response-formatting>
+- <https://docs.fireworks.ai/guides/security_compliance/data_handling>
+- <https://console.groq.com/docs/speech-to-text>
+- <https://console.groq.com/docs/your-data>

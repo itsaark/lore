@@ -31,6 +31,6 @@ The API project owns only API domains and server-side secrets. See `backend/READ
 
 ### Website (future)
 
-Create `web/` as a Next.js application when the landing page work starts. Import the same GitHub repository into a second Vercel project with `web` as its root directory. That project should own the public website domain, authentication UI, and eventual account-management experience; it must not expose the Groq key or share backend-only environment variables.
+Create `web/` as a Next.js application when the landing page work starts. Import the same GitHub repository into a second Vercel project with `web` as its root directory. That project should own the public website domain, authentication UI, and eventual account-management experience; it must not expose Fireworks, Groq, or other backend-only inference credentials.
 
 The public website and API should remain separate Vercel projects even if both live in this repository. This preserves independent deployments, environment scopes, domains, observability, and rollback.

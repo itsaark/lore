@@ -1,6 +1,6 @@
 import { LoreApiError } from "../../http/errors.js";
 
-export function groqError(response: Response): LoreApiError {
+export function fireworksError(response: Response): LoreApiError {
   const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
 
   switch (response.status) {
@@ -8,8 +8,6 @@ export function groqError(response: Response): LoreApiError {
     case 404:
     case 422:
       return new LoreApiError("invalid_provider_response", 502, false);
-    case 413:
-      return new LoreApiError("payload_too_large", 413, false);
     case 401:
     case 403:
       return new LoreApiError("provider_policy_unverified", 503, false);

@@ -1,6 +1,6 @@
 # Lore Inference Strategy
 
-Last updated: 2026-07-16
+Last updated: 2026-08-03
 
 ## Status
 
@@ -8,7 +8,7 @@ This document records the current MVP candidates and the production contract to 
 
 Decisions remain provisional until Lore's own transcription and journal-writing evaluations pass.
 
-Provider capabilities, pricing, and retention claims in this document were rechecked against official documentation on 2026-07-16. They must be checked again at the production release gate.
+Provider capabilities, pricing, and retention claims in this document were rechecked against official documentation on 2026-08-03. They must be checked again at the production release gate.
 
 ## MVP Route Summary
 
@@ -16,56 +16,54 @@ Provider capabilities, pricing, and retention claims in this document were reche
 
 1. Reserve Apple local transcription for configurations on Lore's measured allowlist, initially marketed iPhone 17-class and newer devices (`iPhone18,*` hardware identifiers and above) that also pass OS API, locale, asset, and runtime availability checks.
 2. On iOS 26 and later within that class, prefer Apple `SpeechAnalyzer` with `SpeechTranscriber` and system-managed locale assets; use `DictationTranscriber` where appropriate.
-3. Treat earlier, unknown, or unvalidated devices as remote-first for transcription. Upload audio only after explicit consent and through Lore's backend to an approved ZDR route.
+3. Treat earlier, unknown, or unvalidated devices as remote-first for transcription. After explicit consent, upload the finalized recording or bounded chunks to Lore's Vercel API, which calls Groq's synchronous Audio Transcriptions endpoint directly.
 4. Use Prism ML's downloadable Bonsai model locally for biography processing only on the same eligible iPhone 17-class-and-newer hardware boundary. Earlier and unknown devices use Lore's API for biography processing.
 5. Keep `SFSpeechRecognizer` as a compatibility implementation for evaluation and Device Only experiments, not the default transcription route on older devices.
-6. Use Groq Whisper Large V3 Turbo for the normal remote pass. Offer Large V3 or OpenAI Transcribe only as an explicit accuracy escalation.
+6. Map the existing stable alias `transcription-fallback-v1` to Groq `whisper-large-v3-turbo` for the initial cost/latency route. Keep `whisper-large-v3` as an explicit accuracy candidate, not an automatic fallback, until Lore's benchmark justifies its higher price.
 7. Commit the raw transcript and provenance transactionally on the iPhone before deleting audio.
 
-The Vercel MVP must send bounded `multipart/form-data` chunks rather than base64 audio in JSON. Vercel documents a 4.5 MB function payload limit, so Lore will enforce a conservative 3.5 MB maximum for the complete multipart request, with at most 3.25 MB allocated to audio, and retain stable time/chunk identifiers for deterministic transcript assembly. The backend forwards chunks directly to Groq without durable server storage. See [Vercel's payload guidance](https://vercel.com/kb/guide/how-to-bypass-vercel-body-size-limit-serverless-functions) and [Groq's speech file requirements](https://console.groq.com/docs/speech-to-text).
+Groq's Audio Transcriptions API is batch/synchronous, not a true live WebSocket transcription service. Lore should feel immediate by keeping recording controls and level animation fully local, finalizing quickly when the user stops, and starting the post-stop upload without blocking the UI. For longer notes, deterministic bounded chunks can reduce time to the first usable segment, but partial chunk results are never canonical until the complete transcript is assembled and validated.
 
 Hardware generation establishes the initial eligibility boundary, but never guarantees local routing by itself. Runtime API/locale availability, measured quality, truncation, and user policy must also pass. The allowlist should remain remotely configurable as Lore collects device-specific evidence.
 
-Current hosted candidates:
+Current production choice and benchmark context:
 
 | Route | Approximate audio cost | Retention posture | MVP role |
 | --- | ---: | --- | --- |
 | Apple on-device Speech | $0 | Audio and transcript remain on-device | Primary |
-| Groq Whisper Large V3 Turbo | $0.04/hour | Audio endpoints are ZDR-eligible when organization ZDR is enabled | Normal remote fallback |
-| Groq Whisper Large V3 | $0.111/hour | Same explicit ZDR control; higher reported accuracy | Accuracy retry |
-| OpenAI Transcribe | roughly $0.18-$0.36/hour, usage-dependent | Transcription endpoints currently document no training or content retention; formal org controls still require verification | Secondary accuracy escalation |
-| Fireworks Whisper | roughly $0.054-$0.09/hour | Open-model requests are ZDR by default, with feature/cache caveats | Benchmark candidate |
+| Groq Whisper Large V3 Turbo | $0.04/hour | ZDR-eligible only after organization Data Controls enable ZDR for the endpoint | Remote MVP primary; 216x real-time factor and 12% published WER |
+| Groq Whisper Large V3 | $0.111/hour | Same organization-level ZDR requirement | Accuracy benchmark; 189x real-time factor and 10.3% published WER |
+
+These published speed and WER numbers are provider benchmarks, not a guarantee for Lore recordings. The release decision requires a corpus covering long monologues, names, accents, noise, interruptions, dates, numbers, and silence. The initial implementation has no silent fallback: if the selected Groq model is unavailable or its privacy gate is unverified, the job remains locally retryable.
 
 Primary references:
 
 - [Apple SpeechAnalyzer session](https://developer.apple.com/videos/play/wwdc2025/277/)
 - [Apple SpeechTranscriber](https://developer.apple.com/documentation/speech/speechtranscriber)
-- [Groq speech-to-text models, price, and limits](https://console.groq.com/docs/speech-to-text)
-- [Groq retention and ZDR controls](https://console.groq.com/docs/your-data)
-- [OpenAI speech-to-text](https://developers.openai.com/api/docs/guides/speech-to-text)
-- [OpenAI API data controls](https://developers.openai.com/api/docs/guides/your-data)
-- [Fireworks data handling](https://docs.fireworks.ai/guides/security_compliance/data_handling)
+- [Groq speech-to-text](https://console.groq.com/docs/speech-to-text)
+- [Groq audio transcription API](https://console.groq.com/docs/api-reference#audio-transcriptions)
+- [Groq data controls and ZDR](https://console.groq.com/docs/your-data)
 
 ### Daily-entry writing
 
-The leading MVP candidate is `openai/gpt-oss-120b` served directly by Groq:
+The leading MVP candidate is Fireworks-hosted `accounts/fireworks/models/gpt-oss-120b`, called directly through Fireworks Chat Completions:
 
 - Apache-2.0 weights, preserving a later self-hosting path.
 - 131,072-token context.
-- Strict JSON-schema output support on Groq.
+- Strict JSON Schema output plus server-side source-reference validation.
 - Approximately $0.15 per million input tokens and $0.60 per million output tokens.
 - Approximately $0.00069 for a representative 3,000-token note and 400-token result.
-- Organization-level ZDR must be enabled; persistence-dependent features must be disabled.
+- Each request is stateless and uses a fixed approved Fireworks model ID. Lore does not use the Responses API's default stored-conversation behavior.
 
-Fireworks GPT-OSS 120B is the leading operational fallback at similar token pricing. Use a stateless Chat Completions route or explicitly set `store:false`; do not rely on provider defaults across API families.
+Lore's own provider adapter is the stable text integration boundary. `deepseek-v4-flash` and `minimax-m3` are candidates for a synthetic journal-writing bakeoff, not automatic production fallbacks. Model aliases remain server-side so Lore can change an approved Fireworks-hosted open-weight model without changing the app contract.
 
 Models to benchmark rather than assume superior include Venice GPT-OSS 120B, DeepSeek V3.2, Together Qwen3.5 397B-A17B, and other license-approved open-weight models. No public benchmark adequately measures faithful, warm rewriting of noisy autobiographical voice notes.
 
 Primary references:
 
 - [GPT-OSS 120B license](https://huggingface.co/openai/gpt-oss-120b/blob/ed282e66b414f4e05b8999ef7a9a24e05478b2fd/LICENSE)
-- [Groq GPT-OSS 120B](https://console.groq.com/docs/model/openai/gpt-oss-120b)
-- [Groq structured outputs](https://console.groq.com/docs/structured-outputs)
+- [Fireworks GPT-OSS 120B](https://app.fireworks.ai/models/fireworks/gpt-oss-120b)
+- [Fireworks structured outputs](https://docs.fireworks.ai/structured-responses/structured-response-formatting)
 - [Fireworks pricing](https://docs.fireworks.ai/serverless/pricing)
 - [Fireworks data handling](https://docs.fireworks.ai/guides/security_compliance/data_handling)
 
@@ -76,13 +74,17 @@ ZDR reduces retention; it does not make the content anonymous or prevent transie
 For every hosted route:
 
 - Obtain explicit consent before the first remote text transfer and separate consent before audio upload.
-- Call providers only from Lore's backend; no provider key ships in the app.
-- Enable organization-level ZDR and verify the exact endpoint/model is eligible.
+- Keep permanent provider keys in Lore's backend. Neither Fireworks nor Groq credentials may ship in the app.
+- Enable or verify each provider's route-specific ZDR controls and confirm the exact endpoint/model is eligible.
+- Use direct Fireworks Chat Completions with a fixed approved model and prohibit silent provider fallback.
+- Treat Fireworks prompt caching as transient retention: per-request isolation reduces reuse across requests but does not delete cached content. Obtain a contractual maximum lifetime or disable caching before promising immediate deletion.
 - Disable batch, files, fine-tuning, feedback capture, training sharing, web/search tools, provider conversation state, and persistent caches.
 - Keep payloads in memory for synchronous work; do not include content in queues, logs, traces, analytics, crash reports, URLs, or support tools.
 - Use fixed model IDs and an approved provider allowlist. Fail closed when the approved route is unavailable.
 - Store content-free route and deletion metadata locally with the accepted artifact.
 - Never silently change a failed local job into an audio upload.
+
+Before production biography text is sent, verify Fireworks' current open-model ZDR behavior, prompt-cache lifetime/isolation, region, subprocessors, and a DPA scope that actually covers Lore's consumer users, transcripts, third-party mentions, and expected sensitive data. Before production audio is sent, enable Groq ZDR in organization Data Controls, verify that the selected Audio Transcriptions endpoint and model are ZDR-eligible, and record that policy version in Lore's release evidence. ZDR means request content is not retained after processing; there is no stored audio object for Lore to delete through a later API call.
 
 Known names can eventually be replaced locally with stable placeholders and rehydrated after generation, but this is minimization rather than guaranteed anonymization. A life story can remain identifiable from context.
 
@@ -249,7 +251,17 @@ Build 150-300 synthetic and explicitly consented test cases spanning accents, no
 - Hallucination during silence.
 - Latency, upload reliability, and cost.
 
-Compare Apple SpeechTranscriber, legacy Apple Speech, Groq V3 Turbo/V3, OpenAI mini/full, Fireworks Whisper, Mistral Voxtral, and Deepgram Nova-3 before locking the route.
+Compare Apple SpeechTranscriber, legacy Apple Speech, Groq Whisper Large V3 Turbo, and Groq Whisper Large V3 on Lore's release corpus before locking the production alias. Record end-to-end upload plus inference latency rather than inferring user-perceived speed from Groq's real-time factor alone.
+
+Initial remote-speech release gates on the fixed Lore corpus and network profile:
+
+- At most 15% aggregate word error rate and at most 10% proper-name/date/number error rate.
+- Zero hallucinated words across the silent-audio fixtures and zero missing-tail failures.
+- At least 99 successful, non-empty, correctly ordered transcripts across 100 repeated synthetic requests.
+- For a 60-second fixture on the documented release Wi-Fi profile, at most five seconds p95 from stop to validated transcript response.
+- Observed billed cost no higher than 110% of the published rate after accounting for provider billing granularity.
+
+If Turbo misses an accuracy gate and Large V3 passes it, change the server-side alias through a reviewed model-policy release. Do not retry the same user audio silently against both models.
 
 ### Daily-entry scoring
 

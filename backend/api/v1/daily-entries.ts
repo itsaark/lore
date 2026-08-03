@@ -1,4 +1,4 @@
-import { loadGroqRuntimeConfig } from "../../src/config.js";
+import { loadFireworksRuntimeConfig } from "../../src/config.js";
 import { DailyEntryGenerationRequestSchema } from "../../src/contracts/daily-entry.js";
 import { requirePreviewAuthorization } from "../../src/http/auth.js";
 import { errorResponse, LoreApiError } from "../../src/http/errors.js";
@@ -10,7 +10,7 @@ import {
   requireContentLengthBelow,
   requireMethod
 } from "../../src/http/request.js";
-import { GroqClient } from "../../src/providers/groq/client.js";
+import { FireworksClient } from "../../src/providers/fireworks/client.js";
 
 const MAX_DAILY_ENTRY_BODY_BYTES = 1_000_000;
 
@@ -44,9 +44,9 @@ export async function handleDailyEntry(
       );
     }
 
-    writeSafeLog({ event: "provider_started", request_id: id, route: "daily_entry", provider: "groq", model_alias: "daily-entry-v1" });
-    const client = new GroqClient({
-      config: loadGroqRuntimeConfig(dependencies.environment),
+    writeSafeLog({ event: "provider_started", request_id: id, route: "daily_entry", provider: "fireworks", model_alias: "daily-entry-v1" });
+    const client = new FireworksClient({
+      config: loadFireworksRuntimeConfig(dependencies.environment),
       ...(dependencies.fetch ? { fetch: dependencies.fetch } : {})
     });
     const response = await client.generateDailyEntry(id, parsed.data, processingSignal(request));

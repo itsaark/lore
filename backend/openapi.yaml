@@ -29,6 +29,7 @@ paths:
   /v1/transcriptions:
     post:
       operationId: createTranscription
+      description: Provider-neutral request contract currently fulfilled by direct Groq Whisper transcription.
       security: [{ bearerSession: [] }]
       requestBody:
         required: true
@@ -48,6 +49,7 @@ paths:
   /v1/daily-entries:
     post:
       operationId: createDailyEntry
+      description: Provider-neutral request contract currently fulfilled by direct Fireworks Chat Completions.
       security: [{ bearerSession: [] }]
       requestBody:
         required: true
