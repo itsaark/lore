@@ -1,7 +1,9 @@
 import { createHash, timingSafeEqual, verify, X509Certificate } from "node:crypto";
-import { decodeAllSync } from "cbor";
+import cbor from "cbor";
 import { verifyAttestation as verifyCoreAttestation } from "node-app-attest";
 import type { AppAttestRuntimeConfig } from "../config.js";
+
+const { decodeAllSync } = cbor;
 
 export type VerifiedAttestation = {
   publicKeyPem: string;
