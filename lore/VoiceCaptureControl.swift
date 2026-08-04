@@ -2,7 +2,6 @@ import SwiftUI
 
 struct VoiceCaptureVisual: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
 
     let isAvailable: Bool
     let isRecording: Bool
@@ -72,12 +71,10 @@ struct VoiceCaptureVisual: View {
 
     private func breathingRingSpeed(response: CGFloat) -> Double {
         if isRecording {
-            // Matches the old rings' approximate 1.15...3.05 rad/s range
-            // after accounting for the breathing preset's internal phase rate.
-            return 0.21 + Double(response) * 0.35
+            return 0.14 + Double(response) * 0.16
         }
 
-        return isProcessing ? 0.15 : 0.06
+        return isProcessing ? 0.10 : 0.05
     }
 
     private var breathingRingTint: Color? {
@@ -85,17 +82,13 @@ struct VoiceCaptureVisual: View {
             return .secondary
         }
 
-        if isRecording {
-            return .recordingOrbTint(for: colorScheme)
-        }
-
         return nil
     }
 
     private var breathingRingOpacity: Double {
         guard isAvailable else { return 0.24 }
-        if isRecording { return 0.82 }
-        return isProcessing ? 0.52 : 0.38
+        if isRecording { return 0.62 }
+        return isProcessing ? 0.46 : 0.32
     }
 
     private static let sphereDiameterRatio: CGFloat = 176.0 / 304.0

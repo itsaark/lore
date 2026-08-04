@@ -14,6 +14,18 @@ import Testing
 @Suite(.serialized)
 struct loreTests {
 
+    @Test func breathingOrbSpeedChangesKeepContinuousPhase() {
+        let clock = BreathingOrbPhaseClock()
+        let initialTime = clock.time(at: 100, targetSpeed: 0.14, baseSpeed: 3.24)
+        let quietTime = clock.time(at: 100.016, targetSpeed: 0.14, baseSpeed: 3.24)
+        let louderTime = clock.time(at: 100.032, targetSpeed: 0.30, baseSpeed: 3.24)
+
+        #expect(initialTime == 0.6)
+        #expect(quietTime > initialTime)
+        #expect(louderTime > quietTime)
+        #expect(louderTime - quietTime < 0.02)
+    }
+
     @Test func audioLevelEnvelopeRespondsToWhispersWithoutJumping() {
         var envelope = AudioLevelEnvelope()
         let whisperRMS = pow(Float(10), -56 / 20)

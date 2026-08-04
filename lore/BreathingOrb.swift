@@ -5,6 +5,7 @@ import SwiftUI
 struct BreathingOrb: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.colorScheme) private var colorScheme
+    @State private var phaseClock = BreathingOrbPhaseClock()
 
     let size: CGFloat
     let speed: Double
@@ -23,8 +24,13 @@ struct BreathingOrb: View {
                 paused: reduceMotion
             )
         ) { context in
-            let elapsed = context.date.timeIntervalSinceReferenceDate
-            let time = reduceMotion ? 0.6 : elapsed * Self.presetSpeed * speed
+            let time = reduceMotion
+                ? 0.6
+                : phaseClock.time(
+                    at: context.date.timeIntervalSinceReferenceDate,
+                    targetSpeed: speed,
+                    baseSpeed: Self.presetSpeed
+                )
 
             Canvas(opaque: false, rendersAsynchronously: true) { context, canvasSize in
                 draw(in: &context, canvasSize: canvasSize, time: time)
@@ -123,6 +129,37 @@ struct BreathingOrb: View {
     private static let wobbleMultiplier = 0.368
     private static let dotRadiusBase = 1.1 * 0.956
     private static let dotRadiusDepth = 1.7 * 0.956
+}
+
+final class BreathingOrbPhaseClock {
+    private var lastTimestamp: TimeInterval?
+    private var smoothedSpeed: Double?
+    private var phase = 0.6
+
+    func time(
+        at timestamp: TimeInterval,
+        targetSpeed: Double,
+        baseSpeed: Double
+    ) -> Double {
+        let targetSpeed = max(0, targetSpeed)
+
+        guard let lastTimestamp else {
+            self.lastTimestamp = timestamp
+            smoothedSpeed = targetSpeed
+            return phase
+        }
+
+        let frameDuration = min(max(timestamp - lastTimestamp, 0), 0.1)
+        self.lastTimestamp = timestamp
+
+        let currentSpeed = smoothedSpeed ?? targetSpeed
+        let smoothing = 1 - exp(-frameDuration * 4)
+        let nextSpeed = currentSpeed + (targetSpeed - currentSpeed) * smoothing
+        smoothedSpeed = nextSpeed
+        phase += frameDuration * baseSpeed * nextSpeed
+
+        return phase
+    }
 }
 
 private struct BreathingDot {
