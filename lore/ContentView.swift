@@ -7,14 +7,10 @@
 
 import SwiftUI
 import SwiftData
-#if canImport(UIKit)
-import UIKit
-#endif
 
 struct ContentView: View {
     let userProfile: UserProfile
     @Environment(\.modelContext) private var modelContext
-    @StateObject private var modelManager = ModelManager()
     @StateObject private var speechRecognizer: SpeechRecognitionViewModel
     @State private var selectedTab: LaunchTab
 
@@ -47,11 +43,7 @@ struct ContentView: View {
                 .tag(LaunchTab.biography)
                 .accessibilityIdentifier("biographyTab")
 
-            SettingsHomeView(
-                userProfile: userProfile,
-                modelManager: modelManager,
-                showsLocalModels: modelManager.isLocalGenerationEligible
-            )
+            SettingsHomeView(userProfile: userProfile)
             .tabItem {
                 Label("Settings", systemImage: "gearshape")
             }
@@ -61,21 +53,12 @@ struct ContentView: View {
         .onAppear {
             speechRecognizer.configure(
                 modelContext: modelContext,
-                generationService: LocalGenerationService(modelManager: modelManager),
                 userProfile: userProfile
             )
         }
         .onChange(of: userProfile.updatedAt) { _, _ in
             speechRecognizer.refreshRemoteProcessingPolicy()
         }
-#if canImport(UIKit)
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didReceiveMemoryWarningNotification)) { _ in
-            modelManager.unloadModel(message: "Local model unloaded after a memory warning.")
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
-            modelManager.unloadModel(message: "Local model unloaded while Lore is in the background.")
-        }
-#endif
     }
 }
 

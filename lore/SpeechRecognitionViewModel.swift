@@ -6,7 +6,6 @@
 //
 
 import Foundation
-import Speech
 import AVFoundation
 import SwiftUI
 import Accelerate
@@ -47,38 +46,24 @@ private enum RemoteWorkAvailability: Equatable {
 class SpeechRecognitionViewModel: ObservableObject {
     
     // MARK: - Published Properties
-    @Published var transcribedText = ""
     @Published var isRecording = false
     @Published var errorMessage: String?
     @Published var isAuthorized = false
-    @Published var currentWord = ""
-    @Published var wordOpacity: Double = 0.0
     @Published var stories: [Story] = []
-    @Published var speechConfidence: Float = 0.0
-    @Published var streamingText = ""
     @Published var isProcessingAudio = false
     @Published var currentAudioLevel: Float = 0.0
     @Published var currentAudioResponseLevel: Float = 0.0
-    @Published private(set) var transcriptionRoute: SpeechTranscriptionRoute = .remote(reason: .hardwareNotValidated)
-    @Published private(set) var biographyGenerationRoute: BiographyGenerationRoute = .remote
+    @Published private(set) var transcriptionRoute: SpeechTranscriptionRoute = .deferred(reason: .networkUnknown)
     @Published private(set) var isAwaitingRemoteTranscription = false
     
     // MARK: - Private Properties
-    private let speechRecognizer: SFSpeechRecognizer?
     private let metadataService: any MetadataService
     private let transcriptionPolicy: SpeechTranscriptionPolicy
     private let remoteDailyEntryGenerator: any DailyEntryGenerationService
     private let remoteTranscriber: any RemoteSpeechTranscribing
     private let networkConnectionProvider: any SpeechNetworkConnectionProviding
     private let localeIdentifier: String
-    private let deviceHardwareIdentifier: String
-    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
-    private var isStoppedByUser = false
-    private var lastWordTime: Date?
-    private var previousWordCount = 0
-    private var fadeTimer: Timer?
     private var recordingStartTime: Date?
     private var currentRecordingAudioFileURL: URL?
     private var audioLevelTimer: Timer?
@@ -88,11 +73,8 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var transcriptionRecoveryTask: Task<Void, Never>?
     private var dailyEntryRecoveryTask: Task<Void, Never>?
     private var modelContext: ModelContext?
-    private var generationService: (any GenerationService)?
     private var userProfile: UserProfile?
     private var hasLoadedStories = false
-    private var currentCaptureRoute: SpeechTranscriptionRoute = .remote(reason: .hardwareNotValidated)
-    private var speechPermissionGranted = false
     private var microphonePermissionGranted = false
     private static let audioRetentionInterval: TimeInterval = 7 * 24 * 60 * 60
     private static let placeholderAudioScheme = "lore-audio-placeholder"
@@ -100,16 +82,13 @@ class SpeechRecognitionViewModel: ObservableObject {
     // MARK: - Initialization
     init(
         metadataService: any MetadataService = LocalMetadataService(),
-        transcriptionPolicy: SpeechTranscriptionPolicy = .production(),
-        biographyGenerationPolicy: BiographyGenerationPolicy = .production(),
+        transcriptionPolicy: SpeechTranscriptionPolicy = .production,
         remoteDailyEntryGenerator: any DailyEntryGenerationService = RemoteDailyEntryGenerationService(
             backend: UnconfiguredLoreBackendProcessingClient()
         ),
         remoteTranscriber: any RemoteSpeechTranscribing = UnavailableRemoteSpeechTranscriber(),
         networkConnectionProvider: (any SpeechNetworkConnectionProviding)? = nil,
-        localeIdentifier: String = Locale.current.identifier,
-        deviceHardwareIdentifier: String = CurrentSpeechDevice.hardwareIdentifier,
-        supportsLocalGenerationRuntime: Bool = LocalModelRuntimeAvailability.isAvailable
+        localeIdentifier: String = Locale.current.identifier
     ) {
         self.metadataService = metadataService
         self.transcriptionPolicy = transcriptionPolicy
@@ -117,24 +96,6 @@ class SpeechRecognitionViewModel: ObservableObject {
         self.remoteTranscriber = remoteTranscriber
         self.networkConnectionProvider = networkConnectionProvider ?? SystemSpeechNetworkMonitor()
         self.localeIdentifier = localeIdentifier
-        self.deviceHardwareIdentifier = deviceHardwareIdentifier
-
-        let recognizer = SFSpeechRecognizer(locale: Locale(identifier: localeIdentifier))
-        self.speechRecognizer = recognizer
-        let capabilities = SpeechTranscriptionCapabilities(
-            hardwareIdentifier: deviceHardwareIdentifier,
-            osMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
-            supportsOnDeviceRecognition: recognizer?.supportsOnDeviceRecognition == true
-        )
-        let initialRoute = transcriptionPolicy.route(for: capabilities)
-        self.transcriptionRoute = initialRoute
-        self.currentCaptureRoute = initialRoute
-        self.biographyGenerationRoute = biographyGenerationPolicy.route(
-            for: BiographyGenerationCapabilities(
-                hardwareIdentifier: deviceHardwareIdentifier,
-                supportsLocalRuntime: supportsLocalGenerationRuntime
-            )
-        )
 
         self.networkConnectionProvider.observeChanges { [weak self] _ in
             guard let self, self.userProfile != nil else { return }
@@ -159,16 +120,9 @@ class SpeechRecognitionViewModel: ObservableObject {
     
     /// Clears transcribed text and any error messages
     func clearText() {
-        transcribedText = ""
-        streamingText = ""
-        currentWord = ""
-        wordOpacity = 0.0
-        speechConfidence = 0.0
         isProcessingAudio = false
         isAwaitingRemoteTranscription = false
         errorMessage = nil
-        fadeTimer?.invalidate()
-        fadeTimer = nil
         currentAudioLevel = 0.0
         currentAudioResponseLevel = 0.0
         stopAudioLevelTimer()
@@ -178,11 +132,9 @@ class SpeechRecognitionViewModel: ObservableObject {
     /// Connects the view model to SwiftData once the view receives its environment context.
     func configure(
         modelContext: ModelContext,
-        generationService: any GenerationService,
         userProfile: UserProfile
     ) {
         self.modelContext = modelContext
-        self.generationService = generationService
         self.userProfile = userProfile
         refreshRemoteProcessingPolicy(resumeJobs: false)
 
@@ -209,7 +161,6 @@ class SpeechRecognitionViewModel: ObservableObject {
 
     private func refreshRemoteProcessingPolicy(resumeJobs: Bool) {
         transcriptionRoute = resolvedCaptureRoute()
-        currentCaptureRoute = transcriptionRoute
         refreshAuthorizationState()
 
         if isAwaitingRemoteTranscription,
@@ -621,42 +572,8 @@ class SpeechRecognitionViewModel: ObservableObject {
 
     // MARK: - Private Methods
     
-    /// Requests both speech recognition and microphone permissions
+    /// Requests the only system permission needed by remote-first capture.
     private func requestPermissions() async {
-        if transcriptionRoute == .onDevice {
-            await withCheckedContinuation { continuation in
-                SFSpeechRecognizer.requestAuthorization { [weak self] authStatus in
-                    DispatchQueue.main.async {
-                        guard let self else {
-                            continuation.resume()
-                            return
-                        }
-
-                        self.speechPermissionGranted = authStatus == .authorized
-                        switch authStatus {
-                        case .authorized:
-                            self.errorMessage = nil
-                            print("✅ Speech recognition authorized")
-                        case .denied:
-                            self.errorMessage = "Speech recognition access denied. Please enable it in Settings."
-                        case .restricted:
-                            self.errorMessage = "Speech recognition is restricted on this device."
-                        case .notDetermined:
-                            self.errorMessage = "Speech recognition permission not determined."
-                        @unknown default:
-                            self.errorMessage = "Unknown speech recognition authorization status."
-                        }
-                        self.refreshAuthorizationState()
-                        continuation.resume()
-                    }
-                }
-            }
-        } else {
-            // Remote transcription only needs microphone access; avoid requesting unrelated Speech access.
-            speechPermissionGranted = false
-        }
-        
-        // Request Microphone Permission
         await withCheckedContinuation { continuation in
             AVAudioApplication.requestRecordPermission { [weak self] granted in
                 DispatchQueue.main.async {
@@ -679,49 +596,30 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
 
     private func refreshAuthorizationState() {
-        let routePermissionGranted = transcriptionRoute.usesRemoteService || speechPermissionGranted
-        isAuthorized = microphonePermissionGranted && routePermissionGranted
-    }
-
-    private func speechCapabilities() -> SpeechTranscriptionCapabilities {
-        SpeechTranscriptionCapabilities(
-            hardwareIdentifier: deviceHardwareIdentifier,
-            osMajorVersion: ProcessInfo.processInfo.operatingSystemVersion.majorVersion,
-            supportsOnDeviceRecognition: speechRecognizer?.supportsOnDeviceRecognition == true
-        )
+        isAuthorized = microphonePermissionGranted && transcriptionRoute.usesRemoteService
     }
 
     private func resolvedCaptureRoute() -> SpeechTranscriptionRoute {
         guard let userProfile else {
-            let capabilityRoute = transcriptionPolicy.route(for: speechCapabilities())
-            return capabilityRoute == .onDevice
-                ? .onDevice
-                : .deferred(reason: .remoteTextConsentRequired)
+            return .deferred(reason: .remoteProcessingConsentRequired)
         }
 
         return transcriptionPolicy.route(
             for: SpeechTranscriptionRoutingInput(
-                capabilities: speechCapabilities(),
                 preferences: RemoteProcessingPreferences(userProfile: userProfile),
-                networkConnection: networkConnectionProvider.currentConnection,
-                localRecognizerIsAvailable: speechRecognizer?.isAvailable == true
+                networkConnection: networkConnectionProvider.currentConnection
             )
         )
     }
 
-    private func remoteWorkAvailability(requiresAudioUpload: Bool) -> RemoteWorkAvailability {
-        guard let userProfile,
-              userProfile.processingMode == .adaptive,
-              userProfile.hasRemoteTextProcessingConsent,
-              !requiresAudioUpload || userProfile.hasRemoteAudioUploadConsent else {
+    private func remoteWorkAvailability(requiresAudioUpload _: Bool) -> RemoteWorkAvailability {
+        guard let userProfile, userProfile.hasRemoteProcessingConsent else {
             return .waitingForConsent
         }
 
         switch networkConnectionProvider.currentConnection {
-        case .wifi:
+        case .wifi, .cellular:
             return .permitted
-        case .cellular:
-            return userProfile.allowsCellularRemoteProcessing ? .permitted : .waitingForNetwork
         case .unavailable, .unknown:
             return .waitingForNetwork
         }
@@ -729,18 +627,10 @@ class SpeechRecognitionViewModel: ObservableObject {
 
     private func message(for reason: SpeechTranscriptionDeferralReason) -> String {
         switch reason {
-        case .deviceOnlyRequiresLocalTranscription:
-            return "This iPhone needs Adaptive processing for accurate transcription. You can enable it in Settings."
-        case .remoteTextConsentRequired:
-            return "Allow private remote text processing in Settings before using Adaptive transcription."
-        case .remoteAudioConsentRequired:
-            return "Allow temporary audio upload in Settings before using Adaptive transcription."
-        case .cellularProcessingDisabled:
-            return "Connect to Wi-Fi or allow mobile data for Adaptive processing in Settings."
+        case .remoteProcessingConsentRequired:
+            return "Allow private processing before recording."
         case .networkUnavailable, .networkUnknown:
-            return "Lore is offline. Your recording will stay on this iPhone until a permitted connection is available."
-        case .remoteFallbackConfirmationRequired:
-            return "Confirm Adaptive transcription before sending this recording for remote processing."
+            return "Lore is offline. Connect to the internet to transcribe a new recording."
         }
     }
     
@@ -753,10 +643,8 @@ class SpeechRecognitionViewModel: ObservableObject {
             return
         }
         
-        // Reset any previous state
-        stopRecording(shouldSave: false, waitForFinalTranscript: false)
+        stopRecording(shouldSave: false)
         clearText()
-        isStoppedByUser = false
         
         guard AVAudioApplication.shared.recordPermission == .granted else {
             setError("Microphone access required. Please check Settings.")
@@ -766,23 +654,16 @@ class SpeechRecognitionViewModel: ObservableObject {
         let resolvedRoute = resolvedCaptureRoute()
         if case let .deferred(reason) = resolvedRoute {
             transcriptionRoute = resolvedRoute
-            currentCaptureRoute = resolvedRoute
             setError(message(for: reason))
             return
         }
 
-        if resolvedRoute == .onDevice && !speechPermissionGranted {
-            setError("Speech recognition access is required for on-device transcription. Please check Settings.")
-            return
-        }
-
         transcriptionRoute = resolvedRoute
-        currentCaptureRoute = resolvedRoute
         refreshAuthorizationState()
         
         do {
             try setupAudioSession()
-            try startAudioCapture(using: resolvedRoute)
+            try startAudioCapture()
             print("✅ Recording started successfully")
         } catch {
             discardCurrentAudioFile()
@@ -800,24 +681,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         print("✅ Audio session configured")
     }
     
-    /// Starts audio capture and, when policy permits, streams buffers to on-device Speech.
-    private func startAudioCapture(using route: SpeechTranscriptionRoute) throws {
-        // Record start time for duration calculation
+    /// Starts capture to a protected local file that is uploaded after stop.
+    private func startAudioCapture() throws {
         recordingStartTime = Date()
-
-        if route == .onDevice {
-            recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
-            guard let recognitionRequest else {
-                throw SpeechRecognitionError.recognitionRequestFailed
-            }
-
-            recognitionRequest.shouldReportPartialResults = true
-            recognitionRequest.requiresOnDeviceRecognition = true
-            startLocalRecognitionTask(with: recognitionRequest)
-        } else {
-            recognitionRequest = nil
-            recognitionTask = nil
-        }
         
         // Get audio input node
         let inputNode = audioEngine.inputNode
@@ -831,10 +697,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             ofItemAtPath: audioFileURL.path
         )
         currentRecordingAudioFileURL = audioFileURL
-        let activeRecognitionRequest = recognitionRequest
-
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self, weak activeRecognitionRequest, audioFile] buffer, _ in
-            activeRecognitionRequest?.append(buffer)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self, audioFile] buffer, _ in
             do {
                 try audioFile.write(from: buffer)
             } catch {
@@ -888,110 +751,6 @@ class SpeechRecognitionViewModel: ObservableObject {
         print("🎤 Audio engine started, recording in progress")
     }
 
-    private func startLocalRecognitionTask(with recognitionRequest: SFSpeechAudioBufferRecognitionRequest) {
-        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { [weak self] result, error in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                
-                if let result = result {
-                    let newText = result.bestTranscription.formattedString
-                    
-                    // Update both regular text and streaming text
-                    self.transcribedText = newText
-                    self.streamingText = newText
-                    
-                    // Extract confidence from segments
-                    if let lastSegment = result.bestTranscription.segments.last {
-                        self.speechConfidence = lastSegment.confidence
-                        self.isProcessingAudio = true
-                    }
-                    
-                    // Process words for legacy display (keeping for compatibility)
-                    self.processNewWords(newText)
-                    
-                    // Auto-stop if final result (only if not stopped by user)
-                    if result.isFinal && !self.isStoppedByUser {
-                        print("✅ Recognition completed naturally")
-                        self.stopRecording(waitForFinalTranscript: false)
-                    }
-                } else {
-                    // No result means silence or processing pause
-                    self.isProcessingAudio = false
-                    if self.speechConfidence > 0 {
-                        // Gradually decrease confidence during silence
-                        self.speechConfidence = max(0, self.speechConfidence - 0.1)
-                    }
-                }
-                
-                if let error = error {
-                    if Self.shouldIgnoreRecognitionError(
-                        error,
-                        isStoppedByUser: self.isStoppedByUser,
-                        hasTranscript: !self.transcribedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ) {
-                        print("ℹ️ Ignoring benign recognition error: \(error)")
-                        return
-                    }
-                    
-                    self.setError("Recognition error: \(error.localizedDescription)")
-                    print("❌ Recognition error: \(error)")
-                    self.stopRecording(waitForFinalTranscript: false)
-                }
-            }
-        }
-    }
-    
-    /// Processes new words and updates the display
-    private func processNewWords(_ text: String) {
-        let words = text.split(separator: " ").map(String.init)
-        let currentWordCount = words.count
-        
-        // Check if we have a new word
-        if currentWordCount > previousWordCount {
-            let newWord = words.last ?? ""
-            displayNewWord(newWord)
-            previousWordCount = currentWordCount
-        }
-    }
-    
-    /// Displays a new word with appropriate fade timing
-    private func displayNewWord(_ word: String) {
-        // Cancel any existing fade timer
-        fadeTimer?.invalidate()
-        
-        // Calculate time since last word for fade duration
-        let timeSinceLastWord = Date().timeIntervalSince(lastWordTime ?? Date())
-        lastWordTime = Date()
-        
-        // Set the new word and show it immediately
-        currentWord = word
-        wordOpacity = 1.0
-        
-        // Calculate fade duration based on speech speed
-        // Faster speech (shorter intervals) = faster fade
-        // Slower speech (longer intervals) = slower fade
-        let baseFadeDuration: TimeInterval = 1.5
-        let speedMultiplier = min(max(timeSinceLastWord / 2.0, 0.3), 3.0) // Clamp between 0.3x and 3x
-        let fadeDuration = baseFadeDuration * speedMultiplier
-        
-        print("📝 New word: '\(word)', fade duration: \(fadeDuration)s")
-        
-        // Start fade timer
-        fadeTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] timer in
-            Task { @MainActor [weak self, weak timer] in
-                guard let self, let timer else { return }
-
-                let fadeStep = 0.1 / fadeDuration
-                self.wordOpacity = max(0.0, self.wordOpacity - fadeStep)
-
-                if self.wordOpacity <= 0.0 {
-                    timer.invalidate()
-                    self.fadeTimer = nil
-                }
-            }
-        }
-    }
-
     /// Preserves the original, slower-smoothed signal used by CloudWaveOrb so
     /// the animation inside the circle keeps its existing behavior.
     private func startAudioLevelTimer() {
@@ -1010,14 +769,8 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
     
     /// Stops recording and cleans up resources
-    private func stopRecording(
-        shouldSave: Bool = true,
-        waitForFinalTranscript: Bool = true
-    ) {
+    private func stopRecording(shouldSave: Bool = true) {
         print("🛑 Stopping recording...")
-        
-        // Set flag to indicate this is intentional
-        isStoppedByUser = true
         pendingSaveTask?.cancel()
         pendingSaveTask = nil
 
@@ -1027,13 +780,6 @@ class SpeechRecognitionViewModel: ObservableObject {
             audioEngine.inputNode.removeTap(onBus: 0)
         }
         
-        // End recognition request gracefully
-        recognitionRequest?.endAudio()
-        if !waitForFinalTranscript {
-            recognitionTask?.cancel()
-        }
-        
-        speechConfidence = 0.0
         isProcessingAudio = false
         
         // Reset both visual meters so the next recording starts from silence.
@@ -1046,15 +792,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         audioEngine.stop()
 
         if shouldSave {
-            let shouldWaitForLocalFinalTranscript = waitForFinalTranscript && currentCaptureRoute == .onDevice
             pendingSaveTask = Task { [weak self] in
-                if shouldWaitForLocalFinalTranscript {
-                    do {
-                        try await Task.sleep(for: .milliseconds(800))
-                    } catch {
-                        return
-                    }
-                }
                 guard !Task.isCancelled else { return }
                 await self?.saveCurrentRecording()
             }
@@ -1063,22 +801,10 @@ class SpeechRecognitionViewModel: ObservableObject {
             recordingStartTime = nil
         }
 
-        // Clean up word display and streaming state
-        fadeTimer?.invalidate()
-        fadeTimer = nil
-        currentWord = ""
-        wordOpacity = 0.0
-        previousWordCount = 0
-        speechConfidence = 0.0
         isProcessingAudio = false
         currentAudioLevel = 0.0
         currentAudioResponseLevel = 0.0
         
-        // Clean up
-        recognitionRequest = nil
-        if !waitForFinalTranscript || currentCaptureRoute.usesRemoteService {
-            recognitionTask = nil
-        }
         isRecording = false
         
         print("✅ Recording stopped and cleaned up")
@@ -1096,108 +822,59 @@ class SpeechRecognitionViewModel: ObservableObject {
         guard let startTime = recordingStartTime else { return }
 
         let endTime = Date()
-        let transcript = transcribedText
         let audioFileURL = currentRecordingAudioFileURL
-        let captureRoute = currentCaptureRoute
-        let story: Story
-
-        if captureRoute.usesRemoteService {
-            guard let modelContext, let audioFileURL else {
-                pendingSaveTask = nil
-                setError("Lore could not secure this recording locally. The audio was kept on this iPhone.")
-                return
-            }
-
-            let job: ProcessingJob
-            do {
-                (story, job) = try Self.persistRemoteCaptureForTranscription(
-                    startTime: startTime,
-                    endTime: endTime,
-                    audioFileURL: audioFileURL,
-                    modelContext: modelContext
-                )
-            } catch {
-                pendingSaveTask = nil
-                setError("Failed to save the recording before transcription. The audio was kept on this iPhone: \(error.localizedDescription)")
-                return
-            }
-
-            clearFinishedCaptureState(keepPendingTask: true)
-            loadStories()
-            Task {
-                await enrichCaptureMetadata(for: story, captureDate: startTime)
-            }
-
-            isAwaitingRemoteTranscription = true
-            do {
-                let transcribedStory = try await Self.runTranscriptionJob(
-                    jobID: job.id,
-                    remoteTranscriber: remoteTranscriber,
-                    localeIdentifier: localeIdentifier,
-                    modelContext: modelContext
-                )
-                isAwaitingRemoteTranscription = false
-                pendingSaveTask = nil
-                loadStories()
-                Task {
-                    await processCapturedStory(transcribedStory)
-                }
-            } catch {
-                isAwaitingRemoteTranscription = false
-                pendingSaveTask = nil
-                setError(error.localizedDescription)
-                loadStories()
-                scheduleNextTranscriptionRecovery()
-            }
+        guard let modelContext, let audioFileURL else {
+            pendingSaveTask = nil
+            setError("Lore could not secure this recording locally. The audio was kept on this iPhone.")
             return
         }
 
-        if let modelContext {
-            do {
-                story = try Self.persistCapturedStoryImmediately(
-                    transcript: transcript,
-                    startTime: startTime,
-                    endTime: endTime,
-                    audioFileURL: audioFileURL,
-                    transcriptSource: .appleSpeech,
-                    languageCode: localeIdentifier,
-                    modelContext: modelContext
-                )
-                clearFinishedCaptureState()
-                _ = try Self.deleteAudioAfterSuccessfulTranscription(for: story, in: modelContext)
-                loadStories()
-                Task {
-                    await enrichCaptureMetadata(for: story, captureDate: startTime)
-                }
-                Task {
-                    await processCapturedStory(story)
-                }
-            } catch {
-                pendingSaveTask = nil
-                setError("Failed to save the transcript. The audio was kept on this iPhone: \(error.localizedDescription)")
-                return
-            }
-        } else {
-            story = Self.makeStory(transcript: transcript, startTime: startTime, endTime: endTime)
-            stories.append(story)
-            clearFinishedCaptureState()
+        let story: Story
+        let job: ProcessingJob
+        do {
+            (story, job) = try Self.persistRemoteCaptureForTranscription(
+                startTime: startTime,
+                endTime: endTime,
+                audioFileURL: audioFileURL,
+                modelContext: modelContext
+            )
+        } catch {
+            pendingSaveTask = nil
+            setError("Failed to save the recording before transcription. The audio was kept on this iPhone: \(error.localizedDescription)")
+            return
         }
 
-        let displayText = story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "No voice found in story"
-            : String(story.text.prefix(50)) + (story.text.count > 50 ? "..." : "")
-        print("Story saved: \(story.formattedDuration) - \(displayText)")
+        clearFinishedCaptureState(keepPendingTask: true)
+        loadStories()
+        Task { await enrichCaptureMetadata(for: story, captureDate: startTime) }
+
+        isAwaitingRemoteTranscription = true
+        do {
+            let transcribedStory = try await Self.runTranscriptionJob(
+                jobID: job.id,
+                remoteTranscriber: remoteTranscriber,
+                localeIdentifier: localeIdentifier,
+                modelContext: modelContext
+            )
+            isAwaitingRemoteTranscription = false
+            pendingSaveTask = nil
+            loadStories()
+            Task { await processCapturedStory(transcribedStory) }
+        } catch {
+            isAwaitingRemoteTranscription = false
+            pendingSaveTask = nil
+            setError(error.localizedDescription)
+            loadStories()
+            scheduleNextTranscriptionRecovery()
+        }
     }
 
     private func clearFinishedCaptureState(keepPendingTask: Bool = false) {
         if !keepPendingTask {
             pendingSaveTask = nil
         }
-        transcribedText = ""
         recordingStartTime = nil
         currentRecordingAudioFileURL = nil
-        recognitionTask?.cancel()
-        recognitionTask = nil
     }
 
     static func applyUserCorrection(
@@ -1284,7 +961,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             errorCode = "empty_remote_transcript"
         case nil:
             state = .failed
-            errorCode = route.usesRemoteService ? "remote_transcription_failed" : "empty_local_transcript"
+            errorCode = "remote_transcription_failed"
         }
 
         return ProcessingJob(
@@ -1292,7 +969,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             storyId: story.id,
             kind: .transcription,
             state: state,
-            route: route.usesRemoteService ? .remote : .local,
+            route: .remote,
             lastErrorCode: errorCode
         )
     }
@@ -1929,45 +1606,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             return
         }
 
-        story.processingStatus = "processing"
-        story.updatedAt = Date()
-        saveContext()
-
-        do {
-            switch biographyGenerationRoute {
-            case .local:
-                guard let generationService else {
-                    throw GenerationError.localModelNotReady
-                }
-                defer { generationService.releaseResources() }
-
-                story.biographyProse = try await generationService.writeBiographyProse(
-                    from: story,
-                    userProfile: userProfile
-                )
-                let graphJSON = try await generationService.extractMemoryGraph(
-                    from: story,
-                    userProfile: userProfile
-                )
-                if let modelContext {
-                    try MemoryGraphService.persistExtractionJSON(graphJSON, for: story, in: modelContext)
-                }
-
-            case .remote:
-                await processRemoteDailyEntry(for: story, userProfile: userProfile)
-                loadStories()
-                return
-            }
-            story.processingStatus = "processed"
-        } catch GenerationError.localModelNotReady {
-            story.processingStatus = "awaitingModel"
-        } catch {
-            story.processingStatus = "failed"
-            setError(error.localizedDescription)
-        }
-
-        story.updatedAt = Date()
-        saveContext()
+        await processRemoteDailyEntry(for: story, userProfile: userProfile)
         loadStories()
     }
 
@@ -2038,33 +1677,6 @@ class SpeechRecognitionViewModel: ObservableObject {
         print("❌ Error: \(message)")
     }
 
-    nonisolated static func shouldIgnoreRecognitionError(
-        _ error: Error,
-        isStoppedByUser: Bool,
-        hasTranscript: Bool
-    ) -> Bool {
-        let nsError = error as NSError
-        let description = nsError.localizedDescription.lowercased()
-        let isAssistantError = nsError.domain == "kAFAssistantErrorDomain"
-
-        if isAssistantError && nsError.code == 216 {
-            return true
-        }
-
-        if isStoppedByUser && (description.contains("cancelled") || description.contains("canceled")) {
-            return true
-        }
-
-        if isAssistantError && nsError.code == 1110 && (isStoppedByUser || hasTranscript) {
-            return true
-        }
-
-        if isStoppedByUser && description.contains("no speech detected") {
-            return true
-        }
-
-        return false
-    }
 }
 
 // MARK: - Supporting Types
@@ -2106,26 +1718,5 @@ struct AudioLevelEnvelope {
 
     private static func decibels(for amplitude: Float) -> Float {
         20 * log10(max(amplitude, 0.000_001))
-    }
-}
-
-/// Custom errors for speech recognition
-enum SpeechRecognitionError: Error, LocalizedError {
-    case recognitionRequestFailed
-    case audioEngineError
-    case permissionDenied
-    case speechRecognizerUnavailable
-    
-    var errorDescription: String? {
-        switch self {
-        case .recognitionRequestFailed:
-            return "Failed to create speech recognition request"
-        case .audioEngineError:
-            return "Audio engine configuration failed"
-        case .permissionDenied:
-            return "Required permissions not granted"
-        case .speechRecognizerUnavailable:
-            return "Speech recognizer is not available"
-        }
     }
 }

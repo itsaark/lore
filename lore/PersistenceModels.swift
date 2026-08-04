@@ -150,9 +150,7 @@ enum ProcessingJobState: String, Codable, CaseIterable, Sendable {
 }
 
 enum ProcessingExecutionRoute: String, Codable, CaseIterable, Sendable {
-    case local
     case remote
-    case adaptive
 }
 
 enum RemoteContentDeletionState: String, Codable, CaseIterable, Sendable {
@@ -201,7 +199,7 @@ final class ProcessingJob {
         outputReferenceId: UUID? = nil,
         kind: ProcessingJobKind,
         state: ProcessingJobState = .queued,
-        route: ProcessingExecutionRoute = .adaptive,
+        route: ProcessingExecutionRoute = .remote,
         providerId: String? = nil,
         providerModelId: String? = nil,
         requestSchemaVersion: String = "1.0",
@@ -257,7 +255,7 @@ final class ProcessingJob {
     }
 
     var route: ProcessingExecutionRoute {
-        get { ProcessingExecutionRoute(rawValue: routeValue) ?? .adaptive }
+        get { ProcessingExecutionRoute(rawValue: routeValue) ?? .remote }
         set {
             routeValue = newValue.rawValue
             updatedAt = Date()

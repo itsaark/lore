@@ -1,11 +1,16 @@
+import AVFAudio
+import CoreLocation
 import SwiftData
 import SwiftUI
+import UIKit
 
 struct SettingsHomeView: View {
     let userProfile: UserProfile
-    @ObservedObject var modelManager: ModelManager
-    var showsLocalModels = true
+    @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
     @Query private var vocabularyEntries: [VocabularyEntry]
+    @State private var locationPermission: SettingsPermissionState = .notRequested
+    @State private var microphonePermission: SettingsPermissionState = .notRequested
 
     var body: some View {
         NavigationStack {
@@ -22,42 +27,9 @@ struct SettingsHomeView: View {
                     }
                     .accessibilityIdentifier("vocabularySettingsLink")
 
-                    NavigationLink {
-                        TranscriptionModeSettingsView(userProfile: userProfile)
-                    } label: {
-                        SettingsNavigationLabel(
-                            title: "Modes",
-                            systemImage: "arrow.triangle.branch",
-                            detail: userProfile.processingMode.title
-                        )
-                    }
-                    .accessibilityIdentifier("transcriptionModesSettingsLink")
-
-                    if showsLocalModels {
-                        NavigationLink {
-                            LocalAISetupView(modelManager: modelManager)
-                        } label: {
-                            SettingsNavigationLabel(
-                                title: "Models",
-                                systemImage: "cpu",
-                                detail: modelManager.status.statusText
-                            )
-                        }
-                        .accessibilityIdentifier("modelsSettingsLink")
-                    }
                 }
 
                 Section("Preferences") {
-                    NavigationLink {
-                        PrivacyDataSettingsView(userProfile: userProfile)
-                    } label: {
-                        SettingsNavigationLabel(
-                            title: "Privacy & Data",
-                            systemImage: "hand.raised"
-                        )
-                    }
-                    .accessibilityIdentifier("privacyDataSettingsLink")
-
                     NavigationLink {
                         JournalStyleSettingsView(userProfile: userProfile)
                     } label: {
@@ -67,17 +39,34 @@ struct SettingsHomeView: View {
                         )
                     }
                     .accessibilityIdentifier("journalStyleSettingsLink")
+                }
 
-                    NavigationLink {
-                        ShortcutsSettingsView()
+                Section {
+                    SettingsPermissionRow(
+                        title: "Location",
+                        systemImage: "location",
+                        permission: locationPermission
+                    )
+                    .accessibilityIdentifier("locationPermissionStatus")
+
+                    SettingsPermissionRow(
+                        title: "Microphone",
+                        systemImage: "mic",
+                        permission: microphonePermission
+                    )
+                    .accessibilityIdentifier("microphonePermissionStatus")
+
+                    Button {
+                        guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
+                        openURL(settingsURL)
                     } label: {
-                        SettingsNavigationLabel(
-                            title: "Shortcuts",
-                            systemImage: "wand.and.stars",
-                            badge: "NEW"
-                        )
+                        Label("Open iPhone Settings", systemImage: "gearshape")
                     }
-                    .accessibilityIdentifier("shortcutsSettingsLink")
+                    .accessibilityIdentifier("openIPhoneSettingsButton")
+                } header: {
+                    Text("Permissions")
+                } footer: {
+                    Text("Allow Location to add local context and Microphone to record voice notes. Permissions are requested when first used and can be changed in iPhone Settings.")
                 }
 
                 Section("About") {
@@ -95,6 +84,97 @@ struct SettingsHomeView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Settings")
+            .task {
+                refreshPermissionStates()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                if newPhase == .active {
+                    refreshPermissionStates()
+                }
+            }
+        }
+    }
+
+    private func refreshPermissionStates() {
+        locationPermission = SettingsPermissionState(
+            locationAuthorizationStatus: CLLocationManager().authorizationStatus
+        )
+        microphonePermission = SettingsPermissionState(
+            recordPermission: AVAudioApplication.shared.recordPermission
+        )
+    }
+}
+
+private enum SettingsPermissionState {
+    case allowed
+    case denied
+    case notRequested
+    case restricted
+
+    init(locationAuthorizationStatus: CLAuthorizationStatus) {
+        switch locationAuthorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            self = .allowed
+        case .denied:
+            self = .denied
+        case .notDetermined:
+            self = .notRequested
+        case .restricted:
+            self = .restricted
+        @unknown default:
+            self = .restricted
+        }
+    }
+
+    init(recordPermission: AVAudioApplication.recordPermission) {
+        switch recordPermission {
+        case .granted:
+            self = .allowed
+        case .denied:
+            self = .denied
+        case .undetermined:
+            self = .notRequested
+        @unknown default:
+            self = .restricted
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .allowed:
+            "Allowed"
+        case .denied:
+            "Off"
+        case .notRequested:
+            "Not Asked"
+        case .restricted:
+            "Restricted"
+        }
+    }
+
+    var color: Color {
+        switch self {
+        case .allowed:
+            .green
+        case .denied:
+            .red
+        case .notRequested, .restricted:
+            .secondary
+        }
+    }
+}
+
+private struct SettingsPermissionRow: View {
+    let title: String
+    let systemImage: String
+    let permission: SettingsPermissionState
+
+    var body: some View {
+        LabeledContent {
+            Text(permission.title)
+                .foregroundStyle(permission.color)
+        } label: {
+            Label(title, systemImage: systemImage)
         }
     }
 }
@@ -416,116 +496,6 @@ private struct VocabularySecondaryButtonStyle: ButtonStyle {
     }
 }
 
-private struct TranscriptionModeSettingsView: View {
-    let userProfile: UserProfile
-    @Environment(\.modelContext) private var modelContext
-
-    var body: some View {
-        Form {
-            Section {
-                Picker("Mode", selection: processingModeBinding) {
-                    ForEach(LoreProcessingMode.allCases, id: \.self) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .accessibilityIdentifier("processingModePicker")
-
-                Toggle("Use mobile data", isOn: cellularBinding)
-                    .disabled(userProfile.processingMode != .adaptive)
-                    .accessibilityIdentifier("cellularProcessingToggle")
-            } header: {
-                Text("Processing")
-            } footer: {
-                Text("Device Only never sends audio or transcript text. Adaptive can use approved private services when your permissions and connection allow it.")
-            }
-        }
-        .navigationTitle("Modes")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private var processingModeBinding: Binding<LoreProcessingMode> {
-        Binding(
-            get: { userProfile.processingMode },
-            set: { mode in
-                userProfile.processingMode = mode
-                save()
-            }
-        )
-    }
-
-    private var cellularBinding: Binding<Bool> {
-        Binding(
-            get: { userProfile.allowsCellularRemoteProcessing },
-            set: { isAllowed in
-                userProfile.allowsCellularRemoteProcessing = isAllowed
-                userProfile.updatedAt = Date()
-                save()
-            }
-        )
-    }
-
-    private func save() {
-        try? modelContext.save()
-    }
-}
-
-private struct PrivacyDataSettingsView: View {
-    let userProfile: UserProfile
-    @Environment(\.modelContext) private var modelContext
-
-    var body: some View {
-        Form {
-            Section {
-                Label("Transcripts stay on this iPhone", systemImage: "iphone.gen3")
-                Label("Audio is deleted after its transcript is saved", systemImage: "trash")
-            } header: {
-                Text("Local archive")
-            } footer: {
-                Text("If transcription fails, encrypted audio may be kept briefly so you can retry without losing the note.")
-            }
-
-            Section {
-                Toggle("Private text processing", isOn: remoteTextConsentBinding)
-                    .accessibilityIdentifier("settingsRemoteTextConsentToggle")
-
-                Toggle("Audio upload when needed", isOn: remoteAudioConsentBinding)
-                    .disabled(!userProfile.hasRemoteTextProcessingConsent)
-                    .accessibilityIdentifier("settingsRemoteAudioConsentToggle")
-            } header: {
-                Text("Adaptive permissions")
-            } footer: {
-                Text("Text or audio may pass briefly through Lore and an approved provider only while processing. Turning either permission off blocks future transfers.")
-            }
-        }
-        .navigationTitle("Privacy & Data")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private var remoteTextConsentBinding: Binding<Bool> {
-        Binding(
-            get: { userProfile.hasRemoteTextProcessingConsent },
-            set: { isGranted in
-                userProfile.setRemoteTextProcessingConsent(isGranted)
-                save()
-            }
-        )
-    }
-
-    private var remoteAudioConsentBinding: Binding<Bool> {
-        Binding(
-            get: { userProfile.hasRemoteAudioUploadConsent },
-            set: { isGranted in
-                userProfile.setRemoteAudioUploadConsent(isGranted)
-                save()
-            }
-        )
-    }
-
-    private func save() {
-        try? modelContext.save()
-    }
-}
-
 private struct JournalStyleSettingsView: View {
     let userProfile: UserProfile
     @AppStorage("LoreJournalPerspective") private var journalPerspective = "thirdPerson"
@@ -550,18 +520,6 @@ private struct JournalStyleSettingsView: View {
     }
 }
 
-private struct ShortcutsSettingsView: View {
-    var body: some View {
-        ContentUnavailableView {
-            Label("Shortcuts are coming", systemImage: "wand.and.stars")
-        } description: {
-            Text("A future shortcut will let you begin a voice note without opening Lore first.")
-        }
-        .navigationTitle("Shortcuts")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
 private struct AboutLoreView: View {
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
@@ -582,10 +540,7 @@ private struct AboutLoreView: View {
 }
 
 #Preview("Settings") {
-    SettingsHomeView(
-        userProfile: UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994),
-        modelManager: ModelManager()
-    )
+    SettingsHomeView(userProfile: UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994))
     .modelContainer(LoreModelContainer.preview)
 }
 

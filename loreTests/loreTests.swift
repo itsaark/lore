@@ -149,7 +149,7 @@ struct loreTests {
             transcriptArtifactId: artifact.id,
             inputTranscriptVersionId: correction.id,
             kind: .dailyEntry,
-            route: .adaptive,
+            route: .remote,
             deletionState: .required
         )
 
@@ -233,9 +233,7 @@ struct loreTests {
     }
 
     @Test func unconfiguredRemoteBackendFailsClosed() async {
-        let service = BackendRemoteTranscriptionService(
-            backend: UnconfiguredLoreBackendProcessingClient()
-        )
+        let backend = UnconfiguredLoreBackendProcessingClient()
         let request = RemoteTranscriptionRequest(
             jobId: UUID(),
             audio: RemoteAudioPayload(
@@ -248,7 +246,7 @@ struct loreTests {
         var error: LoreBackendProcessingError?
 
         do {
-            _ = try await service.transcribe(request)
+            _ = try await backend.transcribe(request)
         } catch let caught as LoreBackendProcessingError {
             error = caught
         } catch {
@@ -378,175 +376,6 @@ struct loreTests {
         #expect(artifacts.count == 1)
     }
 
-    @MainActor
-    @Test func modelManagerDownloadsAndLoadsSelectedModel() async throws {
-        let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults, runtime: TestDeterministicLocalModelRuntime())
-
-        #expect(modelManager.status.tier == .lightweight17B)
-        #expect(modelManager.status.state == .notDownloaded)
-
-        modelManager.select(.lightweight17B)
-        await modelManager.downloadSelectedModel()
-
-        #expect(modelManager.status.tier == .lightweight17B)
-        #expect(modelManager.status.state == .loaded)
-        #expect(modelManager.status.isReady)
-        #expect(modelManager.status.message == "Local generation fallback is ready.")
-    }
-
-    @MainActor
-    @Test func modelManagerDoesNotLoadPersistedDownloadOnLaunch() async throws {
-        let defaults = try makeIsolatedDefaults()
-        defaults.set(LocalModelTier.standard4B.rawValue, forKey: "LoreSelectedLocalModelTier")
-        defaults.set(LocalModelTier.standard4B.rawValue, forKey: "LoreDownloadedLocalModelTier")
-
-        let modelManager = ModelManager(userDefaults: defaults, runtime: TestDeterministicLocalModelRuntime())
-
-        #expect(modelManager.status.tier == .standard4B)
-        #expect(modelManager.status.state == .downloaded)
-        #expect(modelManager.status.isReady == false)
-    }
-
-    @MainActor
-    @Test func modelManagerUnloadsLoadedModelButKeepsDownloadedState() async throws {
-        let defaults = try makeIsolatedDefaults()
-        let runtime = CapturingLocalModelRuntime(output: "Generated biography prose.")
-        let modelManager = ModelManager(userDefaults: defaults, runtime: runtime)
-
-        await modelManager.downloadSelectedModel()
-        modelManager.unloadModel()
-
-        #expect(modelManager.status.state == .downloaded)
-        #expect(modelManager.status.isReady == false)
-        #expect(runtime.unloadCount == 1)
-    }
-
-    @MainActor
-    @Test func generationAutoLoadsDownloadedModelWhenNeeded() async throws {
-        let defaults = try makeIsolatedDefaults()
-        defaults.set(LocalModelTier.standard4B.rawValue, forKey: "LoreSelectedLocalModelTier")
-        defaults.set(LocalModelTier.standard4B.rawValue, forKey: "LoreDownloadedLocalModelTier")
-        let runtime = CapturingLocalModelRuntime(output: "Generated biography prose.")
-        let modelManager = ModelManager(userDefaults: defaults, runtime: runtime)
-        let generationService = LocalGenerationService(modelManager: modelManager)
-        let story = Story(text: "I started a new chapter today.", date: Date(), duration: 8)
-        let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
-
-        let prose = try await generationService.writeBiographyProse(from: story, userProfile: profile)
-
-        #expect(prose == "Generated biography prose.")
-        #expect(runtime.loadedTiers == [.standard4B])
-        #expect(modelManager.status.isReady)
-    }
-
-    @MainActor
-    @Test func generationServiceRequiresLoadedModel() async throws {
-        let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults, runtime: TestDeterministicLocalModelRuntime())
-        let generationService = LocalGenerationService(modelManager: modelManager)
-        let story = Story(text: "I started a new chapter today.", date: Date(), duration: 8)
-        let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
-        var didRequireModel = false
-
-        do {
-            _ = try await generationService.writeBiographyProse(from: story, userProfile: profile)
-        } catch GenerationError.localModelNotReady {
-            didRequireModel = true
-        }
-
-        #expect(didRequireModel)
-    }
-
-    @MainActor
-    @Test func generationServiceDelegatesBiographyPromptToModelManagerRuntime() async throws {
-        let defaults = try makeIsolatedDefaults()
-        let runtime = CapturingLocalModelRuntime(output: "Generated biography prose.")
-        let modelManager = ModelManager(userDefaults: defaults, runtime: runtime)
-        let generationService = LocalGenerationService(modelManager: modelManager)
-        let story = Story(text: "I started a new chapter today.", date: Date(timeIntervalSince1970: 742_694_400), duration: 8)
-        let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
-
-        await modelManager.downloadSelectedModel()
-
-        let prose = try await generationService.writeBiographyProse(from: story, userProfile: profile)
-
-        #expect(prose == "Generated biography prose.")
-        #expect(runtime.loadedTiers == [.lightweight17B])
-        #expect(runtime.requests.count == 1)
-        #expect(runtime.requests.first?.task == .biographyProse)
-        #expect(runtime.requests.first?.prompt.contains("Return only polished prose.") == true)
-        #expect(runtime.requests.first?.prompt.contains("I started a new chapter today.") == true)
-    }
-
-    @MainActor
-    @Test func generationServiceWritesDeterministicFallbackBiographyProseWhenModelIsReady() async throws {
-        let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults, runtime: TestDeterministicLocalModelRuntime())
-        let generationService = LocalGenerationService(modelManager: modelManager)
-        let story = Story(text: "I started a new chapter today.", date: Date(), duration: 8)
-        let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
-
-        await modelManager.downloadSelectedModel()
-
-        let prose = try await generationService.writeBiographyProse(from: story, userProfile: profile)
-
-        #expect(prose.contains("Aark"))
-        #expect(prose.contains("Hyderabad"))
-        #expect(prose.contains("I started a new chapter today."))
-    }
-
-    @MainActor
-    @Test func generationPromptFactoryBuildsLocalBiographyAndGraphPrompts() {
-        let storyID = UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
-        let story = Story(
-            id: storyID,
-            text: "This was probably around 2012, when I moved to Seattle.",
-            date: Date(timeIntervalSince1970: 742_694_400),
-            duration: 12
-        )
-        let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
-
-        let biographyPrompt = GenerationPromptFactory.makeBiographyProsePrompt(
-            story: story,
-            userProfile: profile
-        )
-        let graphPrompt = GenerationPromptFactory.makeMemoryGraphExtractionPrompt(
-            story: story,
-            userProfile: profile
-        )
-
-        #expect(biographyPrompt.contains("private local biographer"))
-        #expect(biographyPrompt.contains("Do not invent facts"))
-        #expect(biographyPrompt.contains("Aark"))
-        #expect(biographyPrompt.contains("Hyderabad"))
-        #expect(biographyPrompt.contains(storyID.uuidString))
-        #expect(biographyPrompt.contains("This was probably around 2012"))
-        #expect(graphPrompt.contains("Return strict JSON"))
-        #expect(graphPrompt.contains("eventDateKind: exact, approximate, range, or unknown"))
-        #expect(graphPrompt.contains(storyID.uuidString))
-    }
-
-    @MainActor
-    @Test func generationServiceExtractsDeterministicFallbackMemoryGraph() async throws {
-        let defaults = try makeIsolatedDefaults()
-        let modelManager = ModelManager(userDefaults: defaults, runtime: TestDeterministicLocalModelRuntime())
-        let generationService = LocalGenerationService(modelManager: modelManager)
-        let storyID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
-        let story = Story(id: storyID, text: "I remembered summers in Hyderabad with my cousins.", date: Date(), duration: 8)
-        let profile = UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994)
-
-        await modelManager.downloadSelectedModel()
-
-        let graphJSON = try await generationService.extractMemoryGraph(from: story, userProfile: profile)
-        let data = try #require(graphJSON.data(using: .utf8))
-        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-
-        #expect(object["lifeEvents"] != nil)
-        #expect(object["memoryFacts"] != nil)
-        #expect(graphJSON.contains(storyID.uuidString))
-        #expect(graphJSON.contains("Hyderabad"))
-    }
 
     @MainActor
     @Test func capturedStoryPersistsPlaceholderAudioAssetMetadata() async throws {
@@ -625,53 +454,6 @@ struct loreTests {
         #expect(metadata.permissionSnapshot?.contains("\"weatherStatus\":\"pending\"") == true)
     }
 
-    @Test func recognitionNoSpeechAfterTranscriptIsBenign() {
-        let error = NSError(
-            domain: "kAFAssistantErrorDomain",
-            code: 1110,
-            userInfo: [NSLocalizedDescriptionKey: "No speech detected"]
-        )
-
-        #expect(
-            SpeechRecognitionViewModel.shouldIgnoreRecognitionError(
-                error,
-                isStoppedByUser: false,
-                hasTranscript: true
-            )
-        )
-    }
-
-    @Test func recognitionNoSpeechWithoutTranscriptWhileRecordingIsNotIgnored() {
-        let error = NSError(
-            domain: "kAFAssistantErrorDomain",
-            code: 1110,
-            userInfo: [NSLocalizedDescriptionKey: "No speech detected"]
-        )
-
-        #expect(
-            !SpeechRecognitionViewModel.shouldIgnoreRecognitionError(
-                error,
-                isStoppedByUser: false,
-                hasTranscript: false
-            )
-        )
-    }
-
-    @Test func recognitionNoSpeechAfterUserStopIsBenign() {
-        let error = NSError(
-            domain: "kAFAssistantErrorDomain",
-            code: 1110,
-            userInfo: [NSLocalizedDescriptionKey: "No speech detected"]
-        )
-
-        #expect(
-            SpeechRecognitionViewModel.shouldIgnoreRecognitionError(
-                error,
-                isStoppedByUser: true,
-                hasTranscript: false
-            )
-        )
-    }
 
     @MainActor
     @Test func capturedStoryPersistsRealAudioAssetFileURLWhenAvailable() async throws {
@@ -1077,263 +859,45 @@ struct loreTests {
         #expect(theme.sourceStoryIds == [firstStory.id, secondStory.id])
     }
 
-    @Test func marketedIPhone16FamilyDefaultsToRemoteTranscription() throws {
-        let defaults = try makeIsolatedDefaults()
-        let policy = SpeechTranscriptionPolicy.production(userDefaults: defaults)
-        let capabilities = SpeechTranscriptionCapabilities(
-            hardwareIdentifier: "iPhone17,3",
-            osMajorVersion: 26,
-            supportsOnDeviceRecognition: true
-        )
 
-        #expect(policy.route(for: capabilities) == .remote(reason: .hardwareNotValidated))
-    }
-
-    @Test func marketedIPhone17FamilyUsesOnDeviceTranscriptionWhenCapabilityExists() throws {
-        let defaults = try makeIsolatedDefaults()
-        let policy = SpeechTranscriptionPolicy.production(userDefaults: defaults)
-        let capabilities = SpeechTranscriptionCapabilities(
-            hardwareIdentifier: "iPhone18,1",
-            osMajorVersion: 26,
-            supportsOnDeviceRecognition: true
-        )
-
-        #expect(policy.route(for: capabilities) == .onDevice)
-    }
-
-    @Test func olderIPhoneDefaultsToRemoteTranscription() throws {
-        let defaults = try makeIsolatedDefaults()
-        let policy = SpeechTranscriptionPolicy.production(userDefaults: defaults)
-        let capabilities = SpeechTranscriptionCapabilities(
-            hardwareIdentifier: "iPhone16,2",
-            osMajorVersion: 26,
-            supportsOnDeviceRecognition: true
-        )
-
-        #expect(policy.route(for: capabilities) == .remote(reason: .hardwareNotValidated))
-    }
-
-    @Test func eligibleHardwareStillRoutesRemoteWithoutOnDeviceCapability() throws {
-        let defaults = try makeIsolatedDefaults()
-        let policy = SpeechTranscriptionPolicy.production(userDefaults: defaults)
-        let capabilities = SpeechTranscriptionCapabilities(
-            hardwareIdentifier: "iPhone18,1",
-            osMajorVersion: 26,
-            supportsOnDeviceRecognition: false
-        )
-
-        #expect(policy.route(for: capabilities) == .remote(reason: .onDeviceRecognitionUnsupported))
-    }
-
-    @Test func validationAllowlistCannotBypassIPhone17HardwareFloor() {
-        let policy = SpeechTranscriptionPolicy(
-            validatedLocalHardwareIdentifiers: ["iPhone16,2"]
-        )
-        let capabilities = SpeechTranscriptionCapabilities(
-            hardwareIdentifier: "iPhone16,2",
-            osMajorVersion: 26,
-            supportsOnDeviceRecognition: true
-        )
-
-        #expect(policy.route(for: capabilities) == .remote(reason: .hardwareNotValidated))
-    }
-
-    @Test func processingPrivacyChoiceAndSeparateConsentsPersistLocally() throws {
+    @Test func remoteProcessingConsentPersistsAsOnePermission() throws {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)
-        let textConsentDate = Date(timeIntervalSince1970: 1_800_000_000)
-        let audioConsentDate = textConsentDate.addingTimeInterval(5)
+        let consentDate = Date(timeIntervalSince1970: 1_800_000_000)
         let profile = UserProfile(
             name: "Aark",
             hometown: "Hyderabad",
             birthYear: 1994,
-            processingMode: .adaptive,
-            remoteTextProcessingConsentedAt: textConsentDate,
-            remoteAudioUploadConsentedAt: audioConsentDate,
-            allowsCellularRemoteProcessing: true
+            remoteProcessingConsentedAt: consentDate
         )
 
         context.insert(profile)
         try context.save()
 
         let persisted = try #require(try context.fetch(FetchDescriptor<UserProfile>()).first)
-        #expect(persisted.processingMode == .adaptive)
-        #expect(persisted.remoteTextProcessingConsentedAt == textConsentDate)
-        #expect(persisted.remoteAudioUploadConsentedAt == audioConsentDate)
-        #expect(persisted.allowsCellularRemoteProcessing)
-
-        persisted.setRemoteTextProcessingConsent(false, at: audioConsentDate.addingTimeInterval(5))
-        #expect(persisted.hasRemoteTextProcessingConsent == false)
-        #expect(persisted.hasRemoteAudioUploadConsent == false)
+        #expect(persisted.hasRemoteProcessingConsent)
+        #expect(persisted.remoteProcessingConsentedAt == consentDate)
     }
 
-    @Test func deviceOnlyModeNeverRoutesUnvalidatedHardwareToRemote() {
-        let decision = makeSpeechRoutingDecision(
-            mode: .deviceOnly,
-            hasTextConsent: true,
-            hasAudioConsent: true,
-            connection: .wifi
-        )
+    @Test func remoteOnlyRoutingUsesWifiAndCellular() {
+        let policy = SpeechTranscriptionPolicy.production
+        let preferences = RemoteProcessingPreferences(hasConsent: true)
 
-        #expect(decision == .deferred(reason: .deviceOnlyRequiresLocalTranscription))
+        #expect(policy.route(for: .init(preferences: preferences, networkConnection: .wifi)) == .remote)
+        #expect(policy.route(for: .init(preferences: preferences, networkConnection: .cellular)) == .remote)
     }
 
-    @Test func adaptiveRemoteSpeechRequiresTextDisclosureConsent() {
-        let decision = makeSpeechRoutingDecision(
-            hasTextConsent: false,
-            hasAudioConsent: true,
-            connection: .wifi
-        )
+    @Test func remoteOnlyRoutingWaitsWithoutConsentOrConnectivity() {
+        let policy = SpeechTranscriptionPolicy.production
 
-        #expect(decision == .deferred(reason: .remoteTextConsentRequired))
-    }
-
-    @Test func adaptiveRemoteSpeechRequiresSeparateAudioConsent() {
-        let decision = makeSpeechRoutingDecision(
-            hasTextConsent: true,
-            hasAudioConsent: false,
-            connection: .wifi
-        )
-
-        #expect(decision == .deferred(reason: .remoteAudioConsentRequired))
-    }
-
-    @Test func cellularToggleBlocksRemoteSpeechBeforeUpload() {
-        let decision = makeSpeechRoutingDecision(
-            hasTextConsent: true,
-            hasAudioConsent: true,
-            allowsCellular: false,
-            connection: .cellular
-        )
-
-        #expect(decision == .deferred(reason: .cellularProcessingDisabled))
-    }
-
-    @Test func adaptiveRemoteSpeechAllowsConsentedCellularRoute() {
-        let decision = makeSpeechRoutingDecision(
-            hasTextConsent: true,
-            hasAudioConsent: true,
-            allowsCellular: true,
-            connection: .cellular
-        )
-
-        #expect(decision == .remote(reason: .hardwareNotValidated))
-    }
-
-    @Test func unknownNetworkFailsClosedBeforeRemoteSpeech() {
-        let decision = makeSpeechRoutingDecision(
-            hasTextConsent: true,
-            hasAudioConsent: true,
-            allowsCellular: true,
-            connection: .unknown
-        )
-
-        #expect(decision == .deferred(reason: .networkUnknown))
-    }
-
-    @Test func localFailureDoesNotSilentlyFallBackToRemoteSpeech() {
-        let policy = SpeechTranscriptionPolicy(validatedLocalHardwareIdentifiers: [])
-        let capabilities = SpeechTranscriptionCapabilities(
-            hardwareIdentifier: "iPhone18,1",
-            osMajorVersion: 26,
-            supportsOnDeviceRecognition: true
-        )
-        let preferences = RemoteProcessingPreferences(
-            mode: .adaptive,
-            hasRemoteTextProcessingConsent: true,
-            hasRemoteAudioUploadConsent: true,
-            allowsCellularRemoteProcessing: true
-        )
-
-        let blocked = policy.route(
-            for: SpeechTranscriptionRoutingInput(
-                capabilities: capabilities,
-                preferences: preferences,
-                networkConnection: .wifi,
-                followsFailedLocalAttempt: true
-            )
-        )
-        let approved = policy.route(
-            for: SpeechTranscriptionRoutingInput(
-                capabilities: capabilities,
-                preferences: preferences,
-                networkConnection: .wifi,
-                followsFailedLocalAttempt: true,
-                userConfirmedRemoteFallback: true
-            )
-        )
-
-        #expect(blocked == .deferred(reason: .remoteFallbackConfirmationRequired))
-        #expect(approved == .remote(reason: .localRecognizerUnavailable))
-    }
-
-    @Test func marketedIPhone17FamilyUsesLocalBiographyGeneration() {
-        let policy = BiographyGenerationPolicy()
-        let capabilities = BiographyGenerationCapabilities(
-            hardwareIdentifier: "iPhone18,1",
-            supportsLocalRuntime: true
-        )
-
-        #expect(policy.route(for: capabilities) == .local)
-    }
-
-    @Test func marketedIPhone16FamilyUsesRemoteBiographyGeneration() {
-        let policy = BiographyGenerationPolicy()
-        let capabilities = BiographyGenerationCapabilities(
-            hardwareIdentifier: "iPhone17,3",
-            supportsLocalRuntime: true
-        )
-
-        #expect(policy.route(for: capabilities) == .remote)
-    }
-
-    @Test func unknownHardwareUsesRemoteBiographyGeneration() {
-        let policy = BiographyGenerationPolicy()
-        let capabilities = BiographyGenerationCapabilities(
-            hardwareIdentifier: "simulator",
-            supportsLocalRuntime: true
-        )
-
-        #expect(policy.route(for: capabilities) == .remote)
-    }
-
-    @Test func eligibleHardwareUsesRemoteBiographyGenerationWithoutMLXRuntime() {
-        let policy = BiographyGenerationPolicy()
-        let capabilities = BiographyGenerationCapabilities(
-            hardwareIdentifier: "iPhone18,1",
-            supportsLocalRuntime: false
-        )
-
-        #expect(policy.route(for: capabilities) == .remote)
-    }
-
-    private func makeSpeechRoutingDecision(
-        mode: LoreProcessingMode = .adaptive,
-        hasTextConsent: Bool,
-        hasAudioConsent: Bool,
-        allowsCellular: Bool = false,
-        connection: SpeechNetworkConnection
-    ) -> SpeechTranscriptionRoute {
-        let policy = SpeechTranscriptionPolicy(validatedLocalHardwareIdentifiers: [])
-        let capabilities = SpeechTranscriptionCapabilities(
-            hardwareIdentifier: "iPhone16,2",
-            osMajorVersion: 26,
-            supportsOnDeviceRecognition: true
-        )
-        let preferences = RemoteProcessingPreferences(
-            mode: mode,
-            hasRemoteTextProcessingConsent: hasTextConsent,
-            hasRemoteAudioUploadConsent: hasAudioConsent,
-            allowsCellularRemoteProcessing: allowsCellular
-        )
-
-        return policy.route(
-            for: SpeechTranscriptionRoutingInput(
-                capabilities: capabilities,
-                preferences: preferences,
-                networkConnection: connection
-            )
-        )
+        #expect(policy.route(for: .init(
+            preferences: RemoteProcessingPreferences(hasConsent: false),
+            networkConnection: .wifi
+        )) == .deferred(reason: .remoteProcessingConsentRequired))
+        #expect(policy.route(for: .init(
+            preferences: RemoteProcessingPreferences(hasConsent: true),
+            networkConnection: .unavailable
+        )) == .deferred(reason: .networkUnavailable))
     }
 
     @MainActor
@@ -1696,69 +1260,4 @@ private final class InspectingRemoteSpeechTranscriber: RemoteSpeechTranscribing,
     ) async throws -> RemoteSpeechTranscription {
         try await handler(audioFileURL, localeIdentifier)
     }
-}
-
-@MainActor
-private final class CapturingLocalModelRuntime: LocalModelRuntime {
-    let displayName = "Capturing runtime"
-    let isMLXBacked = true
-    let output: String
-    private(set) var loadedTiers: [LocalModelTier] = []
-    private(set) var requests: [LocalGenerationRequest] = []
-    private(set) var unloadCount = 0
-
-    init(output: String) {
-        self.output = output
-    }
-
-    func download(tier: LocalModelTier) async throws {}
-
-    func load(tier: LocalModelTier) async throws {
-        loadedTiers.append(tier)
-    }
-
-    func generate(_ request: LocalGenerationRequest, tier: LocalModelTier) async throws -> String {
-        requests.append(request)
-        return output
-    }
-
-    func unload() {
-        unloadCount += 1
-    }
-
-    func delete(tier: LocalModelTier) throws {}
-}
-
-@MainActor
-private struct TestDeterministicLocalModelRuntime: LocalModelRuntime {
-    let displayName = "Test deterministic runtime"
-    let isMLXBacked = false
-
-    func download(tier: LocalModelTier) async throws {}
-    func load(tier: LocalModelTier) async throws {}
-
-    func generate(_ request: LocalGenerationRequest, tier: LocalModelTier) async throws -> String {
-        switch request.task {
-        case .biographyProse:
-            return request.prompt
-        case .memoryGraphExtraction:
-            let escapedPrompt = request.prompt
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-                .replacingOccurrences(of: "\n", with: "\\n")
-            return """
-            {
-              "lifeEvents": [],
-              "people": [],
-              "places": [],
-              "themes": [],
-              "memoryFacts": [],
-              "sourcePrompt": "\(escapedPrompt)"
-            }
-            """
-        }
-    }
-
-    func unload() {}
-    func delete(tier: LocalModelTier) throws {}
 }

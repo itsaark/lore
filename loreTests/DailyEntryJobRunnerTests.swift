@@ -98,8 +98,7 @@ struct DailyEntryJobRunnerTests {
             name: "Maya",
             hometown: "Portland",
             birthYear: 1990,
-            processingMode: .adaptive,
-            remoteTextProcessingConsentedAt: Date()
+            remoteProcessingConsentedAt: Date()
         )
         context.insert(story)
         context.insert(artifact)

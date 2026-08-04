@@ -22,7 +22,14 @@ struct RootView: View {
                 }
                 .padding()
             } else if let userProfile = userProfiles.first {
-                ContentView(userProfile: userProfile)
+                if userProfile.hasRemoteProcessingConsent {
+                    ContentView(userProfile: userProfile)
+                } else {
+                    RemoteProcessingPermissionView {
+                        userProfile.grantRemoteProcessingConsent()
+                        try? modelContext.save()
+                    }
+                }
             } else {
                 OnboardingView { profile in
                     modelContext.insert(profile)
