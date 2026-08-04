@@ -10,7 +10,7 @@ Lore is a privacy-first iPhone journal that turns voice notes into a durable loc
 - `architecture.md`: system architecture and product boundaries
 - `backend-delivery-plan.md`: requirements, acceptance criteria, and verification gates for remote processing
 - `production-runbook.md`: Production-only deployment, verification, rotation, rollback, and incident procedures
-- `inference-strategy.md`: local/remote model and routing strategy
+- `inference-strategy.md`: remote provider, retention, cost, and latency strategy
 - `vision.md`: product vision and near-term scope
 
 Lore intentionally uses a monorepo while the product and team are small. The iOS app, API, and future web app remain separate deployable units, but keeping them in one repository makes contract changes, privacy reviews, and end-to-end pull requests easier to verify.
@@ -40,6 +40,6 @@ The public website and API should remain separate Vercel projects even if both l
 
 The iOS app contains a provider-neutral HTTPS client. Fireworks and Groq keys stay in Vercel and are never added to the Xcode project.
 
-Debug and Simulator builds are deliberately local-only. They ignore backend URL and token environment variables, so there is no Preview credential or remote Debug mode to configure.
+Simulator builds cannot use App Attest and therefore cannot call Production processing routes. A physical-device Debug build signed by the Lore Apple account uses Apple's development App Attest environment and can exercise the complete Production backend without TestFlight.
 
-Release builds use the source-controlled Production API origin and App Attest-backed, short-lived installation sessions. If the origin changes, update `LoreRemoteServices.productionOrigin` in `RemoteProcessingRuntime.swift`. If App Attest is unsupported or enrollment fails, remote processing fails closed while local recording and local processing remain available.
+All physical-device builds use the source-controlled Production API origin and App Attest-backed, short-lived installation sessions. If the origin changes, update `LoreRemoteServices.productionOrigin` in `RemoteProcessingRuntime.swift`. If App Attest is unsupported or enrollment fails, recording may remain available but processing is deferred; Lore never falls back to a credential embedded in the app.

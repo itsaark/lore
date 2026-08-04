@@ -40,7 +40,7 @@ There are no other configuration variables. These seven values are secrets or co
 5. Prove concurrent duplicate requests produce one provider call and a retryable `409` for the loser.
 6. Verify Vercel logs contain only allowlisted content-free fields and that Neon contains only the tables/columns defined by migrations `001`–`003`.
 7. Verify the hourly cleanup cron succeeds and deletes only expired challenges, rate buckets, and leases.
-8. Only then enable real-user Adaptive processing.
+8. Only then allow real-user processing.
 
 ## Rotation and rollback
 
