@@ -124,39 +124,16 @@ struct VoiceCaptureButton: View {
 
     var body: some View {
         Button(action: action) {
-            TimelineView(
-                .animation(
-                    minimumInterval: 1.0 / 24.0,
-                    paused: reduceMotion || !isAvailable
-                )
-            ) { context in
-                let elapsed = reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate
-                let pulse = CGFloat((sin(elapsed * (isRecording ? 2.2 : 0.7)) + 1) / 2)
-                let drift = elapsed * (isRecording ? 0.72 : 0.22)
-                let distortion: CGFloat = isRecording ? 3.8 : 2.4
-
-                ZStack {
-                    OrganicCaptureBlob(distortion: distortion + 1.4, phase: drift - 0.45)
-                        .stroke(buttonTint.opacity(isRecording ? 0.38 : 0.16), lineWidth: 1)
-                        .frame(width: 62, height: 62)
-                        .scaleEffect(1 + pulse * (isRecording ? 0.08 : 0.035))
-                        .opacity(reduceMotion ? 0.55 : 0.35 + Double(pulse) * 0.35)
-
-                    OrganicCaptureBlob(distortion: distortion, phase: drift)
-                        .fill(buttonFill)
-                        .overlay {
-                            OrganicCaptureBlob(distortion: distortion, phase: drift)
-                                .stroke(buttonTint.opacity(isRecording ? 0.72 : 0.22), lineWidth: 1)
-                        }
-                        .frame(width: 50, height: 50)
-                        .shadow(
-                            color: buttonTint.opacity(isRecording ? 0.18 : 0.06),
-                            radius: isRecording ? 12 : 6,
-                            y: 2
-                        )
+            ZStack {
+                if isRecording {
+                    BreathingOrb(size: 64, speed: 0.75)
+                        .transition(.scale(scale: 0.88).combined(with: .opacity))
+                } else {
+                    restingButton
+                        .transition(.scale(scale: 0.88).combined(with: .opacity))
                 }
-                .frame(width: 72, height: 72)
             }
+            .frame(width: 72, height: 72)
         }
         .buttonStyle(VoiceCaptureButtonStyle())
         .disabled(!isAvailable || isProcessing)
@@ -169,21 +146,46 @@ struct VoiceCaptureButton: View {
         .animation(.easeInOut(duration: 0.24), value: isProcessing)
     }
 
+    private var restingButton: some View {
+        TimelineView(
+            .animation(
+                minimumInterval: 1.0 / 24.0,
+                paused: reduceMotion || !isAvailable
+            )
+        ) { context in
+            let elapsed = reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate
+            let pulse = CGFloat((sin(elapsed * 0.7) + 1) / 2)
+            let drift = elapsed * 0.22
+            let distortion: CGFloat = 2.4
+
+            ZStack {
+                OrganicCaptureBlob(distortion: distortion + 1.4, phase: drift - 0.45)
+                    .stroke(buttonTint.opacity(0.16), lineWidth: 1)
+                    .frame(width: 62, height: 62)
+                    .scaleEffect(1 + pulse * 0.035)
+                    .opacity(reduceMotion ? 0.55 : 0.35 + Double(pulse) * 0.35)
+
+                OrganicCaptureBlob(distortion: distortion, phase: drift)
+                    .fill(buttonFill)
+                    .overlay {
+                        OrganicCaptureBlob(distortion: distortion, phase: drift)
+                            .stroke(buttonTint.opacity(0.22), lineWidth: 1)
+                    }
+                    .frame(width: 50, height: 50)
+                    .shadow(color: buttonTint.opacity(0.06), radius: 6, y: 2)
+            }
+        }
+    }
+
     private var buttonTint: Color {
         guard isAvailable else { return .secondary }
         if isProcessing { return .secondary }
-        if isRecording {
-            return Color(red: 0.34, green: 0.67, blue: 0.49)
-        }
         return .primary
     }
 
     private var buttonFill: Color {
         guard isAvailable else { return Color(.tertiarySystemBackground) }
         if isProcessing { return Color(.tertiarySystemBackground) }
-        if isRecording {
-            return Color(red: 0.20, green: 0.47, blue: 0.33)
-        }
         return Color(.secondarySystemBackground)
     }
 }
