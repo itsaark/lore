@@ -539,6 +539,11 @@ private struct AboutLoreView: View {
             } footer: {
                 Text("Lore is a private, voice-first journal that turns faithful transcripts into an evolving life story.")
             }
+
+            Section("How processing works") {
+                Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks AI for journal writing. Lore does not keep this content in its server database; finished transcripts and stories stay on this iPhone.")
+                    .foregroundStyle(.secondary)
+            }
         }
         .navigationTitle("About Lore")
         .navigationBarTitleDisplayMode(.inline)

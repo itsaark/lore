@@ -41,7 +41,7 @@ The journal view turns each completed source transcript into a concise, grounded
 
 Lore's durable personal archive lives on the user's iPhone. Provider credentials stay on the Lore server. The server validates and forwards bounded synchronous requests, returns the result, and retains only content-free security metadata needed to prevent replay and paid-inference abuse.
 
-Remote processing requires one concise permission during onboarding. It identifies Groq for transcription and Fireworks for journal writing, explains that recordings and transcript text are sent for those purposes, and states where the finished story is stored. This disclosure appears once as part of setup rather than as a recurring technical choice.
+Remote processing requires one concise confirmation during onboarding. It identifies Groq for transcription and Fireworks AI for journal writing, explains that recordings and transcript text are sent for those purposes, and states where the finished story is stored. This disclosure appears once in a contextual confirmation rather than as a recurring card in the product interface.
 
 "No persistent retention" is the accurate engineering promise. Lore must not claim that plaintext disappears from every provider's volatile memory at the exact instant a response returns unless the provider supplies that guarantee. Release approval therefore requires verified Groq zero-data-retention settings and acceptance of Fireworks' documented open-model data handling and bounded volatile cache behavior.
 

@@ -6,6 +6,7 @@ struct OnboardingView: View {
     @State private var name = ""
     @State private var hometown = ""
     @State private var birthYear = ""
+    @State private var isShowingProcessingPermission = false
 
     var body: some View {
         NavigationView {
@@ -48,17 +49,17 @@ struct OnboardingView: View {
                         )
                     }
 
-                    processingDisclosure
-
                     if let validationMessage {
                         Text(validationMessage)
                             .font(.footnote)
                             .foregroundColor(.secondary)
                     }
 
-                    Button(action: completeOnboarding) {
+                    Button {
+                        isShowingProcessingPermission = true
+                    } label: {
                         HStack(spacing: 10) {
-                            Text("Continue and allow processing")
+                            Text("Continue")
                             Image(systemName: "arrow.right")
                                 .font(.subheadline.weight(.semibold))
                         }
@@ -68,7 +69,13 @@ struct OnboardingView: View {
                     }
                     .disabled(!canComplete)
                     .buttonStyle(OnboardingPrimaryButtonStyle())
-                    .accessibilityHint("Completes onboarding and opens Lore")
+                    .accessibilityHint("Reviews processing permission and completes setup")
+                    .alert("Allow AI processing?", isPresented: $isShowingProcessingPermission) {
+                        Button("Not Now", role: .cancel) {}
+                        Button("Allow and Continue", action: completeOnboarding)
+                    } message: {
+                        Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks AI for journal writing. Lore does not keep this content in its server database; finished transcripts and stories stay on this iPhone.")
+                    }
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 72)
@@ -132,20 +139,6 @@ struct OnboardingView: View {
         )
     }
 
-    private var processingDisclosure: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Private AI processing")
-                .font(.headline)
-
-            Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks for journal writing. Lore does not keep this content on its servers; your finished stories stay on this iPhone.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(16)
-        .background(Color(.systemGray6), in: RoundedRectangle(cornerRadius: 16))
-        .accessibilityIdentifier("remoteProcessingDisclosure")
-    }
 }
 
 struct RemoteProcessingPermissionView: View {

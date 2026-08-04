@@ -169,7 +169,7 @@ Every visible journal entry is traceable to a committed transcript and a complet
 ### Requirements
 
 1. Onboarding asks only for the minimum profile information required by the current product.
-2. One concise screen identifies Groq and Fireworks, the data sent, the processing purpose, server non-persistence, and device-resident result.
+2. One concise confirmation identifies Groq and Fireworks AI, the data sent, the processing purpose, server non-persistence, and device-resident result.
 3. One CTA grants the permission and continues.
 4. No routing, model, hardware, or network-choice UI appears in onboarding or Settings.
 5. Recording status is conveyed through the minimal animated recording surface.
