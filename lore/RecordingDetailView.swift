@@ -45,39 +45,22 @@ struct StoryDetailView: View {
                 
                 Divider()
 
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(alignment: .firstTextBaseline) {
-                        Text("Biography Draft")
+                if let biographyProse = displayContent.biographyDetailText {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Journal Entry")
                             .font(.headline)
                             .foregroundColor(.primary)
 
-                        Spacer()
-
-                        Label(displayContent.listStatusText, systemImage: displayContent.statusIconName)
-                            .font(.caption2)
-                            .fontWeight(.semibold)
-                            .foregroundColor(displayContent.statusColor)
-                    }
-
-                    if let biographyProse = displayContent.biographyDetailText {
                         Text(biographyProse)
                             .font(.body)
                             .foregroundColor(.primary)
                             .lineSpacing(4)
                             .textSelection(.enabled)
-                    } else {
-                        HStack(spacing: 8) {
-                            Image(systemName: displayContent.statusIconName)
-                                .foregroundColor(.secondary)
-                            Text(displayContent.detailStatusText)
-                                .font(.body)
-                                .foregroundColor(.secondary)
-                        }
                     }
-                }
-                .padding(.horizontal)
+                    .padding(.horizontal)
 
-                Divider()
+                    Divider()
+                }
                 
                 // Story content
                 VStack(alignment: .leading, spacing: 12) {

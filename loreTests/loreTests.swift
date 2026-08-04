@@ -270,10 +270,9 @@ struct loreTests {
         #expect(content.primaryPreview == "He remembered the long walk home from school through the rain.")
         #expect(content.sourceTranscriptPreview == "I remembered walking home from school in the rain.")
         #expect(content.transcriptText == "I remembered walking home from school in the rain.")
-        #expect(content.listStatusText == "Draft Ready")
     }
 
-    @Test func storyDisplayContentKeepsTranscriptPrimaryWhileDraftIsPending() {
+    @Test func storyDisplayContentKeepsTranscriptPrimaryWithoutJournalEntry() {
         let story = Story(
             text: "I started a new chapter today.",
             date: Date(),
@@ -285,11 +284,9 @@ struct loreTests {
 
         #expect(content.primaryPreview == "I started a new chapter today.")
         #expect(content.sourceTranscriptPreview == nil)
-        #expect(content.listStatusText == "Writing Draft")
-        #expect(content.detailStatusText == "Writing biography prose and updating memory.")
     }
 
-    @Test func storyDisplayContentReportsFailedDraftWithoutHidingTranscript() {
+    @Test func storyDisplayContentNeverHidesTranscriptAfterBackgroundFailure() {
         let story = Story(
             text: "This memory should remain readable.",
             date: Date(),
@@ -301,8 +298,6 @@ struct loreTests {
 
         #expect(content.primaryPreview == "This memory should remain readable.")
         #expect(content.transcriptText == "This memory should remain readable.")
-        #expect(content.listStatusText == "Draft Failed")
-        #expect(content.detailStatusText == "Lore could not finish processing this story.")
     }
 
     @Test func legacyMigrationImportsProfileAndStories() throws {

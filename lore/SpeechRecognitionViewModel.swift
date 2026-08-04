@@ -47,7 +47,9 @@ class SpeechRecognitionViewModel: ObservableObject {
     
     // MARK: - Published Properties
     @Published var isRecording = false
-    @Published var errorMessage: String?
+    /// Diagnostic context for tests and logs. Background processing failures
+    /// must never drive the focused recording surface directly.
+    private(set) var errorMessage: String?
     @Published var isAuthorized = false
     @Published var stories: [Story] = []
     @Published var isProcessingAudio = false
@@ -72,6 +74,8 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var pendingSaveTask: Task<Void, Never>?
     private var transcriptionRecoveryTask: Task<Void, Never>?
     private var dailyEntryRecoveryTask: Task<Void, Never>?
+    private var isRecoveringTranscriptionJobs = false
+    private var isRecoveringDailyEntryJobs = false
     private var modelContext: ModelContext?
     private var userProfile: UserProfile?
     private var hasLoadedStories = false
@@ -88,7 +92,8 @@ class SpeechRecognitionViewModel: ObservableObject {
         ),
         remoteTranscriber: any RemoteSpeechTranscribing = UnavailableRemoteSpeechTranscriber(),
         networkConnectionProvider: (any SpeechNetworkConnectionProviding)? = nil,
-        localeIdentifier: String = Locale.current.identifier
+        localeIdentifier: String = Locale.current.identifier,
+        requestsMicrophonePermissionOnInit: Bool = true
     ) {
         self.metadataService = metadataService
         self.transcriptionPolicy = transcriptionPolicy
@@ -102,8 +107,10 @@ class SpeechRecognitionViewModel: ObservableObject {
             self.refreshRemoteProcessingPolicy()
         }
 
-        Task {
-            await requestPermissions()
+        if requestsMicrophonePermissionOnInit {
+            Task {
+                await requestPermissions()
+            }
         }
     }
     
@@ -182,11 +189,23 @@ class SpeechRecognitionViewModel: ObservableObject {
 
         transcriptionRecoveryTask?.cancel()
         transcriptionRecoveryTask = nil
+        guard !isRecoveringTranscriptionJobs else { return }
+        isRecoveringTranscriptionJobs = true
+        defer { isRecoveringTranscriptionJobs = false }
 
         do {
-            let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+            let allJobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+            let jobs = allJobs
                 .filter { $0.kind == .transcription }
                 .sorted { $0.createdAt < $1.createdAt }
+            let storiesWithDailyEntryJobs = Set(allJobs.compactMap { job -> UUID? in
+                job.kind == .dailyEntry ? job.storyId : nil
+            })
+            let storiesWithPendingAudioDeletion = Set(
+                try modelContext.fetch(FetchDescriptor<AudioAsset>())
+                    .filter { !$0.isDeleted }
+                    .map(\.id)
+            )
 
             for job in jobs {
                 if job.state != .succeeded {
@@ -216,11 +235,18 @@ class SpeechRecognitionViewModel: ObservableObject {
                     }
                 }
 
-                let shouldFinishDeletion = job.state == .succeeded && job.outputReferenceId != nil
+                let shouldFinishDeletion = job.state == .succeeded
+                    && job.storyId.map(storiesWithPendingAudioDeletion.contains) == true
+                let shouldBootstrapDailyEntry = job.state == .succeeded
+                    && job.outputReferenceId != nil
+                    && job.storyId.map { !storiesWithDailyEntryJobs.contains($0) } == true
                 let shouldAttempt = job.state == .queued && job.isReadyForAttempt(at: now)
                 let shouldRecoverLease = job.state == .running
                     && job.leaseExpiresAt.map { $0 <= now } == true
-                guard shouldFinishDeletion || shouldAttempt || shouldRecoverLease else {
+                guard shouldFinishDeletion
+                        || shouldBootstrapDailyEntry
+                        || shouldAttempt
+                        || shouldRecoverLease else {
                     continue
                 }
 
@@ -232,7 +258,7 @@ class SpeechRecognitionViewModel: ObservableObject {
                         modelContext: modelContext,
                         now: now
                     )
-                    if job.state == .succeeded,
+                    if shouldBootstrapDailyEntry,
                        story.biographyProse == nil,
                        !story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         await processCapturedStory(story)
@@ -282,7 +308,12 @@ class SpeechRecognitionViewModel: ObservableObject {
                     return
                 }
                 guard !Task.isCancelled else { return }
-                await self?.resumePendingTranscriptionJobs()
+                guard let self else { return }
+                // Clear the handle before entering recovery. Otherwise recovery's
+                // normal "cancel the old timer" step cancels this currently running
+                // task and can propagate cancellation into the provider request.
+                self.transcriptionRecoveryTask = nil
+                await self.resumePendingTranscriptionJobs()
             }
         } catch {
             print("Failed to schedule the next transcription retry: \(error)")
@@ -296,6 +327,9 @@ class SpeechRecognitionViewModel: ObservableObject {
 
         dailyEntryRecoveryTask?.cancel()
         dailyEntryRecoveryTask = nil
+        guard !isRecoveringDailyEntryJobs else { return }
+        isRecoveringDailyEntryJobs = true
+        defer { isRecoveringDailyEntryJobs = false }
 
         do {
             let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
@@ -394,7 +428,11 @@ class SpeechRecognitionViewModel: ObservableObject {
                     return
                 }
                 guard !Task.isCancelled else { return }
-                await self?.resumePendingDailyEntryJobs()
+                guard let self else { return }
+                // Do not let resumePendingDailyEntryJobs cancel the timer task that
+                // just woke up; cancellation would otherwise poison the retry attempt.
+                self.dailyEntryRecoveryTask = nil
+                await self.resumePendingDailyEntryJobs()
             }
         } catch {
             print("Failed to schedule the next daily-entry retry: \(error)")
@@ -1634,7 +1672,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         guard let modelContext else {
             story.processingStatus = "failed"
             story.updatedAt = Date()
-            setError(RemoteGenerationRequestFactoryError.missingTranscriptArtifact.localizedDescription)
+            print("Daily-entry processing could not access the local archive.")
             return
         }
 
@@ -1682,8 +1720,20 @@ class SpeechRecognitionViewModel: ObservableObject {
             )
         } catch is CancellationError {
             return
+        } catch DailyEntryJobRunnerError.jobNotReady {
+            // A queued job with a future retry date (or an active lease) is expected
+            // durable orchestration state. Launch recovery can reach this path after
+            // re-checking a completed transcription, so it must not leak an internal
+            // scheduler message into the recording UI.
+            scheduleNextDailyEntryRecovery()
+            return
+        } catch DailyEntryJobRunnerError.jobCancelled {
+            return
         } catch {
-            setError(error.localizedDescription)
+            // Journal generation is background work. Its durable Story/ProcessingJob
+            // state is the user-visible source of truth; the recording surface should
+            // remain focused on capture rather than displaying provider/debug errors.
+            print("Daily-entry processing did not complete: \(error)")
             scheduleNextDailyEntryRecovery()
         }
     }

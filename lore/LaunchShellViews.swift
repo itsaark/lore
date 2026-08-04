@@ -20,10 +20,10 @@ struct NotesHomeView: View {
                 VStack {
                     Spacer()
 
-                    if let message = supportMessage {
-                        Text(message)
+                    if !speechRecognizer.isAuthorized {
+                        Text("Microphone access is needed to record.")
                             .font(.footnote)
-                            .foregroundStyle(speechRecognizer.errorMessage == nil ? .secondary : .primary)
+                            .foregroundStyle(.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 10)
@@ -43,20 +43,8 @@ struct NotesHomeView: View {
                 .padding(.bottom, 18)
             }
             .toolbar(.hidden, for: .navigationBar)
-            .animation(.easeInOut(duration: 0.22), value: supportMessage)
+            .animation(.easeInOut(duration: 0.22), value: speechRecognizer.isAuthorized)
         }
-    }
-
-    private var supportMessage: String? {
-        if let errorMessage = speechRecognizer.errorMessage {
-            return errorMessage
-        }
-
-        if !speechRecognizer.isAuthorized {
-            return "Microphone access is needed to record."
-        }
-
-        return nil
     }
 }
 
