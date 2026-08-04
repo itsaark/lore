@@ -2,6 +2,7 @@ import SwiftUI
 
 struct VoiceCaptureVisual: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     let isAvailable: Bool
     let isRecording: Bool
@@ -15,52 +16,22 @@ struct VoiceCaptureVisual: View {
     }
 
     var body: some View {
-        TimelineView(
-            .animation(
-                minimumInterval: 1.0 / 60.0,
-                paused: reduceMotion || !isAvailable
-            )
-        ) { context in
-            let elapsed = reduceMotion ? 0 : context.date.timeIntervalSinceReferenceDate
-            captureSurface(elapsed: elapsed)
-        }
-        .frame(width: 304, height: 304)
-        .accessibilityHidden(true)
+        captureSurface
+            .frame(width: 304, height: 304)
+            .accessibilityHidden(true)
     }
 
-    private func captureSurface(elapsed: TimeInterval) -> some View {
+    private var captureSurface: some View {
         let normalizedLevel = CGFloat(min(max(responseLevel, 0), 1))
         let response = isRecording && !reduceMotion ? normalizedLevel : 0
-        let restingSpeed = isRecording ? 1.15 : isProcessing ? 0.8 : 0.34
-        let waveSpeed = restingSpeed + Double(response) * 1.9
-        let restingBreath = reduceMotion ? 0 : sin(elapsed * restingSpeed) * (isRecording ? 0.004 : 0.002)
 
         return ZStack {
-            ForEach(0..<3, id: \.self) { index in
-                let ring = CGFloat(index)
-                CaptureWaveRing(
-                    amplitude: (isRecording ? 4.5 : 2.2) + response * 13 + ring,
-                    lobes: 6 + index * 2,
-                    phase: elapsed * waveSpeed * (index.isMultiple(of: 2) ? 1 : -0.72)
-                )
-                .stroke(
-                    ringColor(index: index),
-                    style: StrokeStyle(
-                        lineWidth: index == 0 ? 1.5 : 1,
-                        lineCap: .round,
-                        lineJoin: .round
-                    )
-                )
-                .frame(
-                    width: 202 + ring * 34,
-                    height: 202 + ring * 34
-                )
-                .scaleEffect(
-                    x: 1 + restingBreath + response * (0.018 + ring * 0.004),
-                    y: 1 + restingBreath + response * (0.052 + ring * 0.008)
-                )
-                .opacity(ringOpacity(index: index, elapsed: elapsed))
-            }
+            BreathingOrb(
+                size: 304,
+                speed: breathingRingSpeed(response: response),
+                tint: breathingRingTint
+            )
+            .opacity(breathingRingOpacity)
 
             Circle()
                 .fill(Color(.systemBackground).opacity(0.78))
@@ -82,35 +53,38 @@ struct VoiceCaptureVisual: View {
         .animation(.easeInOut(duration: 0.24), value: isProcessing)
     }
 
-    private func ringColor(index: Int) -> Color {
+    private func breathingRingSpeed(response: CGFloat) -> Double {
+        if isRecording {
+            // Matches the old rings' approximate 1.15...3.05 rad/s range
+            // after accounting for the breathing preset's internal phase rate.
+            return 0.21 + Double(response) * 0.35
+        }
+
+        return isProcessing ? 0.15 : 0.06
+    }
+
+    private var breathingRingTint: Color? {
         if !isAvailable {
-            return Color.secondary.opacity(0.22)
+            return .secondary
         }
 
         if isRecording {
-            return [
-                Color(red: 0.31, green: 0.69, blue: 0.48),
-                Color(red: 0.42, green: 0.62, blue: 0.50),
-                Color(red: 0.56, green: 0.70, blue: 0.60)
-            ][index]
+            return .recordingOrbTint(for: colorScheme)
         }
 
-        return Color.primary.opacity(0.55 - Double(index) * 0.08)
+        return nil
     }
 
-    private func ringOpacity(index: Int, elapsed: TimeInterval) -> Double {
-        guard isAvailable else { return 0.45 }
-        guard !reduceMotion else { return isRecording ? 0.66 - Double(index) * 0.12 : 0.34 }
-
-        let offset = Double(index) * 1.4
-        let wave = (sin(elapsed * (isRecording ? 1.75 : 0.42) - offset) + 1) / 2
-        let base = isRecording ? 0.38 : 0.28
-        return base + wave * (isRecording ? 0.35 : 0.18) - Double(index) * 0.035
+    private var breathingRingOpacity: Double {
+        guard isAvailable else { return 0.24 }
+        if isRecording { return 0.82 }
+        return isProcessing ? 0.52 : 0.38
     }
 }
 
 struct VoiceCaptureButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     let isAvailable: Bool
     let isRecording: Bool
@@ -126,7 +100,11 @@ struct VoiceCaptureButton: View {
         Button(action: action) {
             ZStack {
                 if isRecording {
-                    BreathingOrb(size: 64, speed: 0.75)
+                    BreathingOrb(
+                        size: 64,
+                        speed: 0.75,
+                        tint: .recordingOrbTint(for: colorScheme)
+                    )
                         .transition(.scale(scale: 0.88).combined(with: .opacity))
                 } else {
                     restingButton
@@ -232,49 +210,22 @@ private struct OrganicCaptureBlob: Shape {
     }
 }
 
-private struct CaptureWaveRing: Shape {
-    let amplitude: CGFloat
-    let lobes: Int
-    let phase: Double
-
-    func path(in rect: CGRect) -> Path {
-        let center = CGPoint(x: rect.midX, y: rect.midY)
-        let radius = min(rect.width, rect.height) / 2 - amplitude - 2
-        let samples = 128
-        var path = Path()
-
-        for sample in 0...samples {
-            let progress = Double(sample) / Double(samples)
-            let angle = progress * .pi * 2
-            let primaryWave = sin(angle * Double(lobes) + phase)
-            let secondaryWave = sin(angle * Double(max(3, lobes - 3)) - phase * 0.63)
-            let displacement = CGFloat(primaryWave * 0.68 + secondaryWave * 0.32) * amplitude
-            let pointRadius = radius + displacement
-            let cosine: Double = cos(angle)
-            let sine: Double = sin(angle)
-            let point = CGPoint(
-                x: center.x + CGFloat(cosine) * pointRadius,
-                y: center.y + CGFloat(sine) * pointRadius
-            )
-
-            if sample == 0 {
-                path.move(to: point)
-            } else {
-                path.addLine(to: point)
-            }
-        }
-
-        path.closeSubpath()
-        return path
-    }
-}
-
 private struct VoiceCaptureButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.965 : 1)
             .opacity(configuration.isPressed ? 0.86 : 1)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+private extension Color {
+    static func recordingOrbTint(for colorScheme: ColorScheme) -> Color {
+        if colorScheme == .dark {
+            return Color(red: 0.88, green: 0.40, blue: 0.27)
+        }
+
+        return Color(red: 0.72, green: 0.27, blue: 0.16)
     }
 }
 

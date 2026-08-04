@@ -8,10 +8,12 @@ struct BreathingOrb: View {
 
     let size: CGFloat
     let speed: Double
+    let tint: Color?
 
-    init(size: CGFloat = 64, speed: Double = 1) {
+    init(size: CGFloat = 64, speed: Double = 1, tint: Color? = nil) {
         self.size = size
         self.speed = speed
+        self.tint = tint
     }
 
     var body: some View {
@@ -46,15 +48,28 @@ struct BreathingOrb: View {
         let wobbleAmplitude = 0.23 * Self.wobbleMultiplier
         let baseRadius = sphereRadius / (1 + 0.85 * wobbleAmplitude)
         let dotScale = pow(renderSize / 300, 0.6)
+        let segmentCount = max(
+            Self.baseSegmentCount,
+            Int(
+                (Double(Self.baseSegmentCount) * pow(renderSize / 64, 0.6))
+                    .rounded()
+            )
+        )
 
         let dots = (0..<Self.laneCount).flatMap { lane -> [BreathingDot] in
             let lanePosition = Double(lane) - Double(Self.laneCount - 1) / 2
             let laneOffset = lanePosition * 0.075
             let edge = abs(lanePosition) / max(1, Double(Self.laneCount - 1) / 2)
             let normalization = sqrt(1 + laneOffset * laneOffset)
+            let angularStagger = renderSize > 64
+                ? (Double(lane) * 0.618_033_988_75).truncatingRemainder(dividingBy: 1)
+                : 0
 
-            return (0..<Self.segmentCount).map { segment in
-                let angle = Double(segment) / Double(Self.segmentCount) * 2 * Double.pi
+            return (0..<segmentCount).map { segment in
+                let angle = (Double(segment) + angularStagger)
+                    / Double(segmentCount)
+                    * 2
+                    * Double.pi
                 let wobble = (
                     0.16 * sin(angle * 3 - time * 1.7 + Double(lane) * 0.22)
                         + 0.07 * sin(angle * 5 + time * 1.1)
@@ -95,7 +110,7 @@ struct BreathingOrb: View {
             )
             context.fill(
                 Path(ellipseIn: rect),
-                with: .color(Color(white: grayscale).opacity(dot.opacity))
+                with: .color((tint ?? Color(white: grayscale)).opacity(dot.opacity))
             )
         }
     }
@@ -103,7 +118,7 @@ struct BreathingOrb: View {
     // The tuned 64px breathing preset from thinking-orbs resolves to eleven
     // lanes and forty-four dots per lane after applying its count multipliers.
     private static let laneCount = 11
-    private static let segmentCount = 44
+    private static let baseSegmentCount = 44
     private static let presetSpeed = 3.24
     private static let wobbleMultiplier = 0.368
     private static let dotRadiusBase = 1.1 * 0.956
