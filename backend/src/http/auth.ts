@@ -37,7 +37,7 @@ export async function requireProcessingAuthorization(
 
   const store = dependencies.store ?? new NeonAuthStateStore(config.databaseUrl);
   const key = await store.getKey(claims.sub);
-  if (!key || key.environment !== config.environment) {
+  if (!key || !config.allowedAttestationEnvironments.has(key.environment)) {
     throw new LoreApiError("unauthorized", 401, false);
   }
   const allowed = await store.incrementRateLimit(`processing:${claims.sub}`, dependencies.now ?? new Date(), 60, 120);

@@ -47,6 +47,7 @@ export type GroqRuntimeConfig = {
 export type AppAttestRuntimeConfig = {
   teamIdentifier: string;
   bundleIdentifier: string;
+  allowedAttestationEnvironments: ReadonlySet<"development" | "production">;
   environment: "development" | "production";
   allowedValidationCategories: ReadonlySet<number>;
   sessionSigningSecret: string;
@@ -106,9 +107,12 @@ export function loadAppAttestRuntimeConfig(
   return {
     teamIdentifier: APP_ATTEST_TEAM_IDENTIFIER,
     bundleIdentifier: APP_ATTEST_BUNDLE_IDENTIFIER,
+    // Development App Attest is accepted for physical-device builds signed by
+    // this Apple account. Simulator requests still cannot produce an attestation.
+    allowedAttestationEnvironments: new Set(["development", "production"]),
     environment: "production",
-    // Apple validation categories: 2 = TestFlight, 4 = App Store.
-    allowedValidationCategories: new Set([2, 4]),
+    // Apple validation categories: 1 = Development, 2 = TestFlight, 4 = App Store.
+    allowedValidationCategories: new Set([1, 2, 4]),
     sessionSigningSecret: parsed.data.LORE_SESSION_SIGNING_SECRET,
     stateHmacSecret: parsed.data.LORE_AUTH_STATE_HMAC_SECRET,
     receiptEncryptionKey: Buffer.from(parsed.data.LORE_AUTH_RECEIPT_ENCRYPTION_KEY, "base64"),

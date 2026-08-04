@@ -56,6 +56,30 @@ describe("App Attest installation sessions", () => {
     expect(key?.bundleVersion).toBe("1");
   });
 
+  it("accepts a development attestation from a signed physical-device build", async () => {
+    const harness = makeHarness({
+      config: {
+        ...testConfig(),
+        allowedAttestationEnvironments: new Set(["development", "production"]),
+        allowedValidationCategories: new Set([1, 2, 4])
+      }
+    });
+    harness.verifier.attestationEnvironment = "development";
+    harness.verifier.attestationExtensions = { validationCategory: 1, bundleVersion: "1" };
+    harness.verifier.assertionExtensions = { validationCategory: 1, bundleVersion: "1" };
+
+    const challenge = await harness.flow.issueChallenge({
+      purpose: "attestation",
+      keyId: null,
+      rateLimitIdentity: "network"
+    });
+    const response = await harness.flow.attest(attestationRequest(challenge));
+    const key = await harness.store.getKey(harness.flow.keyReference(keyId));
+
+    expect(response.token_type).toBe("Bearer");
+    expect(key?.environment).toBe("development");
+  });
+
   it("supports legacy enrollment and assertions without iOS 27 extensions", async () => {
     const harness = makeHarness();
     harness.verifier.attestationExtensions = null;
@@ -125,7 +149,7 @@ describe("App Attest installation sessions", () => {
 
   it.each([
     ["wrong app", { bundleIdentifier: "com.attacker.app" }],
-    ["wrong environment", { environment: "development" as const }]
+    ["wrong environment", { allowedAttestationEnvironments: new Set(["development" as const]) }]
   ])("fails closed for %s attestation policy", async (_label, override) => {
     const harness = makeHarness({ config: { ...testConfig(), ...override } });
     const challenge = await harness.flow.issueChallenge({ purpose: "attestation", keyId: null, rateLimitIdentity: "network" });
@@ -339,6 +363,7 @@ class FakeVerifier implements AppAttestCryptographicVerifier {
   attestationCalls = 0;
   nextCounter = 1;
   failAttestation = false;
+  attestationEnvironment: "development" | "production" = "production";
   attestationExtensions: { validationCategory: number | null; bundleVersion: string | null } | null = {
     validationCategory: 4,
     bundleVersion: "1"
@@ -350,13 +375,15 @@ class FakeVerifier implements AppAttestCryptographicVerifier {
 
   async verifyAttestation(input: Parameters<AppAttestCryptographicVerifier["verifyAttestation"]>[0]): Promise<VerifiedAttestation> {
     this.attestationCalls += 1;
-    if (this.failAttestation || input.config.bundleIdentifier !== "cascadianpines.lore" || input.config.environment !== "production") {
+    if (this.failAttestation
+      || input.config.bundleIdentifier !== "cascadianpines.lore"
+      || !input.config.allowedAttestationEnvironments.has(this.attestationEnvironment)) {
       throw new Error("policy mismatch");
     }
     return {
       publicKeyPem: "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----",
       receiptBase64: Buffer.from("receipt").toString("base64"),
-      environment: "production",
+      environment: this.attestationEnvironment,
       validationCategory: this.attestationExtensions?.validationCategory ?? null,
       bundleVersion: this.attestationExtensions?.bundleVersion ?? null
     };
@@ -409,6 +436,7 @@ function testConfig(): AppAttestRuntimeConfig {
   return {
     teamIdentifier: "ABCDE12345",
     bundleIdentifier: "cascadianpines.lore",
+    allowedAttestationEnvironments: new Set(["development", "production"]),
     environment: "production",
     allowedValidationCategories: new Set([4]),
     sessionSigningSecret: "session-signing-secret-at-least-32-bytes",

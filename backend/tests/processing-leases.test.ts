@@ -239,6 +239,7 @@ function testConfig(): AppAttestRuntimeConfig {
   return {
     teamIdentifier: "ABCDE12345",
     bundleIdentifier: "cascadianpines.lore",
+    allowedAttestationEnvironments: new Set(["development", "production"]),
     environment: "production",
     allowedValidationCategories: new Set([4]),
     sessionSigningSecret: "session-signing-secret-at-least-32-bytes",

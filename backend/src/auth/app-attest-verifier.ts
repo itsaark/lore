@@ -73,10 +73,13 @@ export class NodeAppAttestVerifier implements AppAttestCryptographicVerifier {
       keyId: input.keyId,
       bundleIdentifier: input.config.bundleIdentifier,
       teamIdentifier: input.config.teamIdentifier,
-      allowDevelopmentEnvironment: input.config.environment === "development"
+      allowDevelopmentEnvironment: input.config.allowedAttestationEnvironments.has("development")
     }) as { publicKey: string; receipt: Buffer; environment: string };
 
-    if (core.environment !== input.config.environment) {
+    if (core.environment !== "development" && core.environment !== "production") {
+      throw new Error("unknown App Attest environment");
+    }
+    if (!input.config.allowedAttestationEnvironments.has(core.environment)) {
       throw new Error("wrong App Attest environment");
     }
     if (extensions) enforceExtensionPolicy(extensions, input.config);

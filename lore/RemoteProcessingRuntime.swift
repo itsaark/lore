@@ -75,9 +75,9 @@ struct LoreRemoteServices {
         environment _: [String: String] = ProcessInfo.processInfo.environment,
         bundle _: Bundle = .main
     ) -> Self {
-#if DEBUG
-        // Debug and Simulator builds stay fully local. Production remote
-        // processing is exercised through TestFlight with App Attest.
+#if targetEnvironment(simulator)
+        // App Attest is unavailable in Simulator. Keep simulator runs local so
+        // a simulated client can never consume production inference credits.
         return unconfigured
 #else
         guard let baseURL = URL(string: productionOrigin) else {

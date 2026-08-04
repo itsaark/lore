@@ -84,8 +84,9 @@ Vercel Functions cannot use process memory or their filesystem as authoritative 
 
 ## Distribution policy
 
-- Debug and Simulator builds are local-only and never connect to the Lore processing API.
-- TestFlight and App Store builds use Apple's production App Attest environment; development attestations and static application credentials are rejected.
+- Physical-device Debug builds signed by Lore's Apple developer account use Apple's development App Attest environment and may connect to the Lore processing API for owner testing.
+- Simulator builds remain local-only and never connect to the Lore processing API.
+- TestFlight and App Store builds use Apple's production App Attest environment. Static application credentials are always rejected.
 - `isSupported == false`: recording and local processing remain available, but anonymous remote inference is unavailable in Production. A future authenticated-account fallback requires a separate threat and quota decision.
 - Reinstall, device restore, or key loss: create and attest a new key. Old keys are not silently reused or immediately assumed malicious.
 

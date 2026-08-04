@@ -141,7 +141,7 @@ export class AppAttestFlow {
     if (!key) {
       throw new LoreApiError("app_attest_key_unknown", 401, false);
     }
-    if (key.environment !== this.dependencies.config.environment) {
+    if (!this.dependencies.config.allowedAttestationEnvironments.has(key.environment)) {
       throw new LoreApiError("assertion_invalid", 401, false);
     }
 
