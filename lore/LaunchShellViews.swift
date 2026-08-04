@@ -5,45 +5,48 @@ struct NotesHomeView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                Color(.systemBackground)
-                    .ignoresSafeArea()
+            GeometryReader { geometry in
+                ZStack {
+                    Color(.systemBackground)
+                        .ignoresSafeArea()
 
-                VoiceCaptureVisual(
-                    isAvailable: speechRecognizer.isAuthorized,
-                    isRecording: speechRecognizer.isRecording,
-                    isProcessing: speechRecognizer.isAwaitingRemoteTranscription,
-                    audioLevel: speechRecognizer.currentAudioLevel,
-                    responseLevel: speechRecognizer.currentAudioResponseLevel
-                )
-
-                VStack {
-                    Spacer()
-
-                    if !speechRecognizer.isAuthorized {
-                        Text("Microphone access is needed to record.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 10)
-                            .background(.thinMaterial, in: Capsule())
-                            .padding(.horizontal, 28)
-                            .transition(.opacity)
-                            .accessibilityIdentifier("recordingSupportMessage")
-                    }
-
-                    VoiceCaptureButton(
+                    VoiceCaptureVisual(
                         isAvailable: speechRecognizer.isAuthorized,
                         isRecording: speechRecognizer.isRecording,
                         isProcessing: speechRecognizer.isAwaitingRemoteTranscription,
-                        action: speechRecognizer.toggleRecording
+                        audioLevel: speechRecognizer.currentAudioLevel,
+                        responseLevel: speechRecognizer.currentAudioResponseLevel
                     )
+
+                    VStack {
+                        Spacer()
+
+                        if !speechRecognizer.isAuthorized {
+                            Text("Microphone access is needed to record.")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .background(.thinMaterial, in: Capsule())
+                                .padding(.horizontal, 28)
+                                .transition(.opacity)
+                                .accessibilityIdentifier("recordingSupportMessage")
+                        }
+
+                        VoiceCaptureButton(
+                            containerWidth: geometry.size.width,
+                            isAvailable: speechRecognizer.isAuthorized,
+                            isRecording: speechRecognizer.isRecording,
+                            isProcessing: speechRecognizer.isAwaitingRemoteTranscription,
+                            action: speechRecognizer.toggleRecording
+                        )
+                    }
+                    .padding(.bottom, 18)
                 }
-                .padding(.bottom, 18)
+                .toolbar(.hidden, for: .navigationBar)
+                .animation(.easeInOut(duration: 0.22), value: speechRecognizer.isAuthorized)
             }
-            .toolbar(.hidden, for: .navigationBar)
-            .animation(.easeInOut(duration: 0.22), value: speechRecognizer.isAuthorized)
         }
     }
 }
