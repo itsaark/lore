@@ -135,6 +135,7 @@ final class TranscriptVersion {
 enum ProcessingJobKind: String, Codable, CaseIterable, Sendable {
     case transcription
     case dailyEntry
+    case dailyBiography
     case memoryExtraction
     case biographyReconciliation
 }

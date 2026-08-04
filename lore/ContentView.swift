@@ -11,6 +11,7 @@ import SwiftData
 struct ContentView: View {
     let userProfile: UserProfile
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var speechRecognizer: SpeechRecognitionViewModel
     @State private var selectedTab: LaunchTab
 
@@ -58,6 +59,10 @@ struct ContentView: View {
         }
         .onChange(of: userProfile.updatedAt) { _, _ in
             speechRecognizer.refreshRemoteProcessingPolicy()
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            guard newPhase == .active else { return }
+            speechRecognizer.resumeBackgroundProcessing()
         }
     }
 }

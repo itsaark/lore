@@ -52,6 +52,8 @@ class SpeechRecognitionViewModel: ObservableObject {
     private(set) var errorMessage: String?
     @Published var isAuthorized = false
     @Published var stories: [Story] = []
+    @Published private(set) var dailyBiographyEntries: [DailyBiographyEntry] = []
+    @Published private(set) var storyDayKeys: [UUID: String] = [:]
     @Published var isProcessingAudio = false
     @Published var currentAudioLevel: Float = 0.0
     @Published var currentAudioResponseLevel: Float = 0.0
@@ -74,8 +76,11 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var pendingSaveTask: Task<Void, Never>?
     private var transcriptionRecoveryTask: Task<Void, Never>?
     private var dailyEntryRecoveryTask: Task<Void, Never>?
+    private var dailyBiographyRecoveryTask: Task<Void, Never>?
+    private var dailyBoundaryTask: Task<Void, Never>?
     private var isRecoveringTranscriptionJobs = false
     private var isRecoveringDailyEntryJobs = false
+    private var isRecoveringDailyBiographyJobs = false
     private var modelContext: ModelContext?
     private var userProfile: UserProfile?
     private var hasLoadedStories = false
@@ -152,10 +157,23 @@ class SpeechRecognitionViewModel: ObservableObject {
         cleanupExpiredAudioAssets()
         loadStories()
         hasLoadedStories = true
+        scheduleNextDailyBoundary()
 
         Task { [weak self] in
             await self?.resumePendingTranscriptionJobs()
             await self?.resumePendingDailyEntryJobs()
+            await self?.resumePendingDailyBiographyJobs()
+        }
+    }
+
+    /// Rechecks durable work whenever the app becomes active. Completed-day
+    /// consolidation remains asynchronous and never blocks the launch surface.
+    func resumeBackgroundProcessing() {
+        scheduleNextDailyBoundary()
+        Task { [weak self] in
+            await self?.resumePendingTranscriptionJobs()
+            await self?.resumePendingDailyEntryJobs()
+            await self?.resumePendingDailyBiographyJobs()
         }
     }
 
@@ -179,6 +197,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         Task { [weak self] in
             await self?.resumePendingTranscriptionJobs()
             await self?.resumePendingDailyEntryJobs()
+            await self?.resumePendingDailyBiographyJobs()
         }
     }
 
@@ -439,6 +458,144 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
     }
 
+    /// Creates and resumes one replaceable biography entry for every completed
+    /// local calendar day. The runner reads canonical transcript versions at
+    /// execution time, so no transcript content is duplicated into job state.
+    func resumePendingDailyBiographyJobs(now: Date = Date()) async {
+        guard let modelContext, let userProfile else { return }
+
+        dailyBiographyRecoveryTask?.cancel()
+        dailyBiographyRecoveryTask = nil
+        guard !isRecoveringDailyBiographyJobs else { return }
+        isRecoveringDailyBiographyJobs = true
+        defer { isRecoveringDailyBiographyJobs = false }
+
+        let availability = remoteWorkAvailability(requiresAudioUpload: false)
+        let initialState: ProcessingJobState
+        switch availability {
+        case .permitted:
+            initialState = .queued
+        case .waitingForConsent:
+            initialState = .waitingForConsent
+        case .waitingForNetwork:
+            initialState = .waitingForNetwork
+        }
+
+        do {
+            _ = try DailyBiographyJobRunner.prepareCompletedDays(
+                initialState: initialState,
+                in: modelContext,
+                now: now
+            )
+            let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+                .filter { $0.kind == .dailyBiography }
+                .sorted { $0.createdAt < $1.createdAt }
+
+            for job in jobs where job.state != .succeeded && job.state != .cancelled && job.state != .failed {
+                switch availability {
+                case .permitted:
+                    if job.state == .waitingForConsent || job.state == .waitingForNetwork {
+                        job.state = .queued
+                        job.nextAttemptAt = now
+                        try modelContext.save()
+                    }
+                case .waitingForConsent:
+                    job.state = .waitingForConsent
+                    job.nextAttemptAt = nil
+                    job.leaseExpiresAt = nil
+                    try modelContext.save()
+                    continue
+                case .waitingForNetwork:
+                    job.state = .waitingForNetwork
+                    job.nextAttemptAt = nil
+                    job.leaseExpiresAt = nil
+                    try modelContext.save()
+                    continue
+                }
+
+                let shouldAttempt = job.state == .queued && job.isReadyForAttempt(at: now)
+                let shouldRecoverLease = job.state == .running
+                    && job.leaseExpiresAt.map { $0 <= now } == true
+                guard shouldAttempt || shouldRecoverLease else { continue }
+
+                do {
+                    _ = try await DailyBiographyJobRunner.run(
+                        jobID: job.id,
+                        userProfile: userProfile,
+                        generator: remoteDailyEntryGenerator,
+                        in: modelContext,
+                        now: now
+                    )
+                } catch DailyBiographyJobRunnerError.jobNotReady {
+                    continue
+                } catch {
+                    print("Deferred daily-biography job \(job.id) did not complete: \(error)")
+                }
+            }
+            loadStories()
+            scheduleNextDailyBiographyRecovery()
+        } catch {
+            print("Failed to recover daily-biography jobs: \(error)")
+            scheduleNextDailyBiographyRecovery()
+        }
+    }
+
+    private func scheduleNextDailyBiographyRecovery(now: Date = Date()) {
+        guard let modelContext else { return }
+        do {
+            let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+                .filter { $0.kind == .dailyBiography }
+            let wakeDates = jobs.compactMap { job -> Date? in
+                switch job.state {
+                case .queued:
+                    return job.attemptCount < job.maximumAttempts ? job.nextAttemptAt : nil
+                case .running:
+                    return job.leaseExpiresAt
+                default:
+                    return nil
+                }
+            }
+            guard let wakeDate = wakeDates.min() else { return }
+            let delay = max(0, wakeDate.timeIntervalSince(now))
+            dailyBiographyRecoveryTask?.cancel()
+            dailyBiographyRecoveryTask = Task { [weak self] in
+                do {
+                    try await Task.sleep(for: .seconds(delay))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, let self else { return }
+                self.dailyBiographyRecoveryTask = nil
+                await self.resumePendingDailyBiographyJobs()
+            }
+        } catch {
+            print("Failed to schedule the next daily-biography retry: \(error)")
+        }
+    }
+
+    /// If Lore remains active across midnight, roll up the day without waiting
+    /// for another foreground transition. Suspension is still recovered by the
+    /// normal launch/activation path.
+    private func scheduleNextDailyBoundary(now: Date = Date()) {
+        dailyBoundaryTask?.cancel()
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let start = calendar.startOfDay(for: now)
+        guard let nextDay = calendar.date(byAdding: .day, value: 1, to: start) else { return }
+        let delay = max(1, nextDay.timeIntervalSince(now))
+        dailyBoundaryTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.dailyBoundaryTask = nil
+            await self.resumePendingDailyBiographyJobs()
+            self.scheduleNextDailyBoundary()
+        }
+    }
+
     static func cancelTranscriptionJob(
         jobID: UUID,
         in modelContext: ModelContext,
@@ -505,6 +662,10 @@ class SpeechRecognitionViewModel: ObservableObject {
             let story = stories.remove(at: originalIndex)
             if let modelContext {
                 do {
+                    try DailyBiographyJobRunner.deleteSupportData(
+                        containing: story.id,
+                        in: modelContext
+                    )
                     try Self.deleteAudioAssets(for: story, in: modelContext)
                     try Self.deleteStoryMetadata(for: story, in: modelContext)
                     try Self.deleteTranscriptSupportData(for: story, in: modelContext)
@@ -540,9 +701,28 @@ class SpeechRecognitionViewModel: ObservableObject {
                 sortBy: [SortDescriptor(\.date, order: .forward)]
             )
             stories = try modelContext.fetch(descriptor)
+            let metadata = try modelContext.fetch(FetchDescriptor<StoryMetadata>())
+            let metadataById = Dictionary(uniqueKeysWithValues: metadata.map { ($0.id, $0) })
+            storyDayKeys = Dictionary(uniqueKeysWithValues: stories.map { story in
+                let timezone = story.metadataId
+                    .flatMap { metadataById[$0] }
+                    .flatMap { TimeZone(identifier: $0.timezone) }
+                    ?? .current
+                let formatter = DateFormatter()
+                formatter.calendar = Calendar(identifier: .gregorian)
+                formatter.locale = Locale(identifier: "en_US_POSIX")
+                formatter.timeZone = timezone
+                formatter.dateFormat = "yyyy-MM-dd"
+                return (story.id, formatter.string(from: story.date))
+            })
+            dailyBiographyEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>(
+                sortBy: [SortDescriptor(\.calendarDate, order: .forward)]
+            ))
         } catch {
             print("Failed to load stories: \(error)")
             stories = []
+            dailyBiographyEntries = []
+            storyDayKeys = [:]
         }
     }
 
@@ -1663,6 +1843,7 @@ class SpeechRecognitionViewModel: ObservableObject {
 
         await processRemoteDailyEntry(for: story, userProfile: userProfile)
         loadStories()
+        await resumePendingDailyBiographyJobs()
     }
 
     private func processRemoteDailyEntry(
