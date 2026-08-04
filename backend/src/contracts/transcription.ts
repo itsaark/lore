@@ -39,8 +39,11 @@ export const TranscriptSourceSegmentSchema = z.object({
   start_milliseconds: z.number().int().min(0),
   end_milliseconds: z.number().int().min(0),
   text: z.string().min(1),
-  confidence: z.number().min(0).max(1).nullable(),
-  speaker_label: z.string().min(1).max(100).nullable()
+  // Swift's synthesized Codable implementation omits nil optionals instead of
+  // encoding them as explicit JSON nulls. Both forms have the same contract
+  // meaning, so normalize omitted values before the request reaches a provider.
+  confidence: z.number().min(0).max(1).nullable().optional().transform((value) => value ?? null),
+  speaker_label: z.string().min(1).max(100).nullable().optional().transform((value) => value ?? null)
 }).strict().superRefine((value, context) => {
   if (value.end_milliseconds < value.start_milliseconds) {
     context.addIssue({

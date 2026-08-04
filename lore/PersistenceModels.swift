@@ -342,6 +342,28 @@ final class ProcessingJob {
         updatedAt = date
     }
 
+    /// Requeues a terminal request only when a newer client can repair the
+    /// exact contract failure. The existing attempt ceiling remains in force,
+    /// so a malformed request can never be retried indefinitely.
+    @discardableResult
+    func requeueFailedRequest(
+        matchingErrorCode errorCode: String,
+        at date: Date = Date()
+    ) -> Bool {
+        guard state == .failed,
+              lastErrorCode == errorCode,
+              attemptCount < maximumAttempts else {
+            return false
+        }
+
+        stateValue = ProcessingJobState.queued.rawValue
+        completedAt = nil
+        nextAttemptAt = date
+        leaseExpiresAt = nil
+        updatedAt = date
+        return true
+    }
+
     func cancel(at date: Date = Date()) {
         stateValue = ProcessingJobState.cancelled.rawValue
         completedAt = date

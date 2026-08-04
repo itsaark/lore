@@ -185,6 +185,71 @@ describe("processing routes", () => {
     expect(provider).toHaveBeenCalledOnce();
   });
 
+  it("accepts Swift daily-entry JSON with omitted nullable segment metadata", async () => {
+    const harness = await authenticatedHarness();
+    const requestBody = validDailyRequest();
+    const [segment] = requestBody.source_segments as Array<Record<string, unknown>>;
+    if (!segment) throw new Error("fixture must include one segment");
+    delete segment.confidence;
+    delete segment.speaker_label;
+
+    const provider = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      const sourcePayload = body.messages.find((message) => message.role === "user")?.content;
+      expect(sourcePayload).toContain('"confidence":null');
+      expect(sourcePayload).toContain('"speaker_label":null');
+      return Response.json({
+        id: "chatcmpl_route_omitted_metadata",
+        model: "accounts/fireworks/models/gpt-oss-120b",
+        choices: [{
+          index: 0,
+          finish_reason: "stop",
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              status: "completed",
+              entry: {
+                title: "Synthetic day",
+                title_source_references: ["s1"],
+                perspective: "third_person",
+                sentences: [{
+                  text: "Maya recorded a synthetic note.",
+                  source_references: ["s1"],
+                  fact_references: [],
+                  preserves_uncertainty: false
+                }]
+              },
+              memory_candidates: [],
+              uncertainties: [],
+              sensitive_omissions: [],
+              quality_flags: [],
+              follow_up_questions: [],
+              refusal_reason: null
+            })
+          }
+        }]
+      });
+    });
+    const response = await handleDailyEntry(new Request("https://lore.invalid/v1/daily-entries", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${harness.token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "daily-entry:5f3acbd5-676e-4cb3-83a4-150b09c735a9"
+      },
+      body: JSON.stringify(requestBody)
+    }), {
+      environment,
+      fetch: provider,
+      auth: harness.auth
+    });
+
+    expect(response.status).toBe(200);
+    expect(provider).toHaveBeenCalledOnce();
+  });
+
   it("returns a stable invalid-request error for malformed JSON", async () => {
     const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>();

@@ -83,6 +83,68 @@ struct TranscriptSourceSegment: Codable, Equatable, Identifiable, Sendable {
     var text: String
     var confidence: Double?
     var speakerLabel: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case chunkId
+        case startMilliseconds
+        case endMilliseconds
+        case text
+        case confidence
+        case speakerLabel
+    }
+
+    init(
+        id: String,
+        chunkId: String? = nil,
+        startMilliseconds: Int,
+        endMilliseconds: Int,
+        text: String,
+        confidence: Double?,
+        speakerLabel: String?
+    ) {
+        self.id = id
+        self.chunkId = chunkId
+        self.startMilliseconds = startMilliseconds
+        self.endMilliseconds = endMilliseconds
+        self.text = text
+        self.confidence = confidence
+        self.speakerLabel = speakerLabel
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        chunkId = try container.decodeIfPresent(String.self, forKey: .chunkId)
+        startMilliseconds = try container.decode(Int.self, forKey: .startMilliseconds)
+        endMilliseconds = try container.decode(Int.self, forKey: .endMilliseconds)
+        text = try container.decode(String.self, forKey: .text)
+        confidence = try container.decodeIfPresent(Double.self, forKey: .confidence)
+        speakerLabel = try container.decodeIfPresent(String.self, forKey: .speakerLabel)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(chunkId, forKey: .chunkId)
+        try container.encode(startMilliseconds, forKey: .startMilliseconds)
+        try container.encode(endMilliseconds, forKey: .endMilliseconds)
+        try container.encode(text, forKey: .text)
+
+        // The wire contract represents unavailable segment metadata as JSON
+        // null. Synthesized Codable omits nil optionals, which caused older
+        // backends to reject an otherwise valid daily-entry request.
+        if let confidence {
+            try container.encode(confidence, forKey: .confidence)
+        } else {
+            try container.encodeNil(forKey: .confidence)
+        }
+        if let speakerLabel {
+            try container.encode(speakerLabel, forKey: .speakerLabel)
+        } else {
+            try container.encodeNil(forKey: .speakerLabel)
+        }
+    }
 }
 
 struct RemoteRetentionAttestation: Codable, Equatable, Sendable {

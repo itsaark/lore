@@ -124,10 +124,15 @@ struct LoreBackendHTTPClientTests {
         )
         let render = try #require(object["render_configuration"] as? [String: Any])
         let segments = try #require(object["source_segments"] as? [[String: Any]])
+        let sourceSegment = try #require(segments.first)
         #expect(recorded.request.url?.absoluteString == "https://lore.example/api/v1/daily-entries")
         #expect(recorded.request.value(forHTTPHeaderField: "Idempotency-Key") == "daily-entry:\(request.jobId.uuidString.lowercased())")
         #expect(render["perspective"] as? String == "third_person")
-        #expect(segments.first?["chunk_id"] as? String == "source-0")
+        #expect(sourceSegment["chunk_id"] as? String == "source-0")
+        #expect(sourceSegment.keys.contains("confidence"))
+        #expect(sourceSegment["confidence"] is NSNull)
+        #expect(sourceSegment.keys.contains("speaker_label"))
+        #expect(sourceSegment["speaker_label"] is NSNull)
         #expect((object["retention_policy"] as? [String: Any])?["mode"] as? String == "request_ephemeral")
     }
 

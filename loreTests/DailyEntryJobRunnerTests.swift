@@ -69,6 +69,44 @@ struct DailyEntryJobRunnerTests {
     }
 
     @MainActor
+    @Test func knownInvalidRequestFromOlderClientCanRecoverFromSavedTranscript() async throws {
+        let fixture = try makeFixture()
+        let prepared = try DailyEntryJobRunner.prepare(
+            story: fixture.story,
+            userProfile: fixture.profile,
+            initialState: .queued,
+            in: fixture.context
+        )
+        let failureDate = Date(timeIntervalSince1970: 1_800_000_100)
+        prepared.job.beginAttempt(at: failureDate)
+        prepared.job.markFailed(errorCode: "invalid_request", at: failureDate)
+        fixture.story.processingStatus = "failed"
+        try fixture.context.save()
+
+        let retryDate = failureDate.addingTimeInterval(1)
+        #expect(prepared.job.requeueFailedRequest(
+            matchingErrorCode: "invalid_request",
+            at: retryDate
+        ))
+        fixture.story.processingStatus = "awaitingModel"
+        try fixture.context.save()
+
+        _ = try await DailyEntryJobRunner.run(
+            jobID: prepared.job.id,
+            userProfile: fixture.profile,
+            generator: FixedDailyEntryGenerator(response: makeResponse(for: prepared.request)),
+            in: fixture.context,
+            now: retryDate
+        )
+
+        #expect(prepared.job.state == .succeeded)
+        #expect(prepared.job.attemptCount == 2)
+        #expect(fixture.story.processingStatus == "processed")
+        #expect(!prepared.job.requeueFailedRequest(matchingErrorCode: "invalid_request"))
+        #expect(try fixture.context.fetch(FetchDescriptor<BiographyFragment>()).count == 1)
+    }
+
+    @MainActor
     private func makeFixture() throws -> Fixture {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)

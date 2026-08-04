@@ -59,7 +59,6 @@ describe("FireworksClient", () => {
         type: "json_schema",
         json_schema: {
           name: "lore_daily_entry",
-          strict: true,
           schema: FireworksDailyEntryJsonSchema
         }
       });

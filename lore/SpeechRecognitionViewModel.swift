@@ -302,6 +302,23 @@ class SpeechRecognitionViewModel: ObservableObject {
                 .filter { $0.kind == .dailyEntry }
                 .sorted { $0.createdAt < $1.createdAt }
 
+            // Builds before the strict-null encoding fix sent daily-entry
+            // source segments without nullable keys. Recover those known 400s
+            // from the durable transcript, while preserving the attempt cap.
+            let repairedStoryIDs = Set(jobs.compactMap { job -> UUID? in
+                job.requeueFailedRequest(matchingErrorCode: "invalid_request", at: now)
+                    ? job.storyId
+                    : nil
+            })
+            if !repairedStoryIDs.isEmpty {
+                let stories = try modelContext.fetch(FetchDescriptor<Story>())
+                for story in stories where repairedStoryIDs.contains(story.id) {
+                    story.processingStatus = "awaitingModel"
+                    story.updatedAt = now
+                }
+                try modelContext.save()
+            }
+
             for job in jobs where job.state != .succeeded && job.state != .cancelled && job.state != .failed {
                 switch remoteWorkAvailability(requiresAudioUpload: false) {
                 case .permitted:

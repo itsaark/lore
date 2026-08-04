@@ -46,35 +46,54 @@ describe("wire contracts", () => {
   });
 
   it("accepts the grounded daily-entry request", () => {
-    const result = DailyEntryGenerationRequestSchema.parse({
-      schema_version: "1.0",
-      prompt_version: "grounded-journal-v1",
-      job_id: "5f3acbd5-676e-4cb3-83a4-150b09c735a9",
-      note_id: "f8a383e5-8830-41e4-a92f-257fa295d41b",
-      transcript_artifact_id: "6343dc64-1e69-41ae-ac52-6e9f65a7bc2e",
-      transcript_version_id: "82b6e4bb-fe09-4d9f-b0ec-42ee851f7efc",
-      captured_local_date: "2026-07-16",
-      language_code: "en-US",
-      subject: { display_name: "Maya", pronouns: ["she", "her"] },
-      render_configuration: {
-        perspective: "third_person",
-        tense: "past",
-        tone: "warm_restrained",
-        target_words: 130
-      },
-      source_segments: [{
-        id: "s1",
-        chunk_id: "chunk-0",
-        start_milliseconds: 0,
-        end_milliseconds: 8200,
-        text: "Synthetic journal fixture.",
-        confidence: null,
-        speaker_label: null
-      }],
-      accepted_prior_facts: [],
-      retention_policy: retentionPolicy
-    });
+    const result = DailyEntryGenerationRequestSchema.parse(dailyEntryRequest());
 
     expect(result.source_segments).toHaveLength(1);
   });
+
+  it("normalizes omitted nullable transcript metadata from Swift", () => {
+    const input = dailyEntryRequest();
+    const segment = input.source_segments[0];
+    if (!segment) throw new Error("fixture must include one segment");
+    delete (segment as Record<string, unknown>).confidence;
+    delete (segment as Record<string, unknown>).speaker_label;
+
+    const parsed = DailyEntryGenerationRequestSchema.parse(input);
+
+    expect(parsed.source_segments[0]).toMatchObject({
+      confidence: null,
+      speaker_label: null
+    });
+  });
 });
+
+function dailyEntryRequest() {
+  return {
+    schema_version: "1.0",
+    prompt_version: "grounded-journal-v1",
+    job_id: "5f3acbd5-676e-4cb3-83a4-150b09c735a9",
+    note_id: "f8a383e5-8830-41e4-a92f-257fa295d41b",
+    transcript_artifact_id: "6343dc64-1e69-41ae-ac52-6e9f65a7bc2e",
+    transcript_version_id: "82b6e4bb-fe09-4d9f-b0ec-42ee851f7efc",
+    captured_local_date: "2026-07-16",
+    language_code: "en-US",
+    subject: { display_name: "Maya", pronouns: ["she", "her"] },
+    render_configuration: {
+      perspective: "third_person",
+      tense: "past",
+      tone: "warm_restrained",
+      target_words: 130
+    },
+    source_segments: [{
+      id: "s1",
+      chunk_id: "chunk-0",
+      start_milliseconds: 0,
+      end_milliseconds: 8200,
+      text: "Synthetic journal fixture.",
+      confidence: null,
+      speaker_label: null
+    }],
+    accepted_prior_facts: [],
+    retention_policy: retentionPolicy
+  };
+}
