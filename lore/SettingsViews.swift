@@ -497,7 +497,7 @@ private struct VocabularySecondaryButtonStyle: ButtonStyle {
 }
 
 private struct JournalStyleSettingsView: View {
-    let userProfile: UserProfile
+    @Bindable var userProfile: UserProfile
     @AppStorage("LoreJournalPerspective") private var journalPerspective = "thirdPerson"
 
     var body: some View {
@@ -512,11 +512,17 @@ private struct JournalStyleSettingsView: View {
 
             Section("Subject") {
                 LabeledContent("Name", value: userProfile.name)
-                LabeledContent("Hometown", value: userProfile.hometown)
+                TextField("Hometown", text: $userProfile.hometown)
+                    .textContentType(.addressCity)
+                    .autocorrectionDisabled()
+                    .accessibilityIdentifier("journalHometownField")
             }
         }
         .navigationTitle("Journal Style")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: userProfile.hometown) { _, _ in
+            userProfile.updatedAt = Date()
+        }
     }
 }
 
