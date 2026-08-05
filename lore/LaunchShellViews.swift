@@ -74,8 +74,8 @@ struct BiographyHomeView: View {
                         Text("Daily entries will appear as Lore turns your voice notes into faithful, readable stories.")
                     }
                 } else {
-                    ZStack(alignment: .leading) {
-                        ScrollView {
+                    ZStack(alignment: .trailing) {
+                        ScrollView(.vertical, showsIndicators: false) {
                             LazyVStack(alignment: .leading, spacing: 20) {
                                 ForEach(days) { day in
                                     VStack(alignment: .leading, spacing: 10) {
@@ -94,8 +94,8 @@ struct BiographyHomeView: View {
                                 }
                             }
                             .scrollTargetLayout()
-                            .padding(.leading, 40)
-                            .padding(.trailing, 20)
+                            .padding(.leading, 20)
+                            .padding(.trailing, 40)
                             .padding(.vertical, 20)
                         }
                         .scrollPosition(id: $visibleDayKey, anchor: .top)
@@ -106,10 +106,10 @@ struct BiographyHomeView: View {
 
                         BiographyDayRuler(
                             selectedDay: $selectedDay,
-                            availableRange: rulerRange,
-                            onSelectDay: scrollToNearestDay
+                            availableDays: days.map(\.date),
+                            onSelectDay: scrollToDay
                         )
-                        .padding(.leading, 5)
+                        .padding(.trailing, 5)
                     }
                     .onAppear(perform: selectInitialDay)
                     .onChange(of: days.map(\.id)) { _, _ in selectInitialDay() }
@@ -132,18 +132,6 @@ struct BiographyHomeView: View {
         }
     }
 
-    private var rulerRange: ClosedRange<Date> {
-        guard let oldest = days.last?.date, let newest = days.first?.date else {
-            return selectedDay...selectedDay
-        }
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
-        let lower = calendar.dateInterval(of: .year, for: oldest)?.start ?? oldest
-        let upperStart = calendar.dateInterval(of: .year, for: newest)?.start ?? newest
-        let upper = calendar.date(byAdding: DateComponents(year: 1, second: -1), to: upperStart) ?? newest
-        return lower...upper
-    }
-
     private func selectInitialDay() {
         guard let first = days.first else {
             visibleDayKey = nil
@@ -154,13 +142,13 @@ struct BiographyHomeView: View {
         selectedDay = first.date
     }
 
-    private func scrollToNearestDay(_ date: Date) {
-        guard let nearest = days.min(by: {
-            abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
+    private func scrollToDay(_ date: Date) {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        guard let day = days.first(where: {
+            calendar.isDate($0.date, inSameDayAs: date)
         }) else { return }
-        withAnimation(.easeOut(duration: 0.22)) {
-            visibleDayKey = nearest.id
-        }
+        visibleDayKey = day.id
     }
 }
 

@@ -19,14 +19,14 @@ private final class BiographyRulerHaptics {
 
 struct BiographyDayRuler: View {
     @Binding var selectedDay: Date
-    let availableRange: ClosedRange<Date>
+    let availableDays: [Date]
     let onSelectDay: (Date) -> Void
 
-    @State private var dragStartDay: Date?
+    @State private var dragStartIndex: Int?
     @State private var lastFeedbackDay: Date?
 
     private let tickCount = 9
-    private let pointsPerDay: CGFloat = 9
+    private let pointsPerEntry: CGFloat = 8
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -44,7 +44,7 @@ struct BiographyDayRuler: View {
             }
         }
         .frame(width: 14)
-        .frame(width: 44, height: 116, alignment: .leading)
+        .frame(width: 44, height: 116, alignment: .trailing)
         .contentShape(Rectangle())
         .gesture(dragGesture)
         .accessibilityElement(children: .ignore)
@@ -53,9 +53,9 @@ struct BiographyDayRuler: View {
         .accessibilityAdjustableAction { direction in
             switch direction {
             case .increment:
-                select(dayOffset: 1, from: selectedDay, withHaptic: true)
+                select(indexOffset: 1, from: selectedIndex, withHaptic: true)
             case .decrement:
-                select(dayOffset: -1, from: selectedDay, withHaptic: true)
+                select(indexOffset: -1, from: selectedIndex, withHaptic: true)
             @unknown default:
                 break
             }
@@ -63,56 +63,59 @@ struct BiographyDayRuler: View {
         .accessibilityIdentifier("biographyDayRuler")
     }
 
+    private var normalizedAvailableDays: [Date] {
+        var seen = Set<Date>()
+        return availableDays
+            .map(normalized)
+            .filter { seen.insert($0).inserted }
+            .sorted(by: >)
+    }
+
+    private var selectedIndex: Int {
+        let days = normalizedAvailableDays
+        guard !days.isEmpty else { return 0 }
+        if let exactIndex = days.firstIndex(where: {
+            calendar.isDate($0, inSameDayAs: selectedDay)
+        }) {
+            return exactIndex
+        }
+        return days.indices.min(by: {
+            abs(days[$0].timeIntervalSince(selectedDay)) < abs(days[$1].timeIntervalSince(selectedDay))
+        }) ?? 0
+    }
+
     private var visibleDays: [Date] {
-        let selected = normalized(selectedDay)
-        let lower = normalized(availableRange.lowerBound)
-        let upper = normalized(availableRange.upperBound)
+        let days = normalizedAvailableDays
+        guard days.count > tickCount else { return days }
+
         let half = tickCount / 2
-        var start = calendar.date(byAdding: .day, value: -half, to: selected) ?? selected
-        var end = calendar.date(byAdding: .day, value: tickCount - 1, to: start) ?? selected
-
-        if start < lower {
-            start = lower
-            end = calendar.date(byAdding: .day, value: tickCount - 1, to: start) ?? upper
-        }
-        if end > upper {
-            end = upper
-            start = calendar.date(byAdding: .day, value: -(tickCount - 1), to: end) ?? lower
-            if start < lower { start = lower }
-        }
-
-        var result: [Date] = []
-        var day = start
-        while day <= end && result.count < tickCount {
-            result.append(day)
-            guard let next = calendar.date(byAdding: .day, value: 1, to: day) else { break }
-            day = next
-        }
-        return result
+        let maxStart = days.count - tickCount
+        let start = min(max(selectedIndex - half, 0), maxStart)
+        return Array(days[start..<(start + tickCount)])
     }
 
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 2)
             .onChanged { value in
-                let start = dragStartDay ?? selectedDay
-                if dragStartDay == nil {
-                    dragStartDay = normalized(start)
+                let start = dragStartIndex ?? selectedIndex
+                if dragStartIndex == nil {
+                    dragStartIndex = start
                     lastFeedbackDay = normalized(selectedDay)
                 }
-                let offset = Int((-value.translation.height / pointsPerDay).rounded(.towardZero))
-                select(dayOffset: offset, from: start, withHaptic: true)
+                let offset = Int((value.translation.height / pointsPerEntry).rounded(.towardZero))
+                select(indexOffset: offset, from: start, withHaptic: true)
             }
             .onEnded { _ in
-                dragStartDay = nil
+                dragStartIndex = nil
                 lastFeedbackDay = nil
             }
     }
 
-    private func select(dayOffset: Int, from start: Date, withHaptic: Bool) {
-        guard let proposed = calendar.date(byAdding: .day, value: dayOffset, to: normalized(start)) else {
-            return
-        }
-        let day = min(max(proposed, availableRange.lowerBound), availableRange.upperBound)
+    private func select(indexOffset: Int, from start: Int, withHaptic: Bool) {
+        let days = normalizedAvailableDays
+        guard !days.isEmpty else { return }
+        let index = min(max(start + indexOffset, days.startIndex), days.index(before: days.endIndex))
+        let day = days[index]
         guard !calendar.isDate(day, inSameDayAs: selectedDay) else { return }
         selectedDay = day
         if withHaptic,
