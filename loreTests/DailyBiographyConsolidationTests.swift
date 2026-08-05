@@ -108,6 +108,38 @@ struct DailyBiographyConsolidationTests {
         #expect(try fixture.context.fetch(FetchDescriptor<DailyBiographyEntry>()).count == 1)
     }
 
+    @Test func invalidProviderResponseCanResumeWithinTheAttemptCeiling() async throws {
+        let fixture = try makeFixture()
+        let prepared = try #require(DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued,
+            in: fixture.context,
+            now: fixture.now
+        ).first)
+        let job = try #require(try fixture.context.fetch(FetchDescriptor<ProcessingJob>())
+            .first(where: { $0.id == prepared.jobId }))
+        job.beginAttempt(at: fixture.now)
+        job.markFailed(errorCode: "invalid_provider_response", at: fixture.now)
+        try fixture.context.save()
+
+        let retryDate = fixture.now.addingTimeInterval(1)
+        #expect(job.requeueFailedRequest(
+            matchingErrorCode: "invalid_provider_response",
+            at: retryDate
+        ))
+
+        let entry = try await DailyBiographyJobRunner.run(
+            jobID: job.id,
+            userProfile: fixture.profile,
+            generator: SuccessfulDailyBiographyGenerator(),
+            in: fixture.context,
+            now: retryDate
+        )
+
+        #expect(job.state == .succeeded)
+        #expect(job.attemptCount == 2)
+        #expect(entry.dayKey == "2026-08-03")
+    }
+
     private func makeFixture() throws -> DailyBiographyFixture {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)

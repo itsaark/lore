@@ -317,7 +317,7 @@ function validDailyRequest(): Record<string, unknown> {
 function fireworksResponse(): Response {
   return Response.json({
     id: "chatcmpl_lease_test",
-    model: "accounts/fireworks/models/deepseek-v4-flash",
+    model: "accounts/fireworks/models/gpt-oss-120b",
     choices: [{
       index: 0,
       finish_reason: "stop",

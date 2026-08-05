@@ -24,7 +24,7 @@ describe("minimal production configuration", () => {
   it("loads each provider from only its API key", () => {
     const fireworks = loadFireworksRuntimeConfig({ FIREWORKS_API_KEY: "fireworks-test" });
     expect(fireworks.apiKey).toBe("fireworks-test");
-    expect(fireworks.dailyEntryModel).toBe("accounts/fireworks/models/deepseek-v4-flash");
+    expect(fireworks.dailyEntryModel).toBe("accounts/fireworks/models/gpt-oss-120b");
     expect(loadGroqRuntimeConfig({ GROQ_API_KEY: "groq-test" }).apiKey)
       .toBe("groq-test");
   });

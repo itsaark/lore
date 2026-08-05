@@ -89,7 +89,7 @@ export async function handleDailyEntry(
       request_id: id,
       route: "daily_entry",
       status: apiError.status,
-      error_code: apiError.code,
+      error_code: apiError.diagnosticCode ?? apiError.code,
       duration_ms: Math.round(performance.now() - startedAt)
     });
     return errorResponse(apiError, id);

@@ -491,6 +491,21 @@ class SpeechRecognitionViewModel: ObservableObject {
                 .filter { $0.kind == .dailyBiography }
                 .sorted { $0.createdAt < $1.createdAt }
 
+            // A provider regression could previously mark a valid consolidation
+            // response as terminal after one attempt. Requeue that known failure
+            // while retaining the job's existing three-attempt ceiling.
+            let repairedInvalidResponses = jobs.reduce(into: 0) { count, job in
+                if job.requeueFailedRequest(
+                    matchingErrorCode: "invalid_provider_response",
+                    at: now
+                ) {
+                    count += 1
+                }
+            }
+            if repairedInvalidResponses > 0 {
+                try modelContext.save()
+            }
+
             for job in jobs where job.state != .succeeded && job.state != .cancelled && job.state != .failed {
                 switch availability {
                 case .permitted:

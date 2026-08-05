@@ -31,7 +31,8 @@ export class LoreApiError extends Error {
     readonly status: number,
     readonly retryable: boolean,
     message: string = DEFAULT_MESSAGES[code],
-    readonly retryAfterSeconds: number | null = null
+    readonly retryAfterSeconds: number | null = null,
+    readonly diagnosticCode: string | null = null
   ) {
     super(message);
     this.name = "LoreApiError";

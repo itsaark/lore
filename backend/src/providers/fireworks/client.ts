@@ -70,16 +70,22 @@ export class FireworksClient {
 
     const completion = FireworksChatCompletionSchema.safeParse(await safeJson(response));
     if (!completion.success) {
-      throw new LoreApiError("invalid_provider_response", 502, true);
+      throw invalidProviderResponse("provider_envelope_invalid", true);
     }
     const choice = completion.data.choices[0];
-    if (!choice || choice.finish_reason !== "stop" || !choice.message.content) {
-      throw new LoreApiError("invalid_provider_response", 502, true);
+    if (!choice || choice.finish_reason !== "stop") {
+      throw invalidProviderResponse("provider_completion_incomplete", true);
+    }
+    if (!choice.message.content) {
+      throw invalidProviderResponse("provider_content_missing", true);
     }
 
     const modelOutput = FireworksDailyEntryOutputSchema.safeParse(parseJson(choice.message.content));
-    if (!modelOutput.success || modelOutput.data.status !== "completed" || !modelOutput.data.entry) {
-      throw new LoreApiError("invalid_provider_response", 502, false);
+    if (!modelOutput.success) {
+      throw invalidProviderResponse("provider_output_schema_invalid", true);
+    }
+    if (modelOutput.data.status !== "completed" || !modelOutput.data.entry) {
+      throw invalidProviderResponse("provider_output_not_completed", false);
     }
     validateSourceReferences(request, modelOutput.data);
 
@@ -167,14 +173,14 @@ function validateSourceReferences(
     ...output.follow_up_questions.map((question) => question.source_references)
   ];
   if (sourceReferenceGroups.some((references) => references.some((id) => !sourceIds.has(id)))) {
-    throw new LoreApiError("invalid_provider_response", 502, false);
+    throw invalidProviderResponse("provider_source_reference_invalid", true);
   }
   const factReferenceGroups = [
     ...output.entry.sentences.map((sentence) => sentence.fact_references),
     ...output.memory_candidates.map((candidate) => candidate.related_fact_ids)
   ];
   if (factReferenceGroups.some((references) => references.some((id) => !factIds.has(id)))) {
-    throw new LoreApiError("invalid_provider_response", 502, false);
+    throw invalidProviderResponse("provider_fact_reference_invalid", true);
   }
 }
 
@@ -186,7 +192,7 @@ async function safeJson(response: Response): Promise<unknown> {
   try {
     return await response.json();
   } catch {
-    throw new LoreApiError("invalid_provider_response", 502, true);
+    throw invalidProviderResponse("provider_body_invalid_json", true);
   }
 }
 
@@ -194,6 +200,17 @@ function parseJson(value: string): unknown {
   try {
     return JSON.parse(value);
   } catch {
-    throw new LoreApiError("invalid_provider_response", 502, true);
+    throw invalidProviderResponse("provider_content_invalid_json", true);
   }
+}
+
+function invalidProviderResponse(diagnosticCode: string, retryable: boolean): LoreApiError {
+  return new LoreApiError(
+    "invalid_provider_response",
+    502,
+    retryable,
+    undefined,
+    null,
+    diagnosticCode
+  );
 }

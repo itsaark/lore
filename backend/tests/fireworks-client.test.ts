@@ -9,7 +9,7 @@ const config: FireworksRuntimeConfig = {
   apiKey: "test-key-never-use-live",
   policyVersion: "test-policy-v1",
   baseUrl: "https://api.fireworks.test/inference/v1",
-  dailyEntryModel: "accounts/fireworks/models/deepseek-v4-flash"
+  dailyEntryModel: "accounts/fireworks/models/gpt-oss-120b"
 };
 
 const dailyRequest: DailyEntryGenerationRequest = {
@@ -46,7 +46,7 @@ describe("FireworksClient", () => {
     assertStrictObjects(FireworksDailyEntryJsonSchema);
   });
 
-  it("calls Fireworks Chat Completions with strict DeepSeek V4 Flash JSON Schema", async () => {
+  it("calls Fireworks Chat Completions with strict GPT-OSS JSON Schema", async () => {
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       expect(input).toBe("https://api.fireworks.test/inference/v1/chat/completions");
       expect(init?.headers).toEqual({
@@ -54,7 +54,7 @@ describe("FireworksClient", () => {
         "Content-Type": "application/json"
       });
       const body = JSON.parse(String(init?.body));
-      expect(body.model).toBe("accounts/fireworks/models/deepseek-v4-flash");
+      expect(body.model).toBe("accounts/fireworks/models/gpt-oss-120b");
       expect(body.response_format).toEqual({
         type: "json_schema",
         json_schema: {
@@ -81,7 +81,7 @@ describe("FireworksClient", () => {
     expect(response.provenance).toMatchObject({
       provider_id: "fireworks",
       model_alias: "daily-entry-v1",
-      model_id: "accounts/fireworks/models/deepseek-v4-flash",
+      model_id: "accounts/fireworks/models/gpt-oss-120b",
       provider_request_id: "req_fireworks_1"
     });
   });
@@ -108,7 +108,11 @@ describe("FireworksClient", () => {
     });
 
     await expect(client.generateDailyEntry("req_lore_3", dailyRequest))
-      .rejects.toMatchObject({ code: "invalid_provider_response", retryable: false });
+      .rejects.toMatchObject({
+        code: "invalid_provider_response",
+        retryable: true,
+        diagnosticCode: "provider_source_reference_invalid"
+      });
   });
 
   it("maps provider failures without exposing the provider response body", async () => {
@@ -135,7 +139,7 @@ describe("FireworksClient", () => {
 function validCompletion() {
   return {
     id: "chatcmpl_1",
-    model: "accounts/fireworks/models/deepseek-v4-flash",
+    model: "accounts/fireworks/models/gpt-oss-120b",
     choices: [{
       index: 0,
       finish_reason: "stop",
