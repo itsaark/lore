@@ -175,7 +175,7 @@ struct DailyEntryJobRunnerTests {
             provenance: RemoteProcessingProvenance(
                 providerId: "fireworks",
                 modelAlias: "daily-entry-v1",
-                modelId: "accounts/fireworks/models/gpt-oss-120b",
+                modelId: "accounts/fireworks/models/deepseek-v4-flash",
                 modelPolicyVersion: "test-policy",
                 providerRequestId: "fireworks-request",
                 processedAt: attestedAt,

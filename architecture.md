@@ -103,7 +103,7 @@ Each processing request is synchronous, size-bounded, schema-validated, authoriz
 | Capability | Current provider | Stable alias | Current model |
 | --- | --- | --- | --- |
 | Speech transcription | Groq | `transcription-fallback-v1` | `whisper-large-v3-turbo` |
-| Daily-entry writing | Fireworks | `daily-entry-v1` | `accounts/fireworks/models/gpt-oss-120b` |
+| Daily-entry writing | Fireworks | `daily-entry-v1` | `accounts/fireworks/models/deepseek-v4-flash` |
 
 Exact provider IDs remain server-controlled. iOS stores them as provenance but routes against the stable Lore contract.
 

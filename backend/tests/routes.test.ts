@@ -137,7 +137,7 @@ describe("processing routes", () => {
       expect(init?.headers).toMatchObject({ Authorization: "Bearer test-fireworks-key-never-use-live" });
       return Response.json({
         id: "chatcmpl_route_1",
-        model: "accounts/fireworks/models/gpt-oss-120b",
+        model: "accounts/fireworks/models/deepseek-v4-flash",
         choices: [{
           index: 0,
           finish_reason: "stop",
@@ -202,7 +202,7 @@ describe("processing routes", () => {
       expect(sourcePayload).toContain('"speaker_label":null');
       return Response.json({
         id: "chatcmpl_route_omitted_metadata",
-        model: "accounts/fireworks/models/gpt-oss-120b",
+        model: "accounts/fireworks/models/deepseek-v4-flash",
         choices: [{
           index: 0,
           finish_reason: "stop",

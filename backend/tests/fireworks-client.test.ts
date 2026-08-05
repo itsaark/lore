@@ -9,7 +9,7 @@ const config: FireworksRuntimeConfig = {
   apiKey: "test-key-never-use-live",
   policyVersion: "test-policy-v1",
   baseUrl: "https://api.fireworks.test/inference/v1",
-  dailyEntryModel: "accounts/fireworks/models/gpt-oss-120b"
+  dailyEntryModel: "accounts/fireworks/models/deepseek-v4-flash"
 };
 
 const dailyRequest: DailyEntryGenerationRequest = {
@@ -46,7 +46,7 @@ describe("FireworksClient", () => {
     assertStrictObjects(FireworksDailyEntryJsonSchema);
   });
 
-  it("calls Fireworks Chat Completions with strict GPT-OSS JSON Schema", async () => {
+  it("calls Fireworks Chat Completions with strict DeepSeek V4 Flash JSON Schema", async () => {
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       expect(input).toBe("https://api.fireworks.test/inference/v1/chat/completions");
       expect(init?.headers).toEqual({
@@ -54,7 +54,7 @@ describe("FireworksClient", () => {
         "Content-Type": "application/json"
       });
       const body = JSON.parse(String(init?.body));
-      expect(body.model).toBe("accounts/fireworks/models/gpt-oss-120b");
+      expect(body.model).toBe("accounts/fireworks/models/deepseek-v4-flash");
       expect(body.response_format).toEqual({
         type: "json_schema",
         json_schema: {
@@ -81,7 +81,7 @@ describe("FireworksClient", () => {
     expect(response.provenance).toMatchObject({
       provider_id: "fireworks",
       model_alias: "daily-entry-v1",
-      model_id: "accounts/fireworks/models/gpt-oss-120b",
+      model_id: "accounts/fireworks/models/deepseek-v4-flash",
       provider_request_id: "req_fireworks_1"
     });
   });
@@ -135,7 +135,7 @@ describe("FireworksClient", () => {
 function validCompletion() {
   return {
     id: "chatcmpl_1",
-    model: "accounts/fireworks/models/gpt-oss-120b",
+    model: "accounts/fireworks/models/deepseek-v4-flash",
     choices: [{
       index: 0,
       finish_reason: "stop",

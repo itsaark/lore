@@ -356,7 +356,7 @@ struct LoreBackendHTTPClientTests {
           "sensitive_omissions":[],
           "quality_flags":[],
           "follow_up_questions":[],
-          "provenance":\(provenance(provider: "fireworks", modelAlias: "daily-entry-v1", modelId: "accounts/fireworks/models/gpt-oss-120b"))
+          "provenance":\(provenance(provider: "fireworks", modelAlias: "daily-entry-v1", modelId: "accounts/fireworks/models/deepseek-v4-flash"))
         }
         """.utf8)
     }

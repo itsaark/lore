@@ -4,7 +4,7 @@ Provider-neutral, request-ephemeral backend for Lore transcription and grounded 
 
 ## Current provider topology
 
-- Daily entries: direct Fireworks Chat Completions using `accounts/fireworks/models/gpt-oss-120b`
+- Daily entries: direct Fireworks Chat Completions using `accounts/fireworks/models/deepseek-v4-flash`
 - Transcription: direct Groq Audio Transcriptions using `whisper-large-v3-turbo`
 - No provider-side files, batch jobs, stored response objects, or extra routing layer
 

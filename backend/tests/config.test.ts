@@ -22,8 +22,9 @@ const maintenanceEnvironment = {
 
 describe("minimal production configuration", () => {
   it("loads each provider from only its API key", () => {
-    expect(loadFireworksRuntimeConfig({ FIREWORKS_API_KEY: "fireworks-test" }).apiKey)
-      .toBe("fireworks-test");
+    const fireworks = loadFireworksRuntimeConfig({ FIREWORKS_API_KEY: "fireworks-test" });
+    expect(fireworks.apiKey).toBe("fireworks-test");
+    expect(fireworks.dailyEntryModel).toBe("accounts/fireworks/models/deepseek-v4-flash");
     expect(loadGroqRuntimeConfig({ GROQ_API_KEY: "groq-test" }).apiKey)
       .toBe("groq-test");
   });

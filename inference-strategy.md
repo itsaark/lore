@@ -7,7 +7,7 @@ Last updated: 2026-08-04
 Lore currently uses one remote inference pipeline for every supported iPhone:
 
 - Groq `whisper-large-v3-turbo` for speech-to-text;
-- Fireworks `accounts/fireworks/models/gpt-oss-120b` for grounded daily-entry writing;
+- Fireworks `accounts/fireworks/models/deepseek-v4-flash` for grounded daily-entry writing;
 - Lore's Vercel API as the only credential, validation, privacy, and provider boundary.
 
 Hardware generation does not influence routing. Wi-Fi and cellular are both eligible. When the network or authorization is unavailable, work is deferred as a durable job.

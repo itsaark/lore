@@ -30,7 +30,7 @@ struct DailyEntryResultPersistenceTests {
         #expect(artifact.prose == "She remembered walking home in the rain. The street felt unusually quiet.")
         #expect(artifact.providerId == "fireworks")
         #expect(artifact.providerModelAlias == "daily-entry-v1")
-        #expect(artifact.providerModelId == "accounts/fireworks/models/gpt-oss-120b")
+        #expect(artifact.providerModelId == "accounts/fireworks/models/deepseek-v4-flash")
         #expect(artifact.retentionMode == .zeroDataRetention)
         #expect(artifact.maximumRetentionSeconds == 0)
         #expect(try artifact.decodedResponse() == response)
@@ -327,7 +327,7 @@ struct DailyEntryResultPersistenceTests {
             provenance: RemoteProcessingProvenance(
                 providerId: "fireworks",
                 modelAlias: "daily-entry-v1",
-                modelId: "accounts/fireworks/models/gpt-oss-120b",
+                modelId: "accounts/fireworks/models/deepseek-v4-flash",
                 modelPolicyVersion: "2026-08-03-direct-v1",
                 providerRequestId: "fireworks-request-456",
                 processedAt: Date(timeIntervalSince1970: 1_800_000_050),
