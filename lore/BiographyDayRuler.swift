@@ -20,13 +20,16 @@ private final class BiographyRulerHaptics {
 struct BiographyDayRuler: View {
     @Binding var selectedDay: Date
     let availableDays: [Date]
+    let scrollOffset: CGFloat
+    let maximumScrollOffset: CGFloat
+    let onScrubToOffset: (CGFloat) -> Void
     let onSelectDay: (Date) -> Void
 
-    @State private var dragStartIndex: Int?
-    @State private var lastFeedbackDay: Date?
+    @State private var dragStartOffset: CGFloat?
+    @State private var lastFeedbackStep: Int?
 
     private let tickCount = 9
-    private let pointsPerEntry: CGFloat = 8
+    private let rulerHeight: CGFloat = 116
     private var calendar: Calendar {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -44,7 +47,7 @@ struct BiographyDayRuler: View {
             }
         }
         .frame(width: 14)
-        .frame(width: 44, height: 116, alignment: .trailing)
+        .frame(width: 44, height: rulerHeight, alignment: .trailing)
         .contentShape(Rectangle())
         .gesture(dragGesture)
         .accessibilityElement(children: .ignore)
@@ -97,18 +100,32 @@ struct BiographyDayRuler: View {
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 2)
             .onChanged { value in
-                let start = dragStartIndex ?? selectedIndex
-                if dragStartIndex == nil {
-                    dragStartIndex = start
-                    lastFeedbackDay = normalized(selectedDay)
+                guard maximumScrollOffset > 0 else { return }
+                let start = dragStartOffset ?? scrollOffset
+                if dragStartOffset == nil {
+                    dragStartOffset = start
+                    lastFeedbackStep = feedbackStep(for: start)
                 }
-                let offset = Int((value.translation.height / pointsPerEntry).rounded(.towardZero))
-                select(indexOffset: offset, from: start, withHaptic: true)
+                let proposedOffset = start
+                    + (value.translation.height / rulerHeight) * maximumScrollOffset
+                let offset = min(max(proposedOffset, 0), maximumScrollOffset)
+                let step = feedbackStep(for: offset)
+                if step != lastFeedbackStep {
+                    BiographyRulerHaptics.shared.selectionChanged()
+                    lastFeedbackStep = step
+                }
+                onScrubToOffset(offset)
             }
             .onEnded { _ in
-                dragStartIndex = nil
-                lastFeedbackDay = nil
+                dragStartOffset = nil
+                lastFeedbackStep = nil
             }
+    }
+
+    private func feedbackStep(for offset: CGFloat) -> Int {
+        guard maximumScrollOffset > 0 else { return 0 }
+        let progress = min(max(offset / maximumScrollOffset, 0), 1)
+        return Int((progress * CGFloat(tickCount - 1)).rounded(.down))
     }
 
     private func select(indexOffset: Int, from start: Int, withHaptic: Bool) {
@@ -118,10 +135,8 @@ struct BiographyDayRuler: View {
         let day = days[index]
         guard !calendar.isDate(day, inSameDayAs: selectedDay) else { return }
         selectedDay = day
-        if withHaptic,
-           lastFeedbackDay.map({ !calendar.isDate($0, inSameDayAs: day) }) ?? true {
+        if withHaptic {
             BiographyRulerHaptics.shared.selectionChanged()
-            lastFeedbackDay = day
         }
         onSelectDay(day)
     }

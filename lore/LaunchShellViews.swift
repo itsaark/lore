@@ -55,6 +55,8 @@ struct BiographyHomeView: View {
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
     @State private var visibleDayKey: String?
     @State private var selectedDay = Date()
+    @State private var scrollPosition = ScrollPosition(idType: String.self)
+    @State private var scrollMetrics = BiographyScrollMetrics()
 
     private var days: [BiographyTimelineDay] {
         BiographyTimelineDay.make(
@@ -98,15 +100,28 @@ struct BiographyHomeView: View {
                             .padding(.trailing, 40)
                             .padding(.vertical, 20)
                         }
-                        .scrollPosition(id: $visibleDayKey, anchor: .top)
-                        .onChange(of: visibleDayKey) { _, newValue in
-                            guard let day = days.first(where: { $0.id == newValue }) else { return }
+                        .scrollPosition($scrollPosition, anchor: .top)
+                        .onScrollGeometryChange(for: BiographyScrollMetrics.self) { geometry in
+                            let maximumOffset = max(0, geometry.contentSize.height - geometry.containerSize.height)
+                            return BiographyScrollMetrics(
+                                offset: min(max(geometry.contentOffset.y, 0), maximumOffset),
+                                maximumOffset: maximumOffset
+                            )
+                        } action: { _, newMetrics in
+                            scrollMetrics = newMetrics
+                        }
+                        .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.15) { visibleIDs in
+                            guard let day = days.first(where: { visibleIDs.contains($0.id) }) else { return }
+                            visibleDayKey = day.id
                             selectedDay = day.date
                         }
 
                         BiographyDayRuler(
                             selectedDay: $selectedDay,
                             availableDays: days.map(\.date),
+                            scrollOffset: scrollMetrics.offset,
+                            maximumScrollOffset: scrollMetrics.maximumOffset,
+                            onScrubToOffset: scrubToOffset,
                             onSelectDay: scrollToDay
                         )
                         .padding(.trailing, 5)
@@ -140,6 +155,7 @@ struct BiographyHomeView: View {
         guard visibleDayKey == nil || !days.contains(where: { $0.id == visibleDayKey }) else { return }
         visibleDayKey = first.id
         selectedDay = first.date
+        scrollPosition.scrollTo(id: first.id, anchor: .top)
     }
 
     private func scrollToDay(_ date: Date) {
@@ -149,7 +165,17 @@ struct BiographyHomeView: View {
             calendar.isDate($0.date, inSameDayAs: date)
         }) else { return }
         visibleDayKey = day.id
+        scrollPosition.scrollTo(id: day.id, anchor: .top)
     }
+
+    private func scrubToOffset(_ offset: CGFloat) {
+        scrollPosition.scrollTo(y: offset)
+    }
+}
+
+private struct BiographyScrollMetrics: Equatable {
+    var offset: CGFloat = 0
+    var maximumOffset: CGFloat = 0
 }
 
 private struct BiographyTimelineDay: Identifiable {
