@@ -1,12 +1,13 @@
 # Lore Production Runbook
 
-Last updated: 2026-08-03
+Last updated: 2026-08-05
 
 Lore has one backend environment: Production. Debug and Simulator builds are local-only, only `main` is deployment-enabled in Vercel, and provider/authentication variables are scoped only to Production.
 
 ## Architecture boundary
 
-- The iPhone is the only durable store for audio, transcripts, journal entries, and biography data.
+- The iPhone keeps the working SwiftData cache; transcripts, journal entries, profile, vocabulary, and biography data sync through the user's private CloudKit database.
+- Audio files and processing jobs remain device-local and are not recoverable on another phone.
 - Vercel handles request-ephemeral forwarding and validation only.
 - Groq performs synchronous speech-to-text; Fireworks performs synchronous grounded daily-entry generation.
 - Neon stores only content-free security state required by App Attest, replay prevention, rate limiting, and processing leases. It must never receive request bodies or user content.
@@ -14,10 +15,12 @@ Lore has one backend environment: Production. Debug and Simulator builds are loc
 ## Production prerequisites
 
 1. Enable App Attest for Apple App ID `cascadianpines.lore` and regenerate Distribution/TestFlight signing profiles.
-2. Install the Neon Vercel Marketplace integration on project `lore`, selecting only Production. Confirm that it injects a pooled `DATABASE_URL` only into Production.
-3. Apply `backend/migrations/001_app_attest_auth.sql`, `002_processing_leases.sql`, and `003_security_metadata_cleanup.sql` in filename order using a direct/migration-capable Neon connection.
-4. Confirm Groq organization Data Controls have ZDR enabled for the selected Audio Transcriptions endpoint and model before sending real audio.
-5. Approve Fireworks' open-model ZDR and bounded volatile prompt-cache behavior before sending real text.
+2. Register iCloud container `iCloud.cascadianpines.lore`, attach it to the App ID with CloudKit support, enable Push Notifications, and regenerate signing profiles.
+3. Initialize the CloudKit development schema from a signed Debug build, inspect encrypted fields and indexes in CloudKit Console, then deploy the schema to Production before TestFlight.
+4. Install the Neon Vercel Marketplace integration on project `lore`, selecting only Production. Confirm that it injects a pooled `DATABASE_URL` only into Production.
+5. Apply `backend/migrations/001_app_attest_auth.sql`, `002_processing_leases.sql`, and `003_security_metadata_cleanup.sql` in filename order using a direct/migration-capable Neon connection.
+6. Confirm Groq organization Data Controls have ZDR enabled for the selected Audio Transcriptions endpoint and model before sending real audio.
+7. Approve Fireworks' open-model ZDR and bounded volatile prompt-cache behavior before sending real text.
 
 ## Required Vercel Production variables
 

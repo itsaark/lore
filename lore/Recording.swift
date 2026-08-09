@@ -4,17 +4,17 @@ import SwiftData
 /// Model representing a single captured story entry.
 @Model
 final class Story {
-    @Attribute(.unique) var id: UUID
-    var text: String
-    var date: Date
-    var duration: TimeInterval
+    var id: UUID = UUID()
+    @Attribute(.allowsCloudEncryption) var text: String = ""
+    @Attribute(.allowsCloudEncryption) var date: Date = Date()
+    @Attribute(.allowsCloudEncryption) var duration: TimeInterval = 0
     var rawTranscriptExpiresAt: Date?
     var metadataId: UUID?
-    var biographyProse: String?
-    var title: String?
-    var processingStatus: String
-    var createdAt: Date
-    var updatedAt: Date
+    @Attribute(.allowsCloudEncryption) var biographyProse: String?
+    @Attribute(.allowsCloudEncryption) var title: String?
+    var processingStatus: String = "captured"
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),

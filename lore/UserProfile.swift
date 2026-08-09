@@ -3,10 +3,10 @@ import SwiftData
 
 @Model
 final class UserProfile {
-    @Attribute(.unique) var id: UUID
-    var name: String
-    var hometown: String
-    var birthYear: Int
+    var id: UUID = UUID()
+    @Attribute(.allowsCloudEncryption) var name: String = ""
+    @Attribute(.allowsCloudEncryption) var hometown: String = ""
+    @Attribute(.allowsCloudEncryption) var birthYear: Int = 0
     var remoteProcessingConsentedAt: Date?
 
     // Retained only so existing pre-remote-only stores migrate without losing
@@ -15,8 +15,8 @@ final class UserProfile {
     var remoteTextProcessingConsentedAt: Date?
     var remoteAudioUploadConsentedAt: Date?
     var allowsCellularRemoteProcessing: Bool = true
-    var createdAt: Date
-    var updatedAt: Date
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),

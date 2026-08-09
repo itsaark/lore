@@ -717,8 +717,11 @@ class SpeechRecognitionViewModel: ObservableObject {
             )
             stories = try modelContext.fetch(descriptor)
             let metadata = try modelContext.fetch(FetchDescriptor<StoryMetadata>())
-            let metadataById = Dictionary(uniqueKeysWithValues: metadata.map { ($0.id, $0) })
-            storyDayKeys = Dictionary(uniqueKeysWithValues: stories.map { story in
+            let metadataById = Dictionary(
+                metadata.map { ($0.id, $0) },
+                uniquingKeysWith: { current, _ in current }
+            )
+            storyDayKeys = Dictionary(stories.map { story in
                 let timezone = story.metadataId
                     .flatMap { metadataById[$0] }
                     .flatMap { TimeZone(identifier: $0.timezone) }
@@ -729,7 +732,7 @@ class SpeechRecognitionViewModel: ObservableObject {
                 formatter.timeZone = timezone
                 formatter.dateFormat = "yyyy-MM-dd"
                 return (story.id, formatter.string(from: story.date))
-            })
+            }, uniquingKeysWith: { current, _ in current })
             dailyBiographyEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>(
                 sortBy: [SortDescriptor(\.calendarDate, order: .forward)]
             ))

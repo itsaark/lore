@@ -1,17 +1,18 @@
 # Lore Architecture
 
-Last updated: 2026-08-04
+Last updated: 2026-08-05
 
 ## System statement
 
-Lore is a voice-first iPhone journal with remote inference and a device-resident canonical archive. The iOS app records and protects audio, submits bounded synchronous processing requests, validates responses, stores source and derived artifacts with provenance, and deletes captured audio only after the source transcript is durable.
+Lore is a voice-first iPhone journal with remote inference and a private CloudKit-backed canonical archive. The iOS app records and protects audio, submits bounded synchronous processing requests, validates responses, stores source and derived artifacts with provenance, syncs recoverable records through the user's private iCloud database, and deletes captured audio only after the source transcript is durable.
 
 The backend is a request-ephemeral security and provider boundary. Groq performs transcription. Fireworks produces grounded daily entries. Neon stores content-free authentication and replay-protection state only; it is not a journal database.
 
 ## Non-negotiable boundaries
 
 - User audio, transcripts, prompts, generated prose, names, and biography facts are never written to Lore's server database or logs.
-- The iPhone is the durable store for the personal archive.
+- SwiftData's local cache and the user's private CloudKit database are the durable stores for the personal archive.
+- Audio files, audio paths, and processing jobs remain device-local and never sync to another phone.
 - Provider keys exist only in Vercel Production.
 - Feature code depends on provider-neutral contracts and stable aliases.
 - One onboarding permission covers the current remote transcription and journal-writing pipeline.
@@ -48,14 +49,14 @@ The current shell has three primary destinations:
 | View | Responsibility |
 | --- | --- |
 | Record | Minimal capture, audio-level feedback, and current processing state |
-| Journal | Read locally stored daily entries and their source relationships |
+| Journal | Read privately synced daily entries and their source relationships |
 | Biography | Read the evolving assembled narrative |
 
 Settings currently owns vocabulary, writing style, shortcuts, and About. Processing infrastructure is deliberately not presented as a user-tunable mode.
 
 ### Persistence model
 
-SwiftData owns the canonical archive:
+SwiftData owns the canonical archive. User-authored and derived records use a private CloudKit configuration; device-bound operational records use a separate local-only configuration:
 
 - `Story`: one capture and its user-visible lifecycle;
 - `TranscriptArtifact`: stable source identity for a story;
@@ -64,6 +65,8 @@ SwiftData owns the canonical archive:
 - `DailyEntryResultArtifact`: the complete validated response snapshot;
 - `BiographyFragment`: locally accepted derived prose tied to source facts;
 - vocabulary and profile records.
+
+`AudioAsset`, `ProcessingJob`, and `DailyBiographyGenerationSnapshot` remain in the device-local store because another phone cannot access the originating sandbox audio file. Existing single-store installs are copied into the split stores by an idempotent migration that retains the legacy store as a recovery copy.
 
 Legacy profile fields related to earlier processing experiments remain in the schema only to migrate existing installs. They do not drive behavior or appear in the UI.
 

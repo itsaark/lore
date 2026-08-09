@@ -82,4 +82,5 @@ private enum LaunchTab: Hashable {
         )
     )
     .modelContainer(LoreModelContainer.preview)
+    .environmentObject(CloudArchiveStatusMonitor(startsImmediately: false))
 }

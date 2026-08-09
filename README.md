@@ -1,6 +1,6 @@
 # Lore
 
-Lore is a privacy-first iPhone journal that turns voice notes into a durable local transcript archive and grounded biography entries.
+Lore is a privacy-first iPhone journal that turns voice notes into a private iCloud-synced transcript archive and grounded biography entries.
 
 ## Repository layout
 

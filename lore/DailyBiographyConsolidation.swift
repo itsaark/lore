@@ -6,24 +6,24 @@ import SwiftData
 /// Source stories and transcript versions remain canonical and are never rewritten.
 @Model
 final class DailyBiographyEntry {
-    @Attribute(.unique) private(set) var id: UUID
-    @Attribute(.unique) private(set) var dayKey: String
-    private(set) var calendarDate: Date
-    private(set) var sourceStoryIds: [UUID]
-    private(set) var sourceTranscriptArtifactIds: [UUID]
-    private(set) var sourceTranscriptVersionIds: [UUID]
-    private(set) var sourceFingerprint: String
-    private(set) var timezoneIdentifiers: [String]
-    private(set) var title: String
-    private(set) var prose: String
-    private(set) var combinedTranscript: String
-    private(set) var noteCount: Int
-    private(set) var providerId: String
-    private(set) var providerModelAlias: String
-    private(set) var providerModelId: String
-    private(set) var providerModelPolicyVersion: String
-    private(set) var createdAt: Date
-    private(set) var updatedAt: Date
+    private(set) var id: UUID = UUID()
+    @Attribute(.allowsCloudEncryption) private(set) var dayKey: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var calendarDate: Date = Date()
+    private(set) var sourceStoryIds: [UUID] = []
+    private(set) var sourceTranscriptArtifactIds: [UUID] = []
+    private(set) var sourceTranscriptVersionIds: [UUID] = []
+    private(set) var sourceFingerprint: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var timezoneIdentifiers: [String] = []
+    @Attribute(.allowsCloudEncryption) private(set) var title: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var prose: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var combinedTranscript: String = ""
+    private(set) var noteCount: Int = 0
+    private(set) var providerId: String = ""
+    private(set) var providerModelAlias: String = ""
+    private(set) var providerModelId: String = ""
+    private(set) var providerModelPolicyVersion: String = ""
+    private(set) var createdAt: Date = Date()
+    private(set) var updatedAt: Date = Date()
 
     var formattedCalendarDate: String {
         let formatter = DateFormatter()
@@ -104,8 +104,8 @@ final class DailyBiographyEntry {
 /// Transcript text is rebuilt from the canonical local versions only when the job runs.
 @Model
 final class DailyBiographyGenerationSnapshot {
-    @Attribute(.unique) private(set) var id: UUID
-    @Attribute(.unique) private(set) var jobId: UUID
+    private(set) var id: UUID
+    private(set) var jobId: UUID
     private(set) var dayKey: String
     private(set) var calendarDate: Date
     private(set) var sourceStoryIds: [UUID]
@@ -208,7 +208,12 @@ enum DailyBiographyJobRunner {
         let entries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
         let snapshots = try modelContext.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>())
         let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
-        let jobsById = Dictionary(uniqueKeysWithValues: jobs.map { ($0.id, $0) })
+        let jobsById = Dictionary(
+            jobs.map { ($0.id, $0) },
+            uniquingKeysWith: { current, candidate in
+                current.updatedAt >= candidate.updatedAt ? current : candidate
+            }
+        )
         var prepared: [PreparedDay] = []
 
         for group in groups {
@@ -422,7 +427,10 @@ enum DailyBiographyJobRunner {
         let artifacts = try modelContext.fetch(FetchDescriptor<TranscriptArtifact>())
         let versions = try modelContext.fetch(FetchDescriptor<TranscriptVersion>())
         let metadata = try modelContext.fetch(FetchDescriptor<StoryMetadata>())
-        let metadataById = Dictionary(uniqueKeysWithValues: metadata.map { ($0.id, $0) })
+        let metadataById = Dictionary(
+            metadata.map { ($0.id, $0) },
+            uniquingKeysWith: { current, _ in current }
+        )
         var sourcesByDay: [String: [Source]] = [:]
 
         for story in stories {
@@ -482,9 +490,24 @@ enum DailyBiographyJobRunner {
         let allStories = try modelContext.fetch(FetchDescriptor<Story>())
         let allArtifacts = try modelContext.fetch(FetchDescriptor<TranscriptArtifact>())
         let allVersions = try modelContext.fetch(FetchDescriptor<TranscriptVersion>())
-        let storyById = Dictionary(uniqueKeysWithValues: allStories.map { ($0.id, $0) })
-        let artifactById = Dictionary(uniqueKeysWithValues: allArtifacts.map { ($0.id, $0) })
-        let versionById = Dictionary(uniqueKeysWithValues: allVersions.map { ($0.id, $0) })
+        let storyById = Dictionary(
+            allStories.map { ($0.id, $0) },
+            uniquingKeysWith: { current, candidate in
+                current.updatedAt >= candidate.updatedAt ? current : candidate
+            }
+        )
+        let artifactById = Dictionary(
+            allArtifacts.map { ($0.id, $0) },
+            uniquingKeysWith: { current, candidate in
+                current.createdAt >= candidate.createdAt ? current : candidate
+            }
+        )
+        let versionById = Dictionary(
+            allVersions.map { ($0.id, $0) },
+            uniquingKeysWith: { current, candidate in
+                current.createdAt >= candidate.createdAt ? current : candidate
+            }
+        )
 
         var tuples: [(Story, TranscriptArtifact, TranscriptVersion)] = []
         for index in snapshot.sourceStoryIds.indices {

@@ -131,7 +131,10 @@ enum LegacyDataMigrator {
         let artifacts = try modelContext.fetch(FetchDescriptor<TranscriptArtifact>())
         let audioAssets = try modelContext.fetch(FetchDescriptor<AudioAsset>())
         let storyIdsWithArtifacts = Set(artifacts.compactMap(\.storyId))
-        let audioAssetByStoryId = Dictionary(uniqueKeysWithValues: audioAssets.map { ($0.id, $0.id) })
+        let audioAssetByStoryId = Dictionary(
+            audioAssets.map { ($0.id, $0.id) },
+            uniquingKeysWith: { current, _ in current }
+        )
 
         for story in stories where !storyIdsWithArtifacts.contains(story.id) {
             let rawText = story.text.trimmingCharacters(in: .whitespacesAndNewlines)

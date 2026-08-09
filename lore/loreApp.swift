@@ -10,6 +10,7 @@ import SwiftData
 
 @main
 struct loreApp: App {
+    @StateObject private var cloudArchiveStatus = CloudArchiveStatusMonitor()
     private let modelContainer: ModelContainer
 
     init() {
@@ -24,6 +25,7 @@ struct loreApp: App {
         WindowGroup {
             RootView()
                 .modelContainer(modelContainer)
+                .environmentObject(cloudArchiveStatus)
         }
     }
 }

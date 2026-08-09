@@ -74,7 +74,7 @@ struct OnboardingView: View {
                         Button("Not Now", role: .cancel) {}
                         Button("Allow and Continue", action: completeOnboarding)
                     } message: {
-                        Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks AI for journal writing. Lore does not keep this content in its server database; finished transcripts and stories stay on this iPhone.")
+                        Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks AI for journal writing. Lore does not keep this content in its server database; finished transcripts and stories sync through your private iCloud database.")
                     }
                 }
                 .padding(.horizontal, 24)
@@ -151,7 +151,7 @@ struct RemoteProcessingPermissionView: View {
             Text("Turn voice into story")
                 .font(.largeTitle.weight(.semibold))
 
-            Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks for journal writing. Lore does not keep this content on its servers; your finished stories stay on this iPhone.")
+            Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks for journal writing. Lore does not keep this content on its servers; finished stories sync through your private iCloud database.")
                 .font(.body)
                 .foregroundStyle(.secondary)
 

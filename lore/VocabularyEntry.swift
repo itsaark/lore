@@ -2,15 +2,15 @@ import Foundation
 import SwiftData
 
 /// A preferred spelling or an explicit speech-recognition replacement.
-/// Vocabulary remains part of Lore's local archive and is never uploaded by itself.
+/// Vocabulary remains in Lore's private archive and is never sent to processing providers by itself.
 @Model
 final class VocabularyEntry {
-    @Attribute(.unique) var id: UUID
-    var phrase: String
-    var normalizedPhrase: String
-    var replacement: String?
-    var createdAt: Date
-    var updatedAt: Date
+    var id: UUID = UUID()
+    @Attribute(.allowsCloudEncryption) var phrase: String = ""
+    @Attribute(.allowsCloudEncryption) var normalizedPhrase: String = ""
+    @Attribute(.allowsCloudEncryption) var replacement: String?
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),

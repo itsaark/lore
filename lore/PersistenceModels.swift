@@ -27,21 +27,21 @@ enum TranscriptVersionKind: String, Codable, CaseIterable, Sendable {
 /// changing the existing `Story` model during lightweight migration.
 @Model
 final class TranscriptArtifact {
-    @Attribute(.unique) private(set) var id: UUID
+    private(set) var id: UUID = UUID()
     private(set) var storyId: UUID?
     private(set) var audioAssetId: UUID?
-    private(set) var rawText: String
-    private(set) var sourceValue: String
+    @Attribute(.allowsCloudEncryption) private(set) var rawText: String = ""
+    private(set) var sourceValue: String = TranscriptSource.imported.rawValue
     private(set) var languageCode: String?
     private(set) var providerId: String?
     private(set) var providerModelId: String?
     private(set) var providerRequestId: String?
-    private(set) var sourceSegmentsJSON: String?
-    private(set) var providerProvenanceJSON: String?
-    private(set) var capturedAt: Date
-    private(set) var transcribedAt: Date
-    private(set) var audioDuration: TimeInterval
-    private(set) var createdAt: Date
+    @Attribute(.allowsCloudEncryption) private(set) var sourceSegmentsJSON: String?
+    @Attribute(.allowsCloudEncryption) private(set) var providerProvenanceJSON: String?
+    @Attribute(.allowsCloudEncryption) private(set) var capturedAt: Date = Date()
+    private(set) var transcribedAt: Date = Date()
+    @Attribute(.allowsCloudEncryption) private(set) var audioDuration: TimeInterval = 0
+    private(set) var createdAt: Date = Date()
 
     init(
         id: UUID = UUID(),
@@ -88,16 +88,16 @@ final class TranscriptArtifact {
 /// This preserves the raw transcript and the complete correction history.
 @Model
 final class TranscriptVersion {
-    @Attribute(.unique) private(set) var id: UUID
-    private(set) var transcriptArtifactId: UUID
+    private(set) var id: UUID = UUID()
+    private(set) var transcriptArtifactId: UUID = UUID()
     private(set) var storyId: UUID?
     private(set) var supersedesVersionId: UUID?
-    private(set) var revision: Int
-    private(set) var text: String
-    private(set) var kindValue: String
-    private(set) var authorValue: String
-    private(set) var editSummary: String?
-    private(set) var createdAt: Date
+    private(set) var revision: Int = 0
+    @Attribute(.allowsCloudEncryption) private(set) var text: String = ""
+    private(set) var kindValue: String = TranscriptVersionKind.sourceSnapshot.rawValue
+    private(set) var authorValue: String = TranscriptVersionAuthor.system.rawValue
+    @Attribute(.allowsCloudEncryption) private(set) var editSummary: String?
+    private(set) var createdAt: Date = Date()
 
     init(
         id: UUID = UUID(),
@@ -166,8 +166,8 @@ enum RemoteContentDeletionState: String, Codable, CaseIterable, Sendable {
 /// or generated prose.
 @Model
 final class ProcessingJob {
-    @Attribute(.unique) private(set) var id: UUID
-    @Attribute(.unique) private(set) var idempotencyKey: String
+    private(set) var id: UUID
+    private(set) var idempotencyKey: String
     private(set) var storyId: UUID?
     private(set) var transcriptArtifactId: UUID?
     private(set) var inputTranscriptVersionId: UUID?
@@ -382,7 +382,7 @@ final class ProcessingJob {
 
 @Model
 final class AudioAsset {
-    @Attribute(.unique) var id: UUID
+    var id: UUID
     var fileURL: String
     var createdAt: Date
     var expiresAt: Date
@@ -407,16 +407,16 @@ final class AudioAsset {
 }
 @Model
 final class StoryMetadata {
-    @Attribute(.unique) var id: UUID
-    var captureDate: Date
-    var timezone: String
-    var locationName: String?
-    var latitude: Double?
-    var longitude: Double?
-    var weatherSummary: String?
-    var temperature: Double?
-    var weatherSource: String?
-    var permissionSnapshot: String?
+    var id: UUID = UUID()
+    @Attribute(.allowsCloudEncryption) var captureDate: Date = Date()
+    @Attribute(.allowsCloudEncryption) var timezone: String = TimeZone.current.identifier
+    @Attribute(.allowsCloudEncryption) var locationName: String?
+    @Attribute(.allowsCloudEncryption) var latitude: Double?
+    @Attribute(.allowsCloudEncryption) var longitude: Double?
+    @Attribute(.allowsCloudEncryption) var weatherSummary: String?
+    @Attribute(.allowsCloudEncryption) var temperature: Double?
+    @Attribute(.allowsCloudEncryption) var weatherSource: String?
+    @Attribute(.allowsCloudEncryption) var permissionSnapshot: String?
 
     init(
         id: UUID = UUID(),
@@ -445,16 +445,16 @@ final class StoryMetadata {
 
 @Model
 final class BiographyFragment {
-    @Attribute(.unique) var id: UUID
-    var storyId: UUID
-    var lifeEventIds: [UUID]
+    var id: UUID = UUID()
+    var storyId: UUID = UUID()
+    var lifeEventIds: [UUID] = []
     var chapterId: UUID?
-    var prose: String
-    var style: String
-    var modelName: String
-    var modelVersion: String
-    var createdAt: Date
-    var updatedAt: Date
+    @Attribute(.allowsCloudEncryption) var prose: String = ""
+    var style: String = ""
+    var modelName: String = ""
+    var modelVersion: String = ""
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),
@@ -490,17 +490,17 @@ enum LifeEventDateKind: String, Codable, CaseIterable, Sendable {
 
 @Model
 final class LifeEvent {
-    @Attribute(.unique) var id: UUID
-    var title: String
-    var summary: String
-    var eventDateKind: String
-    var eventStartDate: Date?
-    var eventEndDate: Date?
-    var approximateLabel: String?
-    var confidence: Double
-    var sourceStoryIds: [UUID]
-    var createdAt: Date
-    var updatedAt: Date
+    var id: UUID = UUID()
+    @Attribute(.allowsCloudEncryption) var title: String = ""
+    @Attribute(.allowsCloudEncryption) var summary: String = ""
+    var eventDateKind: String = LifeEventDateKind.unknown.rawValue
+    @Attribute(.allowsCloudEncryption) var eventStartDate: Date?
+    @Attribute(.allowsCloudEncryption) var eventEndDate: Date?
+    @Attribute(.allowsCloudEncryption) var approximateLabel: String?
+    var confidence: Double = 0
+    var sourceStoryIds: [UUID] = []
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),
@@ -535,15 +535,15 @@ final class LifeEvent {
 
 @Model
 final class Person {
-    @Attribute(.unique) var id: UUID
-    var displayName: String
-    var aliases: [String]
-    var relationshipToUser: String?
-    var summary: String
-    var confidence: Double
-    var sourceStoryIds: [UUID]
-    var createdAt: Date
-    var updatedAt: Date
+    var id: UUID = UUID()
+    @Attribute(.allowsCloudEncryption) var displayName: String = ""
+    @Attribute(.allowsCloudEncryption) var aliases: [String] = []
+    @Attribute(.allowsCloudEncryption) var relationshipToUser: String?
+    @Attribute(.allowsCloudEncryption) var summary: String = ""
+    var confidence: Double = 0
+    var sourceStoryIds: [UUID] = []
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),
@@ -570,15 +570,15 @@ final class Person {
 
 @Model
 final class Place {
-    @Attribute(.unique) var id: UUID
-    var displayName: String
-    var placeKind: String?
-    var locationHint: String?
-    var summary: String
-    var confidence: Double
-    var sourceStoryIds: [UUID]
-    var createdAt: Date
-    var updatedAt: Date
+    var id: UUID = UUID()
+    @Attribute(.allowsCloudEncryption) var displayName: String = ""
+    @Attribute(.allowsCloudEncryption) var placeKind: String?
+    @Attribute(.allowsCloudEncryption) var locationHint: String?
+    @Attribute(.allowsCloudEncryption) var summary: String = ""
+    var confidence: Double = 0
+    var sourceStoryIds: [UUID] = []
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),
@@ -605,13 +605,13 @@ final class Place {
 
 @Model
 final class Theme {
-    @Attribute(.unique) var id: UUID
-    var name: String
-    var summary: String
-    var confidence: Double
-    var sourceStoryIds: [UUID]
-    var createdAt: Date
-    var updatedAt: Date
+    var id: UUID = UUID()
+    @Attribute(.allowsCloudEncryption) var name: String = ""
+    @Attribute(.allowsCloudEncryption) var summary: String = ""
+    var confidence: Double = 0
+    var sourceStoryIds: [UUID] = []
+    var createdAt: Date = Date()
+    var updatedAt: Date = Date()
 
     init(
         id: UUID = UUID(),

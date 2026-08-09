@@ -6,6 +6,7 @@ import UIKit
 
 struct SettingsHomeView: View {
     let userProfile: UserProfile
+    @EnvironmentObject private var cloudArchiveStatus: CloudArchiveStatusMonitor
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @Query private var vocabularyEntries: [VocabularyEntry]
@@ -39,6 +40,20 @@ struct SettingsHomeView: View {
                         )
                     }
                     .accessibilityIdentifier("journalStyleSettingsLink")
+                }
+
+                Section {
+                    LabeledContent {
+                        Text(cloudArchiveStatus.status.settingsTitle)
+                            .foregroundStyle(cloudArchiveStatus.status.settingsColor)
+                    } label: {
+                        Label("Journal & Transcripts", systemImage: "icloud")
+                    }
+                    .accessibilityIdentifier("iCloudArchiveStatus")
+                } header: {
+                    Text("Private iCloud Archive")
+                } footer: {
+                    Text(cloudArchiveStatus.status.settingsDetail)
                 }
 
                 Section {
@@ -86,10 +101,14 @@ struct SettingsHomeView: View {
             .navigationTitle("Settings")
             .task {
                 refreshPermissionStates()
+                await cloudArchiveStatus.refreshAccountStatus()
             }
             .onChange(of: scenePhase) { _, newPhase in
                 if newPhase == .active {
                     refreshPermissionStates()
+                    Task {
+                        await cloudArchiveStatus.refreshAccountStatus()
+                    }
                 }
             }
         }
@@ -175,6 +194,67 @@ private struct SettingsPermissionRow: View {
                 .foregroundStyle(permission.color)
         } label: {
             Label(title, systemImage: systemImage)
+        }
+    }
+}
+
+private extension CloudArchiveStatusSnapshot {
+    var settingsTitle: String {
+        switch displayState {
+        case .checkingAccount:
+            "Checking…"
+        case .accountUnavailable(let accountState, _):
+            switch accountState {
+            case .noAccount:
+                "Not Signed In"
+            case .restricted:
+                "Restricted"
+            case .temporarilyUnavailable, .couldNotDetermine, .checking, .available:
+                "Unavailable"
+            }
+        case .preparing:
+            "Preparing…"
+        case .restoring:
+            "Restoring…"
+        case .syncing:
+            "Syncing…"
+        case .paused:
+            "Waiting to Sync"
+        case .readyToSync:
+            "Ready to Sync"
+        case .synced(let date):
+            "Synced \(date.formatted(date: .abbreviated, time: .shortened))"
+        }
+    }
+
+    var settingsColor: Color {
+        switch displayState {
+        case .synced:
+            .green
+        case .accountUnavailable, .paused:
+            .orange
+        default:
+            .secondary
+        }
+    }
+
+    var settingsDetail: String {
+        switch displayState {
+        case .accountUnavailable(.noAccount, _):
+            "Sign in to iCloud to protect and restore your journal. Existing entries remain saved on this iPhone."
+        case .accountUnavailable:
+            "iCloud is currently unavailable. Lore keeps saving locally and will retry when iCloud is available."
+        case .paused(let issue, _):
+            switch issue {
+            case .operationFailed(_, .quotaExceeded):
+                "Your iCloud storage is full. Lore keeps saving locally, but new changes cannot sync until space is available."
+            case .operationFailed(_, .notAuthenticated):
+                "Sign in to iCloud to resume syncing. Existing entries remain saved on this iPhone."
+            default:
+                "Lore keeps saving locally and will retry automatically."
+            }
+        default:
+            "Journal entries, transcripts, profile, and vocabulary sync through your private iCloud database. Recordings and pending processing stay on this iPhone."
         }
     }
 }
@@ -535,13 +615,13 @@ private struct AboutLoreView: View {
         Form {
             Section {
                 LabeledContent("Version", value: version)
-                LabeledContent("Archive", value: "On-device")
+                LabeledContent("Archive", value: "Private iCloud")
             } footer: {
                 Text("Lore is a private, voice-first journal that turns faithful transcripts into an evolving life story.")
             }
 
             Section("How processing works") {
-                Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks AI for journal writing. Lore does not keep this content in its server database; finished transcripts and stories stay on this iPhone.")
+                Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks AI for journal writing. Lore does not keep this content in its server database; finished transcripts and stories sync through your private iCloud database.")
                     .foregroundStyle(.secondary)
             }
         }
@@ -553,6 +633,7 @@ private struct AboutLoreView: View {
 #Preview("Settings") {
     SettingsHomeView(userProfile: UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994))
     .modelContainer(LoreModelContainer.preview)
+    .environmentObject(CloudArchiveStatusMonitor(startsImmediately: false))
 }
 
 #Preview("Vocabulary") {

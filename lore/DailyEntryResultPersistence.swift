@@ -1,46 +1,46 @@
 import Foundation
 import SwiftData
 
-/// An immutable, local-only snapshot of one completed daily-entry generation.
+/// An immutable, privately synced snapshot of one completed daily-entry generation.
 ///
 /// The canonical response and each structured section are stored as JSON so
 /// future app versions can reinterpret memory candidates and review signals
 /// without contacting the provider again. This artifact never contains audio.
 @Model
 final class DailyEntryResultArtifact {
-    @Attribute(.unique) private(set) var id: UUID
-    @Attribute(.unique) private(set) var jobId: UUID
-    private(set) var storyId: UUID
-    private(set) var transcriptArtifactId: UUID
-    private(set) var transcriptVersionId: UUID
-    private(set) var biographyFragmentId: UUID
-    private(set) var revision: Int
+    private(set) var id: UUID = UUID()
+    private(set) var jobId: UUID = UUID()
+    private(set) var storyId: UUID = UUID()
+    private(set) var transcriptArtifactId: UUID = UUID()
+    private(set) var transcriptVersionId: UUID = UUID()
+    private(set) var biographyFragmentId: UUID = UUID()
+    private(set) var revision: Int = 0
     private(set) var supersedesArtifactId: UUID?
-    private(set) var schemaVersion: String
-    private(set) var promptVersion: String
-    private(set) var requestId: String
-    private(set) var title: String
-    private(set) var prose: String
-    private(set) var responseJSON: String
-    private(set) var entryJSON: String
-    private(set) var memoryCandidatesJSON: String
-    private(set) var uncertaintiesJSON: String
-    private(set) var sensitiveOmissionsJSON: String
-    private(set) var qualityFlagsJSON: String
-    private(set) var followUpQuestionsJSON: String
-    private(set) var provenanceJSON: String
-    private(set) var providerId: String
-    private(set) var providerModelAlias: String
-    private(set) var providerModelId: String
-    private(set) var providerModelPolicyVersion: String
+    private(set) var schemaVersion: String = ""
+    private(set) var promptVersion: String = ""
+    private(set) var requestId: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var title: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var prose: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var responseJSON: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var entryJSON: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var memoryCandidatesJSON: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var uncertaintiesJSON: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var sensitiveOmissionsJSON: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var qualityFlagsJSON: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var followUpQuestionsJSON: String = ""
+    @Attribute(.allowsCloudEncryption) private(set) var provenanceJSON: String = ""
+    private(set) var providerId: String = ""
+    private(set) var providerModelAlias: String = ""
+    private(set) var providerModelId: String = ""
+    private(set) var providerModelPolicyVersion: String = ""
     private(set) var providerRequestId: String?
-    private(set) var processedAt: Date
-    private(set) var processingDurationMilliseconds: Int
-    private(set) var retentionModeValue: String
-    private(set) var maximumRetentionSeconds: Int
-    private(set) var retentionPolicyVersion: String
-    private(set) var retentionAttestedAt: Date
-    private(set) var createdAt: Date
+    private(set) var processedAt: Date = Date()
+    private(set) var processingDurationMilliseconds: Int = 0
+    private(set) var retentionModeValue: String = ""
+    private(set) var maximumRetentionSeconds: Int = 0
+    private(set) var retentionPolicyVersion: String = ""
+    private(set) var retentionAttestedAt: Date = Date()
+    private(set) var createdAt: Date = Date()
 
     init(
         id: UUID = UUID(),
