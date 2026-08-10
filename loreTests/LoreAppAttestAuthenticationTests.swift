@@ -45,6 +45,54 @@ struct LoreAppAttestAuthenticationTests {
         ])
         #expect(await api.attestationSubmissions.count == 1)
         #expect(await api.assertionSubmissions.isEmpty)
+        #expect(await keyStore.pendingEnrollment == nil)
+    }
+
+    @Test func serverUnavailableRetriesTheSamePendingKeyChallengeAndHash() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let challenge = makeChallenge(
+            id: "retryable-attestation-challenge",
+            bytes: Data(repeating: 0x4D, count: 32),
+            purpose: .attestation,
+            expiresAt: now.addingTimeInterval(300)
+        )
+        let session = makeSession(
+            token: "recovered-session-token-with-at-least-forty-characters",
+            expiresAt: now.addingTimeInterval(600)
+        )
+        let service = FakeAppAttestService(
+            generatedKeyId: "pending-secure-key",
+            attestationErrors: [.serverUnavailable]
+        )
+        let keyStore = FakeAppAttestKeyStore()
+        let api = FakeAppAttestAPI(
+            attestationChallenge: challenge,
+            assertionChallenge: challenge,
+            attestationSession: session,
+            assertionSession: session
+        )
+        let authorizer = LoreAppAttestSessionAuthorizer(
+            service: service,
+            keyStore: keyStore,
+            api: api,
+            now: { now }
+        )
+
+        await #expect(throws: LoreAppAttestError.serverUnavailable) {
+            _ = try await authorizer.authorizationHeaderValue()
+        }
+        let pendingAfterFailure = try #require(await keyStore.pendingEnrollment)
+        let header = try await authorizer.authorizationHeaderValue()
+        let expectedHash = Data(SHA256.hash(data: Data(challenge.challenge.utf8)))
+
+        #expect(header == "Bearer recovered-session-token-with-at-least-forty-characters")
+        #expect(pendingAfterFailure.keyId == "pending-secure-key")
+        #expect(pendingAfterFailure.challenge == challenge)
+        #expect(await service.generatedKeyCount == 1)
+        #expect(await service.attestationHashes == [expectedHash, expectedHash])
+        #expect(await api.challengeRequests.count == 1)
+        #expect(await keyStore.keyId == "pending-secure-key")
+        #expect(await keyStore.pendingEnrollment == nil)
     }
 
     @Test func persistedKeyCreatesAssertionOverCanonicalClientData() async throws {
@@ -474,6 +522,7 @@ private actor FakeAppAttestService: LoreAppAttestServicing {
     let supported: Bool
     let generatedKeyId: String
     let assertionError: LoreAppAttestError?
+    var attestationErrors: [LoreAppAttestError]
     private(set) var generatedKeyCount = 0
     private(set) var attestationHashes: [Data] = []
     private(set) var assertionHashes: [Data] = []
@@ -481,10 +530,12 @@ private actor FakeAppAttestService: LoreAppAttestServicing {
     init(
         generatedKeyId: String,
         isSupported: Bool = true,
+        attestationErrors: [LoreAppAttestError] = [],
         assertionError: LoreAppAttestError? = nil
     ) {
         self.generatedKeyId = generatedKeyId
         supported = isSupported
+        self.attestationErrors = attestationErrors
         self.assertionError = assertionError
     }
 
@@ -495,8 +546,11 @@ private actor FakeAppAttestService: LoreAppAttestServicing {
         return generatedKeyId
     }
 
-    func attestKey(_ keyId: String, clientDataHash: Data) -> Data {
+    func attestKey(_ keyId: String, clientDataHash: Data) throws -> Data {
         attestationHashes.append(clientDataHash)
+        if !attestationErrors.isEmpty {
+            throw attestationErrors.removeFirst()
+        }
         return Data("attestation".utf8)
     }
 
@@ -509,6 +563,7 @@ private actor FakeAppAttestService: LoreAppAttestServicing {
 
 private actor FakeAppAttestKeyStore: LoreAppAttestKeyStoring {
     private(set) var keyId: String?
+    private(set) var pendingEnrollment: LoreAppAttestPendingEnrollment?
     private(set) var deleteCount = 0
 
     init(keyId: String? = nil) {
@@ -521,6 +576,11 @@ private actor FakeAppAttestKeyStore: LoreAppAttestKeyStoring {
         keyId = nil
         deleteCount += 1
     }
+    func loadPendingEnrollment() -> LoreAppAttestPendingEnrollment? { pendingEnrollment }
+    func savePendingEnrollment(_ enrollment: LoreAppAttestPendingEnrollment) {
+        pendingEnrollment = enrollment
+    }
+    func deletePendingEnrollment() { pendingEnrollment = nil }
 }
 
 private actor FakeAppAttestAPI: LoreAppAttestAPIClient {

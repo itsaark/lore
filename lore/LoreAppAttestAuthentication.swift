@@ -16,6 +16,9 @@ enum LoreAppAttestError: Error, LocalizedError, Equatable {
     case unsupported
     case keyStorageFailed
     case invalidKey
+    case invalidInput
+    case serverUnavailable
+    case unknownSystemFailure
     case invalidChallenge
     case invalidResponse
     case rateLimited(retryAfterSeconds: Int?)
@@ -31,6 +34,12 @@ enum LoreAppAttestError: Error, LocalizedError, Equatable {
             "Lore could not secure this device's app identity."
         case .invalidKey:
             "Lore's secure app identity is no longer valid."
+        case .invalidInput:
+            "Lore could not prepare a valid secure session request."
+        case .serverUnavailable:
+            "Apple's secure app verification service is temporarily unavailable."
+        case .unknownSystemFailure:
+            "This iPhone could not complete secure app verification."
         case .invalidChallenge, .invalidResponse:
             "Lore's secure session service returned an invalid response."
         case .rateLimited:
@@ -92,12 +101,18 @@ actor LoreAppleAppAttestService: LoreAppAttestServicing {
             return .unavailable
         }
         switch value.code {
+        case 0:
+            return .unknownSystemFailure
         case 1:
             return .unsupported
+        case 2:
+            return .invalidInput
         case 3:
             // DCErrorInvalidKey. Keep this explicit because DeviceCheck has
             // used both NSError and Swift-struct overlays across SDK releases.
             return .invalidKey
+        case 4:
+            return .serverUnavailable
         default:
             return .unavailable
         }
@@ -108,31 +123,29 @@ protocol LoreAppAttestKeyStoring: Sendable {
     func loadKeyId() async throws -> String?
     func saveKeyId(_ keyId: String) async throws
     func deleteKeyId() async throws
+    func loadPendingEnrollment() async throws -> LoreAppAttestPendingEnrollment?
+    func savePendingEnrollment(_ enrollment: LoreAppAttestPendingEnrollment) async throws
+    func deletePendingEnrollment() async throws
+}
+
+struct LoreAppAttestPendingEnrollment: Codable, Equatable, Sendable {
+    let keyId: String
+    let challenge: LoreAppAttestChallenge
+    var attestationObject: Data?
 }
 
 actor LoreKeychainAppAttestKeyStore: LoreAppAttestKeyStoring {
     private let service: String
-    private let account = "app-attest-key-id"
+    private let keyIdAccount = "app-attest-key-id"
+    private let pendingEnrollmentAccount = "app-attest-pending-enrollment"
 
     init(service: String = "cascadianpines.lore.app-attest") {
         self.service = service
     }
 
     func loadKeyId() throws -> String? {
-        var query = baseQuery
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound {
-            return nil
-        }
-        guard
-            status == errSecSuccess,
-            let data = result as? Data,
-            let keyId = String(data: data, encoding: .utf8),
-            !keyId.isEmpty
-        else {
+        guard let data = try loadData(account: keyIdAccount) else { return nil }
+        guard let keyId = String(data: data, encoding: .utf8), !keyId.isEmpty else {
             throw LoreAppAttestError.keyStorageFailed
         }
         return keyId
@@ -147,9 +160,58 @@ actor LoreKeychainAppAttestKeyStore: LoreAppAttestKeyStoring {
         else {
             throw LoreAppAttestError.keyStorageFailed
         }
+        try saveData(data, account: keyIdAccount)
+    }
 
+    func deleteKeyId() throws {
+        try deleteData(account: keyIdAccount)
+    }
+
+    func loadPendingEnrollment() throws -> LoreAppAttestPendingEnrollment? {
+        guard let data = try loadData(account: pendingEnrollmentAccount) else { return nil }
+        do {
+            return try JSONDecoder().decode(LoreAppAttestPendingEnrollment.self, from: data)
+        } catch {
+            throw LoreAppAttestError.keyStorageFailed
+        }
+    }
+
+    func savePendingEnrollment(_ enrollment: LoreAppAttestPendingEnrollment) throws {
+        do {
+            try saveData(JSONEncoder().encode(enrollment), account: pendingEnrollmentAccount)
+        } catch let error as LoreAppAttestError {
+            throw error
+        } catch {
+            throw LoreAppAttestError.keyStorageFailed
+        }
+    }
+
+    func deletePendingEnrollment() throws {
+        try deleteData(account: pendingEnrollmentAccount)
+    }
+
+    private func loadData(account: String) throws -> Data? {
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard
+            status == errSecSuccess,
+            let data = result as? Data
+        else {
+            throw LoreAppAttestError.keyStorageFailed
+        }
+        return data
+    }
+
+    private func saveData(_ data: Data, account: String) throws {
         let attributes: [String: Any] = [kSecValueData as String: data]
-        let updateStatus = SecItemUpdate(baseQuery as CFDictionary, attributes as CFDictionary)
+        let query = baseQuery(account: account)
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
         if updateStatus == errSecSuccess {
             return
         }
@@ -157,7 +219,7 @@ actor LoreKeychainAppAttestKeyStore: LoreAppAttestKeyStoring {
             throw LoreAppAttestError.keyStorageFailed
         }
 
-        var addQuery = baseQuery
+        var addQuery = query
         addQuery[kSecValueData as String] = data
         addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         guard SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess else {
@@ -165,14 +227,14 @@ actor LoreKeychainAppAttestKeyStore: LoreAppAttestKeyStoring {
         }
     }
 
-    func deleteKeyId() throws {
-        let status = SecItemDelete(baseQuery as CFDictionary)
+    private func deleteData(account: String) throws {
+        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw LoreAppAttestError.keyStorageFailed
         }
     }
 
-    private var baseQuery: [String: Any] {
+    private func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -549,9 +611,12 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
     private func establishSession() async throws -> LoreAppAttestSession {
         if let keyId = try await keyStore.loadKeyId() {
             do {
-                return try await establishAssertionSession(keyId: keyId)
+                let session = try await establishAssertionSession(keyId: keyId)
+                try await keyStore.deletePendingEnrollment()
+                return session
             } catch LoreAppAttestError.invalidKey {
                 try await keyStore.deleteKeyId()
+                try await keyStore.deletePendingEnrollment()
                 return try await establishAttestedSession()
             }
         }
@@ -559,27 +624,66 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
     }
 
     private func establishAttestedSession() async throws -> LoreAppAttestSession {
-        let keyId = try await service.generateKey()
-        let challenge = try await api.challenge(purpose: .attestation, keyId: nil)
-        guard
-            challenge.expiresAt > now(),
-            !challenge.challenge.isEmpty
-        else {
-            throw LoreAppAttestError.invalidChallenge
+        var enrollment = try await keyStore.loadPendingEnrollment()
+        if (enrollment?.challenge.expiresAt ?? .distantPast) <= now() {
+            try await keyStore.deletePendingEnrollment()
+            enrollment = nil
+        }
+
+        if enrollment == nil {
+            let keyId = try await service.generateKey()
+            let challenge = try await api.challenge(purpose: .attestation, keyId: nil)
+            guard
+                challenge.expiresAt > now(),
+                !challenge.challenge.isEmpty
+            else {
+                throw LoreAppAttestError.invalidChallenge
+            }
+            enrollment = LoreAppAttestPendingEnrollment(
+                keyId: keyId,
+                challenge: challenge,
+                attestationObject: nil
+            )
+            try await keyStore.savePendingEnrollment(enrollment!)
+        }
+
+        guard var enrollment else {
+            throw LoreAppAttestError.keyStorageFailed
         }
         // The backend defines the base64url challenge string itself as the
         // one-time data value, so both sides hash its UTF-8 bytes.
-        let clientDataHash = Data(SHA256.hash(data: Data(challenge.challenge.utf8)))
-        let attestation = try await service.attestKey(keyId, clientDataHash: clientDataHash)
+        let clientDataHash = Data(SHA256.hash(data: Data(enrollment.challenge.challenge.utf8)))
+        let attestation: Data
+        if let savedAttestation = enrollment.attestationObject {
+            attestation = savedAttestation
+        } else {
+            do {
+                attestation = try await service.attestKey(
+                    enrollment.keyId,
+                    clientDataHash: clientDataHash
+                )
+            } catch LoreAppAttestError.serverUnavailable {
+                // Apple requires a server-unavailable retry to reuse the exact
+                // key and client-data hash so the device risk metric is stable.
+                throw LoreAppAttestError.serverUnavailable
+            } catch {
+                // Apple recommends discarding the key identifier for every
+                // attestation error other than server-unavailable.
+                try await keyStore.deletePendingEnrollment()
+                throw error
+            }
+            enrollment.attestationObject = attestation
+            try await keyStore.savePendingEnrollment(enrollment)
+        }
+
         let newSession = try await api.submitAttestation(
-            challenge: challenge,
-            keyId: keyId,
+            challenge: enrollment.challenge,
+            keyId: enrollment.keyId,
             attestationObject: attestation
         )
         try validate(newSession)
-        // Persist only after the server accepts Apple's attestation. An
-        // orphaned generated key is safer than treating an unverified key as registered.
-        try await keyStore.saveKeyId(keyId)
+        try await keyStore.saveKeyId(enrollment.keyId)
+        try await keyStore.deletePendingEnrollment()
         return newSession
     }
 

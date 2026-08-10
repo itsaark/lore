@@ -373,6 +373,18 @@ final class ProcessingJob {
         updatedAt = date
     }
 
+    /// Gives a person an explicit recovery path after the automatic attempt
+    /// ceiling is reached, without creating a duplicate idempotency identity.
+    func restartAfterUserRequest(at date: Date = Date()) {
+        attemptCount = 0
+        stateValue = ProcessingJobState.queued.rawValue
+        completedAt = nil
+        nextAttemptAt = date
+        leaseExpiresAt = nil
+        lastErrorCode = nil
+        updatedAt = date
+    }
+
     func acknowledgeRemoteContentDeletion(at date: Date = Date()) {
         deletionStateValue = RemoteContentDeletionState.acknowledged.rawValue
         remoteContentDeletedAt = date

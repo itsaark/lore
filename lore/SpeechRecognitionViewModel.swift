@@ -184,6 +184,36 @@ class SpeechRecognitionViewModel: ObservableObject {
         refreshRemoteProcessingPolicy(resumeJobs: true)
     }
 
+    func retryTranscription(for story: Story) {
+        guard let modelContext else { return }
+
+        do {
+            let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+            let matchingJobs = jobs
+                .filter { $0.kind == .transcription && $0.storyId == story.id }
+                .sorted(by: { $0.createdAt > $1.createdAt })
+            guard let job = matchingJobs.first,
+                  job.state == .failed || job.state == .cancelled else {
+                return
+            }
+            let hasRetainedAudio = try modelContext.fetch(FetchDescriptor<AudioAsset>())
+                .contains { $0.id == story.id && !$0.isDeleted }
+            guard hasRetainedAudio else { return }
+
+            let date = Date()
+            job.restartAfterUserRequest(at: date)
+            story.processingStatus = "transcriptionPending"
+            story.updatedAt = date
+            try modelContext.save()
+            loadStories()
+            Task { [weak self] in
+                await self?.resumePendingTranscriptionJobs()
+            }
+        } catch {
+            setError("Lore could not retry this saved recording: \(error.localizedDescription)")
+        }
+    }
+
     private func refreshRemoteProcessingPolicy(resumeJobs: Bool) {
         transcriptionRoute = resolvedCaptureRoute()
         refreshAuthorizationState()
@@ -1500,6 +1530,12 @@ class SpeechRecognitionViewModel: ObservableObject {
             return "audio_file_missing"
         case RemoteSpeechTranscriptionError.emptyTranscript:
             return "empty_remote_transcript"
+        case let LoreBackendProcessingError.rejected(code, _, _):
+            return code
+        case LoreBackendProcessingError.transportUnavailable:
+            return "remote_transport_unavailable"
+        case LoreBackendProcessingError.rateLimited:
+            return "remote_rate_limited"
         default:
             return "remote_transcription_failed"
         }

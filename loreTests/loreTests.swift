@@ -214,6 +214,29 @@ struct loreTests {
         #expect(job.lastErrorCode == "interrupted_attempt")
     }
 
+    @Test func userRequestedRestartResetsATerminalTranscriptionJob() {
+        let job = ProcessingJob(
+            idempotencyKey: "transcription:retry",
+            kind: .transcription,
+            state: .failed,
+            route: .remote,
+            attemptCount: 3,
+            maximumAttempts: 3,
+            completedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            lastErrorCode: "app_attest_server_unavailable"
+        )
+        let restartDate = Date(timeIntervalSince1970: 1_800_000_100)
+
+        job.restartAfterUserRequest(at: restartDate)
+
+        #expect(job.state == .queued)
+        #expect(job.attemptCount == 0)
+        #expect(job.completedAt == nil)
+        #expect(job.nextAttemptAt == restartDate)
+        #expect(job.lastErrorCode == nil)
+        #expect(job.isReadyForAttempt(at: restartDate))
+    }
+
     @Test func remoteProcessingContractsRoundTripWithoutProviderCredentials() throws {
         let request = DailyEntryGenerationRequest(
             jobId: UUID(),

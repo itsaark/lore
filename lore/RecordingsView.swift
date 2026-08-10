@@ -117,10 +117,12 @@ struct StoryRowView: View {
 struct StoryDisplayContent {
     let biographyProse: String
     let transcript: String
+    let processingStatus: String
 
     init(story: Story) {
         biographyProse = Self.cleaned(story.biographyProse ?? "")
         transcript = Self.cleaned(story.text)
+        processingStatus = story.processingStatus
     }
 
     var hasBiographyDraft: Bool {
@@ -152,7 +154,15 @@ struct StoryDisplayContent {
     }
 
     var transcriptText: String {
-        hasTranscript ? transcript : "Story with no transcript"
+        guard !hasTranscript else { return transcript }
+        switch processingStatus {
+        case "transcriptionPending", "transcribing":
+            return "Transcription in progress…"
+        case "transcriptionFailed", "transcriptionCancelled":
+            return "Transcription needs attention"
+        default:
+            return "Story with no transcript"
+        }
     }
 
     private static func cleaned(_ text: String) -> String {

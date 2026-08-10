@@ -331,7 +331,15 @@ private struct TranscriptPreviewRow: View {
 
     private var transcript: String {
         let cleaned = story.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? "Transcript unavailable" : cleaned
+        guard cleaned.isEmpty else { return cleaned }
+        switch story.processingStatus {
+        case "transcriptionPending", "transcribing":
+            return "Transcription in progress…"
+        case "transcriptionFailed", "transcriptionCancelled":
+            return "Transcription needs attention"
+        default:
+            return "Transcript unavailable"
+        }
     }
 
     var body: some View {

@@ -244,6 +244,24 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
                 retryable: false,
                 retryAfterSeconds: nil
             )
+        case .invalidInput:
+            .rejected(
+                code: "app_attest_invalid_input",
+                retryable: false,
+                retryAfterSeconds: nil
+            )
+        case .serverUnavailable:
+            .rejected(
+                code: "app_attest_server_unavailable",
+                retryable: true,
+                retryAfterSeconds: nil
+            )
+        case .unknownSystemFailure:
+            .rejected(
+                code: "app_attest_system_failure",
+                retryable: true,
+                retryAfterSeconds: nil
+            )
         case .invalidChallenge, .invalidResponse:
             .invalidResponse(requestId: nil)
         case let .rateLimited(retryAfterSeconds):

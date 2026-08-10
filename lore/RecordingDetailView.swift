@@ -114,11 +114,18 @@ struct StoryDetailView: View {
                         }
                     } else {
                         // View mode - show text
-                        Text(displayContent.transcriptText)
+                        Text(transcriptDisplayText)
                             .font(.body)
                             .foregroundColor(displayContent.hasTranscript ? .primary : .secondary)
                             .lineSpacing(4)
                             .textSelection(.enabled)
+
+                        if canRetryTranscription {
+                            Button("Retry Transcription") {
+                                speechRecognizer.retryTranscription(for: currentStory)
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
                     }
                 }
                 .padding(.horizontal)
@@ -155,6 +162,23 @@ struct StoryDetailView: View {
 
     private var currentStory: Story {
         speechRecognizer.stories.first(where: { $0.id == story.id }) ?? story
+    }
+
+    private var transcriptDisplayText: String {
+        guard !displayContent.hasTranscript else { return displayContent.transcriptText }
+        switch currentStory.processingStatus {
+        case "transcriptionPending", "transcribing":
+            return "Lore is securely connecting and transcribing this saved recording."
+        case "transcriptionFailed", "transcriptionCancelled":
+            return "Lore couldn’t transcribe this recording. The saved audio is still on this iPhone."
+        default:
+            return displayContent.transcriptText
+        }
+    }
+
+    private var canRetryTranscription: Bool {
+        !displayContent.hasTranscript
+            && ["transcriptionFailed", "transcriptionCancelled"].contains(currentStory.processingStatus)
     }
 }
 
