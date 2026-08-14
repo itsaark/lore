@@ -35,22 +35,38 @@ struct LoreRemoteAudioFileLoader: Sendable {
         }
 
         let attributes = try FileManager.default.attributesOfItem(atPath: sourceURL.path)
-        guard let byteCount = attributes[.size] as? NSNumber else {
-            throw RemoteSpeechTranscriptionError.audioFileMissing
+        guard let byteCount = attributes[.size] as? NSNumber,
+              byteCount.intValue > 0 else {
+            throw RemoteSpeechTranscriptionError.audioFileUnreadable
         }
         let asset = AVURLAsset(url: sourceURL)
-        let duration = try await asset.load(.duration)
+        let duration: CMTime
+        do {
+            duration = try await asset.load(.duration)
+        } catch {
+            throw RemoteSpeechTranscriptionError.audioFileUnreadable
+        }
         let durationSeconds = duration.seconds
         guard durationSeconds.isFinite, durationSeconds > 0 else {
-            throw RemoteSpeechTranscriptionError.audioFileMissing
+            throw RemoteSpeechTranscriptionError.audioFileUnreadable
         }
+        print(
+            "Transcription audio inspected: \(sourceURL.pathExtension.lowercased()), "
+                + "\(byteCount.intValue) bytes, \(durationSeconds) seconds"
+        )
 
         if Self.supportedExtension(sourceURL.pathExtension),
            byteCount.intValue <= LoreBackendHTTPClient.maximumAudioChunkBytes {
+            let bytes: Data
+            do {
+                bytes = try Data(contentsOf: sourceURL, options: [.mappedIfSafe])
+            } catch {
+                throw RemoteSpeechTranscriptionError.audioFileUnreadable
+            }
             return [
                 LoadedRemoteAudioChunk(
                     audio: RemoteAudioPayload(
-                        bytes: try Data(contentsOf: sourceURL, options: [.mappedIfSafe]),
+                        bytes: bytes,
                         mimeType: Self.mimeType(for: sourceURL.pathExtension),
                         filenameExtension: sourceURL.pathExtension,
                         durationSeconds: durationSeconds
@@ -145,6 +161,8 @@ struct LoreRemoteAudioFileLoader: Sendable {
             throw CancellationError()
         } catch {
             try? FileManager.default.removeItem(at: outputURL)
+            let value = error as NSError
+            print("Audio conversion failed: \(value.domain) \(value.code)")
             throw RemoteSpeechTranscriptionError.audioTranscodeFailed
         }
     }

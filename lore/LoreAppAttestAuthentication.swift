@@ -72,7 +72,7 @@ actor LoreAppleAppAttestService: LoreAppAttestServicing {
         do {
             return try await service.generateKey()
         } catch {
-            throw Self.map(error)
+            throw Self.map(error, operation: "generate key")
         }
     }
 
@@ -80,7 +80,7 @@ actor LoreAppleAppAttestService: LoreAppAttestServicing {
         do {
             return try await service.attestKey(keyId, clientDataHash: clientDataHash)
         } catch {
-            throw Self.map(error)
+            throw Self.map(error, operation: "attest key")
         }
     }
 
@@ -88,15 +88,16 @@ actor LoreAppleAppAttestService: LoreAppAttestServicing {
         do {
             return try await service.generateAssertion(keyId, clientDataHash: clientDataHash)
         } catch {
-            throw Self.map(error)
+            throw Self.map(error, operation: "generate assertion")
         }
     }
 
-    private static func map(_ error: Error) -> LoreAppAttestError {
+    private static func map(_ error: Error, operation: String) -> LoreAppAttestError {
         if error is CancellationError {
             return .cancelled
         }
         let value = error as NSError
+        print("App Attest \(operation) failed: \(value.domain) \(value.code)")
         guard value.domain == DCErrorDomain else {
             return .unavailable
         }
@@ -614,7 +615,15 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
                 let session = try await establishAssertionSession(keyId: keyId)
                 try await keyStore.deletePendingEnrollment()
                 return session
-            } catch LoreAppAttestError.invalidKey {
+            } catch let error as LoreAppAttestError
+                where error == .invalidKey || error == .invalidInput {
+                // Keychain can survive an app reinstall while the App Attest
+                // key it references does not. DeviceCheck commonly reports
+                // that stale identifier as invalidKey, but some OS versions
+                // report invalidInput while generating the first assertion.
+                // Rotate here only at the persisted-key assertion boundary;
+                // fresh enrollment has its own separately bounded recovery.
+                print("App Attest persisted identity is unusable; enrolling a replacement key")
                 try await keyStore.deleteKeyId()
                 try await keyStore.deletePendingEnrollment()
                 return try await establishAttestedSession()
@@ -623,7 +632,9 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
         return try await establishAttestedSession()
     }
 
-    private func establishAttestedSession() async throws -> LoreAppAttestSession {
+    private func establishAttestedSession(
+        allowFreshKeyRecovery: Bool = true
+    ) async throws -> LoreAppAttestSession {
         var enrollment = try await keyStore.loadPendingEnrollment()
         if (enrollment?.challenge.expiresAt ?? .distantPast) <= now() {
             try await keyStore.deletePendingEnrollment()
@@ -666,6 +677,16 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
                 // Apple requires a server-unavailable retry to reuse the exact
                 // key and client-data hash so the device risk metric is stable.
                 throw LoreAppAttestError.serverUnavailable
+            } catch let error as LoreAppAttestError
+                where error == .invalidKey || error == .invalidInput {
+                // This generated key cannot be attested. Discard it as Apple
+                // directs for non-server-unavailable failures and make one
+                // clean enrollment attempt, which also recovers an interrupted
+                // install that left an unusable pending identifier in Keychain.
+                try await keyStore.deletePendingEnrollment()
+                guard allowFreshKeyRecovery else { throw error }
+                print("App Attest pending identity is unusable; enrolling one replacement key")
+                return try await establishAttestedSession(allowFreshKeyRecovery: false)
             } catch {
                 // Apple recommends discarding the key identifier for every
                 // attestation error other than server-unavailable.

@@ -128,7 +128,10 @@ struct VoiceCaptureButton: View {
             .frame(width: controlDiameter, height: controlDiameter)
         }
         .buttonStyle(VoiceCaptureButtonStyle())
-        .disabled(!isAvailable || isProcessing)
+        // Keep the control tappable while prior processing finishes so the
+        // action can explain why capture is temporarily unavailable instead
+        // of appearing completely inert.
+        .disabled(!isAvailable)
         .accessibilityLabel(accessibilityTitle)
         .accessibilityHint(isRecording ? "Ends and saves this voice note" : "Begins a new voice note")
         .accessibilityValue(isRecording ? "Recording" : isProcessing ? "Processing" : "Not recording")

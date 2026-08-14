@@ -21,7 +21,18 @@ struct NotesHomeView: View {
                     VStack {
                         Spacer()
 
-                        if !speechRecognizer.isAuthorized {
+                        if let message = speechRecognizer.captureFeedbackMessage {
+                            Text(message)
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .background(.thinMaterial, in: Capsule())
+                                .padding(.horizontal, 28)
+                                .transition(.opacity)
+                                .accessibilityIdentifier("recordingSupportMessage")
+                        } else if !speechRecognizer.isAuthorized {
                             Text("Microphone access is needed to record.")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
@@ -46,6 +57,7 @@ struct NotesHomeView: View {
                 }
                 .toolbar(.hidden, for: .navigationBar)
                 .animation(.easeInOut(duration: 0.22), value: speechRecognizer.isAuthorized)
+                .animation(.easeInOut(duration: 0.22), value: speechRecognizer.captureFeedbackMessage)
             }
         }
     }

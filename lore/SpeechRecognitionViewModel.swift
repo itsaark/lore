@@ -8,7 +8,6 @@
 import Foundation
 import AVFoundation
 import SwiftUI
-import Accelerate
 import SwiftData
 
 enum TranscriptionJobRunnerError: Error, LocalizedError, Equatable {
@@ -16,6 +15,7 @@ enum TranscriptionJobRunnerError: Error, LocalizedError, Equatable {
     case storyNotFound
     case audioAssetNotFound
     case audioFileMissing
+    case audioFileUnreadable
     case jobNotReady
     case jobCancelled
 
@@ -27,6 +27,8 @@ enum TranscriptionJobRunnerError: Error, LocalizedError, Equatable {
             return "Lore could not find the saved recording for this transcription job."
         case .audioAssetNotFound, .audioFileMissing:
             return "Lore could not find the locally saved audio for this transcription job."
+        case .audioFileUnreadable:
+            return "Lore could not finish saving a readable recording. Please record the story again."
         case .jobNotReady:
             return "This transcription job is not ready to run yet."
         case .jobCancelled:
@@ -50,6 +52,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     /// Diagnostic context for tests and logs. Background processing failures
     /// must never drive the focused recording surface directly.
     private(set) var errorMessage: String?
+    @Published private(set) var captureFeedbackMessage: String?
     @Published var isAuthorized = false
     @Published var stories: [Story] = []
     @Published private(set) var dailyBiographyEntries: [DailyBiographyEntry] = []
@@ -67,13 +70,14 @@ class SpeechRecognitionViewModel: ObservableObject {
     private let remoteTranscriber: any RemoteSpeechTranscribing
     private let networkConnectionProvider: any SpeechNetworkConnectionProviding
     private let localeIdentifier: String
-    private let audioEngine = AVAudioEngine()
+    private var audioRecorder: AVAudioRecorder?
     private var recordingStartTime: Date?
     private var currentRecordingAudioFileURL: URL?
     private var audioLevelTimer: Timer?
     private var audioLevelBuffer: [Float] = []
     private var audioLevelEnvelope = AudioLevelEnvelope()
     private var pendingSaveTask: Task<Void, Never>?
+    private var recordingSaveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var transcriptionRecoveryTask: Task<Void, Never>?
     private var dailyEntryRecoveryTask: Task<Void, Never>?
     private var dailyBiographyRecoveryTask: Task<Void, Never>?
@@ -135,6 +139,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         isProcessingAudio = false
         isAwaitingRemoteTranscription = false
         errorMessage = nil
+        captureFeedbackMessage = nil
         currentAudioLevel = 0.0
         currentAudioResponseLevel = 0.0
         stopAudioLevelTimer()
@@ -219,7 +224,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         refreshAuthorizationState()
 
         if isAwaitingRemoteTranscription,
-           remoteWorkAvailability(requiresAudioUpload: true) != .permitted {
+           remoteWorkAvailability(requiresAudioUpload: true) == .waitingForConsent {
             pendingSaveTask?.cancel()
         }
 
@@ -307,7 +312,9 @@ class SpeechRecognitionViewModel: ObservableObject {
                         modelContext: modelContext,
                         now: now
                     )
-                    if shouldBootstrapDailyEntry,
+                    let hasDailyEntryJob = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
+                        .contains { $0.kind == .dailyEntry && $0.storyId == story.id }
+                    if !hasDailyEntryJob,
                        story.biographyProse == nil,
                        !story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         await processCapturedStory(story)
@@ -922,7 +929,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         print("🎤 Attempting to start recording...")
 
         guard pendingSaveTask == nil && !isAwaitingRemoteTranscription else {
-            setError("Lore is still securing the previous recording. Please wait a moment.")
+            setCaptureError("Lore is still securing the previous recording. Please wait a moment.")
             return
         }
         
@@ -930,14 +937,14 @@ class SpeechRecognitionViewModel: ObservableObject {
         clearText()
         
         guard AVAudioApplication.shared.recordPermission == .granted else {
-            setError("Microphone access required. Please check Settings.")
+            setCaptureError("Microphone access required. Please check Settings.")
             return
         }
 
         let resolvedRoute = resolvedCaptureRoute()
         if case let .deferred(reason) = resolvedRoute {
             transcriptionRoute = resolvedRoute
-            setError(message(for: reason))
+            setCaptureError(message(for: reason))
             return
         }
 
@@ -951,7 +958,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         } catch {
             discardCurrentAudioFile()
             recordingStartTime = nil
-            setError("Failed to start recording: \(error.localizedDescription)")
+            setCaptureError("Failed to start recording: \(error.localizedDescription)")
             print("❌ Recording failed to start: \(error)")
         }
     }
@@ -964,74 +971,25 @@ class SpeechRecognitionViewModel: ObservableObject {
         print("✅ Audio session configured")
     }
     
-    /// Starts capture to a protected local file that is uploaded after stop.
+    /// Starts capture directly into the backend's preferred M4A format. Using
+    /// AVAudioRecorder gives Stop a deterministic file-closing boundary and
+    /// avoids racing a newly written CAF through an immediate export session.
     private func startAudioCapture() throws {
         recordingStartTime = Date()
-        
-        // Get audio input node
-        let inputNode = audioEngine.inputNode
-
-        // Configure audio tap with enhanced buffer processing for audio level detection
-        let recordingFormat = inputNode.outputFormat(forBus: 0)
         let audioFileURL = try Self.makeAudioFileURL(forStoryID: UUID())
-        let audioFile = try AVAudioFile(forWriting: audioFileURL, settings: recordingFormat.settings)
-        try FileManager.default.setAttributes(
-            [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-            ofItemAtPath: audioFileURL.path
-        )
-        currentRecordingAudioFileURL = audioFileURL
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { [weak self, audioFile] buffer, _ in
-            do {
-                try audioFile.write(from: buffer)
-            } catch {
-                DispatchQueue.main.async {
-                    self?.setError("Failed to save recording audio: \(error.localizedDescription)")
-                }
-            }
-
-            // Meter the same microphone buffer used for recording. RMS follows the
-            // perceived body of speech while peak magnitude catches quiet consonants
-            // and short transients that would otherwise disappear.
-            if let channelData = buffer.floatChannelData?[0], buffer.frameLength > 0 {
-                let sampleCount = vDSP_Length(buffer.frameLength)
-                var rms: Float = 0
-                var peak: Float = 0
-                vDSP_rmsqv(channelData, 1, &rms, sampleCount)
-                vDSP_maxmgv(channelData, 1, &peak, sampleCount)
-                let frameDuration = Double(buffer.frameLength) / recordingFormat.sampleRate
-                let decibels = 20 * log10(rms + Float.leastNonzeroMagnitude)
-                let legacyLevel = max(0, min(1, (decibels + 80) / 80))
-
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    self.audioLevelBuffer.append(legacyLevel)
-                    if self.audioLevelBuffer.count > 10 {
-                        self.audioLevelBuffer.removeFirst()
-                    }
-
-                    if self.isRecording {
-                        self.currentAudioResponseLevel = self.audioLevelEnvelope.process(
-                            rms: rms,
-                            peak: peak,
-                            frameDuration: frameDuration
-                        )
-                    }
-                }
-            }
-
-            // Update audio processing state on main thread
-            DispatchQueue.main.async {
-                self?.isProcessingAudio = true
-            }
+        let recorder = try Self.prepareManagedAudioRecorder(at: audioFileURL)
+        guard recorder.record() else {
+            recorder.stop()
+            recorder.deleteRecording()
+            throw TranscriptionJobRunnerError.audioFileUnreadable
         }
-
-        // Start audio engine
-        audioEngine.prepare()
-        try audioEngine.start()
+        audioRecorder = recorder
+        currentRecordingAudioFileURL = audioFileURL
 
         startAudioLevelTimer()
         isRecording = true
-        print("🎤 Audio engine started, recording in progress")
+        isProcessingAudio = true
+        print("🎤 Audio recorder started, recording in progress")
     }
 
     /// Preserves the original, slower-smoothed signal used by CloudWaveOrb so
@@ -1039,8 +997,21 @@ class SpeechRecognitionViewModel: ObservableObject {
     private func startAudioLevelTimer() {
         audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.isRecording, !self.audioLevelBuffer.isEmpty else { return }
+                guard let self, self.isRecording, let recorder = self.audioRecorder else { return }
+                recorder.updateMeters()
+                let averageDecibels = max(-80, recorder.averagePower(forChannel: 0))
+                let peakDecibels = max(-80, recorder.peakPower(forChannel: 0))
+                let legacyLevel = max(0, min(1, (averageDecibels + 80) / 80))
+                self.audioLevelBuffer.append(legacyLevel)
+                if self.audioLevelBuffer.count > 10 {
+                    self.audioLevelBuffer.removeFirst()
+                }
                 self.currentAudioLevel = self.audioLevelBuffer.reduce(0, +) / Float(self.audioLevelBuffer.count)
+                self.currentAudioResponseLevel = self.audioLevelEnvelope.process(
+                    rms: pow(10, averageDecibels / 20),
+                    peak: pow(10, peakDecibels / 20),
+                    frameDuration: 0.05
+                )
             }
         }
     }
@@ -1057,11 +1028,10 @@ class SpeechRecognitionViewModel: ObservableObject {
         pendingSaveTask?.cancel()
         pendingSaveTask = nil
 
-        // Stop audio engine
-        if audioEngine.isRunning {
-            audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
-        }
+        // AVAudioRecorder.stop() closes and finalizes the M4A before any job can
+        // inspect or upload it.
+        audioRecorder?.stop()
+        audioRecorder = nil
         
         isProcessingAudio = false
         
@@ -1071,12 +1041,13 @@ class SpeechRecognitionViewModel: ObservableObject {
         currentAudioLevel = 0.0
         currentAudioResponseLevel = 0.0
         
-        // Stop audio engine
-        audioEngine.stop()
-
         if shouldSave {
+            beginRecordingSaveBackgroundTask()
             pendingSaveTask = Task { [weak self] in
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    self?.endRecordingSaveBackgroundTask()
+                    return
+                }
                 await self?.saveCurrentRecording()
             }
         } else {
@@ -1102,6 +1073,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     
     /// Saves the current recording session
     private func saveCurrentRecording() async {
+        defer { endRecordingSaveBackgroundTask() }
         guard let startTime = recordingStartTime else { return }
 
         let endTime = Date()
@@ -1115,6 +1087,12 @@ class SpeechRecognitionViewModel: ObservableObject {
         let story: Story
         let job: ProcessingJob
         do {
+            let inspection = try Self.inspectRecordedAudio(at: audioFileURL)
+            print(
+                "Secured recording \(audioFileURL.lastPathComponent): "
+                    + "\(inspection.byteCount) bytes, \(inspection.frameCount) frames, "
+                    + "\(inspection.durationSeconds) seconds"
+            )
             (story, job) = try Self.persistRemoteCaptureForTranscription(
                 startTime: startTime,
                 endTime: endTime,
@@ -1158,6 +1136,23 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
         recordingStartTime = nil
         currentRecordingAudioFileURL = nil
+    }
+
+    private func beginRecordingSaveBackgroundTask() {
+        guard recordingSaveBackgroundTask == .invalid else { return }
+        recordingSaveBackgroundTask = UIApplication.shared.beginBackgroundTask(
+            withName: "Finish recording and transcription"
+        ) { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.endRecordingSaveBackgroundTask()
+            }
+        }
+    }
+
+    private func endRecordingSaveBackgroundTask() {
+        guard recordingSaveBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(recordingSaveBackgroundTask)
+        recordingSaveBackgroundTask = .invalid
     }
 
     static func applyUserCorrection(
@@ -1239,6 +1234,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         case .audioFileMissing:
             state = .failed
             errorCode = "audio_file_missing"
+        case .audioFileUnreadable:
+            state = .failed
+            errorCode = "audio_file_unreadable"
         case .audioTranscodeFailed:
             state = .failed
             errorCode = "audio_transcode_failed"
@@ -1528,12 +1526,16 @@ class SpeechRecognitionViewModel: ObservableObject {
 
     private static func isTerminalTranscriptionError(_ error: Error) -> Bool {
         if let runnerError = error as? TranscriptionJobRunnerError {
-            return runnerError == .audioAssetNotFound || runnerError == .audioFileMissing
+            return runnerError == .audioAssetNotFound
+                || runnerError == .audioFileMissing
+                || runnerError == .audioFileUnreadable
         }
         guard let remoteError = error as? RemoteSpeechTranscriptionError else {
             return false
         }
-        return remoteError == .notConfigured || remoteError == .audioFileMissing
+        return remoteError == .notConfigured
+            || remoteError == .audioFileMissing
+            || remoteError == .audioFileUnreadable
     }
 
     private static func transcriptionErrorCode(_ error: Error) -> String {
@@ -1544,6 +1546,9 @@ class SpeechRecognitionViewModel: ObservableObject {
              TranscriptionJobRunnerError.audioFileMissing,
              TranscriptionJobRunnerError.audioAssetNotFound:
             return "audio_file_missing"
+        case RemoteSpeechTranscriptionError.audioFileUnreadable,
+             TranscriptionJobRunnerError.audioFileUnreadable:
+            return "audio_file_unreadable"
         case RemoteSpeechTranscriptionError.audioTranscodeFailed:
             return "audio_transcode_failed"
         case RemoteSpeechTranscriptionError.emptyTranscript:
@@ -1737,8 +1742,8 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
 
     static func placeholderAudioURL(forStoryID storyID: UUID) -> URL {
-        // The current AVAudioEngine path feeds Speech directly and does not persist audio bytes yet.
-        // This metadata-only URL is intentionally non-file so cleanup will not pretend audio exists.
+        // Retain support for older metadata-only stories. New recordings always
+        // receive a managed M4A URL instead.
         URL(string: "\(placeholderAudioScheme)://metadata-only/stories/\(storyID.uuidString)")!
     }
 
@@ -1751,7 +1756,90 @@ class SpeechRecognitionViewModel: ObservableObject {
         fileManager: FileManager = .default
     ) throws -> URL {
         let directory = try audioStorageDirectory(fileManager: fileManager)
-        return directory.appendingPathComponent("\(storyID.uuidString).caf")
+        return directory.appendingPathComponent("\(storyID.uuidString).m4a")
+    }
+
+    static let audioRecorderSettings: [String: Any] = [
+        AVFormatIDKey: kAudioFormatMPEG4AAC,
+        AVSampleRateKey: 44_100,
+        AVNumberOfChannelsKey: 1,
+        AVEncoderBitRateKey: 64_000,
+        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+    ]
+
+    /// `prepareToRecord()` is the AVAudioRecorder boundary that creates the
+    /// destination file. Protect it only after that succeeds and before audio
+    /// capture begins.
+    static func prepareManagedAudioRecorder(at audioFileURL: URL) throws -> AVAudioRecorder {
+        let recorder = try AVAudioRecorder(
+            url: audioFileURL,
+            settings: audioRecorderSettings
+        )
+        recorder.isMeteringEnabled = true
+        try prepareRecordingFile(
+            prepare: { recorder.prepareToRecord() },
+            applyProtection: {
+                try FileManager.default.setAttributes(
+                    [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                    ofItemAtPath: audioFileURL.path
+                )
+            },
+            cleanup: { _ = recorder.deleteRecording() }
+        )
+        return recorder
+    }
+
+    static func prepareRecordingFile(
+        prepare: () -> Bool,
+        applyProtection: () throws -> Void,
+        cleanup: () -> Void
+    ) throws {
+        guard prepare() else {
+            cleanup()
+            throw TranscriptionJobRunnerError.audioFileUnreadable
+        }
+        do {
+            try applyProtection()
+        } catch {
+            cleanup()
+            throw error
+        }
+    }
+
+    struct RecordedAudioInspection: Equatable {
+        let byteCount: Int
+        let frameCount: AVAudioFramePosition
+        let durationSeconds: TimeInterval
+    }
+
+    static func inspectRecordedAudio(
+        at audioFileURL: URL,
+        fileManager: FileManager = .default
+    ) throws -> RecordedAudioInspection {
+        guard audioFileURL.isFileURL,
+              fileManager.fileExists(atPath: audioFileURL.path),
+              let byteCount = try fileManager.attributesOfItem(atPath: audioFileURL.path)[.size] as? NSNumber,
+              byteCount.intValue > 0 else {
+            throw TranscriptionJobRunnerError.audioFileMissing
+        }
+
+        let audioFile: AVAudioFile
+        do {
+            audioFile = try AVAudioFile(forReading: audioFileURL)
+        } catch {
+            throw TranscriptionJobRunnerError.audioFileUnreadable
+        }
+        let frameCount = audioFile.length
+        let sampleRate = audioFile.processingFormat.sampleRate
+        let durationSeconds = sampleRate > 0 ? Double(frameCount) / sampleRate : 0
+        guard frameCount > 0, durationSeconds.isFinite, durationSeconds > 0 else {
+            throw TranscriptionJobRunnerError.audioFileUnreadable
+        }
+        return RecordedAudioInspection(
+            byteCount: byteCount.intValue,
+            frameCount: frameCount,
+            durationSeconds: durationSeconds
+        )
     }
 
     static func audioStorageDirectory(fileManager: FileManager = .default) throws -> URL {
@@ -2062,6 +2150,11 @@ class SpeechRecognitionViewModel: ObservableObject {
     private func setError(_ message: String) {
         errorMessage = message
         print("❌ Error: \(message)")
+    }
+
+    private func setCaptureError(_ message: String) {
+        captureFeedbackMessage = message
+        setError(message)
     }
 
 }

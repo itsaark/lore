@@ -95,6 +95,47 @@ struct LoreAppAttestAuthenticationTests {
         #expect(await keyStore.pendingEnrollment == nil)
     }
 
+    @Test func invalidInputDuringAttestationEnrollsOneReplacementKey() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let challenge = makeChallenge(
+            id: "fresh-key-recovery-challenge",
+            bytes: Data(repeating: 0x4E, count: 32),
+            purpose: .attestation,
+            expiresAt: now.addingTimeInterval(300)
+        )
+        let session = makeSession(
+            token: "fresh-key-recovery-session-token-with-at-least-forty-characters",
+            expiresAt: now.addingTimeInterval(600)
+        )
+        let service = FakeAppAttestService(
+            generatedKeyId: "replacement-generated-key",
+            attestationErrors: [.invalidInput]
+        )
+        let keyStore = FakeAppAttestKeyStore()
+        let api = FakeAppAttestAPI(
+            attestationChallenge: challenge,
+            assertionChallenge: challenge,
+            attestationSession: session,
+            assertionSession: session
+        )
+        let authorizer = LoreAppAttestSessionAuthorizer(
+            service: service,
+            keyStore: keyStore,
+            api: api,
+            now: { now }
+        )
+
+        let header = try await authorizer.authorizationHeaderValue()
+
+        #expect(header == "Bearer fresh-key-recovery-session-token-with-at-least-forty-characters")
+        #expect(await service.generatedKeyCount == 2)
+        #expect(await service.attestationHashes.count == 2)
+        #expect(await api.challengeRequests.count == 2)
+        #expect(await api.attestationSubmissions.count == 1)
+        #expect(await keyStore.keyId == "replacement-generated-key")
+        #expect(await keyStore.pendingEnrollment == nil)
+    }
+
     @Test func persistedKeyCreatesAssertionOverCanonicalClientData() async throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let challenge = makeChallenge(
@@ -210,6 +251,46 @@ struct LoreAppAttestAuthenticationTests {
         #expect(await keyStore.deleteCount == 1)
         #expect(await keyStore.keyId == "replacement-key")
         #expect(await service.generatedKeyCount == 1)
+    }
+
+    @Test func invalidInputFromPersistedAssertionDeletesKeyAndReattestsOnce() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let challenge = makeChallenge(
+            id: "invalid-input-replacement-challenge",
+            bytes: Data(repeating: 0x12, count: 32),
+            purpose: .attestation,
+            expiresAt: now.addingTimeInterval(300)
+        )
+        let session = makeSession(
+            token: "invalid-input-replacement-session-token-with-forty-characters",
+            expiresAt: now.addingTimeInterval(600)
+        )
+        let service = FakeAppAttestService(
+            generatedKeyId: "invalid-input-replacement-key",
+            assertionError: .invalidInput
+        )
+        let keyStore = FakeAppAttestKeyStore(keyId: "stale-keychain-key")
+        let api = FakeAppAttestAPI(
+            attestationChallenge: challenge,
+            assertionChallenge: challenge,
+            attestationSession: session,
+            assertionSession: session
+        )
+        let authorizer = LoreAppAttestSessionAuthorizer(
+            service: service,
+            keyStore: keyStore,
+            api: api,
+            now: { now }
+        )
+
+        let header = try await authorizer.authorizationHeaderValue()
+
+        #expect(header == "Bearer invalid-input-replacement-session-token-with-forty-characters")
+        #expect(await keyStore.deleteCount == 1)
+        #expect(await keyStore.keyId == "invalid-input-replacement-key")
+        #expect(await service.assertionHashes.count == 1)
+        #expect(await service.generatedKeyCount == 1)
+        #expect(await api.attestationSubmissions.count == 1)
     }
 
     @Test func genericAssertionRejectionFailsClosedWithoutRotatingKey() async throws {

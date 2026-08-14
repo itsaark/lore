@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import AVFoundation
 import CoreLocation
 import SwiftData
 import Testing
@@ -82,6 +83,91 @@ struct loreTests {
         #expect(firstSilentFrame < spokenLevel)
         #expect(firstSilentFrame > spokenLevel * 0.75)
         #expect(envelope.value < firstSilentFrame * 0.1)
+    }
+
+    @MainActor
+    @Test func managedRecordingUsesDirectAACM4AFormat() throws {
+        let audioURL = try SpeechRecognitionViewModel.makeAudioFileURL(forStoryID: UUID())
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+
+        #expect(audioURL.pathExtension == "m4a")
+        #expect(
+            SpeechRecognitionViewModel.audioRecorderSettings[AVFormatIDKey] as? AudioFormatID
+                == kAudioFormatMPEG4AAC
+        )
+        #expect(SpeechRecognitionViewModel.audioRecorderSettings[AVNumberOfChannelsKey] as? Int == 1)
+    }
+
+    @MainActor
+    @Test func recordingFileProtectionRunsAfterFilePreparation() throws {
+        var lifecycle: [String] = []
+
+        try SpeechRecognitionViewModel.prepareRecordingFile(
+            prepare: {
+                lifecycle.append("prepare")
+                return true
+            },
+            applyProtection: {
+                lifecycle.append("protect")
+            },
+            cleanup: {
+                lifecycle.append("cleanup")
+            }
+        )
+
+        #expect(lifecycle == ["prepare", "protect"])
+    }
+
+    @MainActor
+    @Test func finalizedM4AIsReadableAndBypassesAudioConversion() async throws {
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lore-finalized-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        let sampleRate = 44_100.0
+        let format = try #require(
+            AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)
+        )
+        let frameCount = AVAudioFrameCount(sampleRate)
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount))
+        buffer.frameLength = frameCount
+        let samples = try #require(buffer.floatChannelData?[0])
+        for index in 0..<Int(frameCount) {
+            samples[index] = 0.1 * sin(2 * .pi * 440 * Float(index) / Float(sampleRate))
+        }
+
+        let audioFile = try AVAudioFile(
+            forWriting: audioURL,
+            settings: SpeechRecognitionViewModel.audioRecorderSettings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
+        try audioFile.write(from: buffer)
+        audioFile.close()
+
+        let inspection = try SpeechRecognitionViewModel.inspectRecordedAudio(at: audioURL)
+        let sourceBytes = try Data(contentsOf: audioURL)
+        let chunks = try await LoreRemoteAudioFileLoader.live.loadChunks(audioURL)
+        let chunk = try #require(chunks.first)
+
+        #expect(inspection.byteCount > 0)
+        #expect(inspection.frameCount > 0)
+        #expect(inspection.durationSeconds > 0.9)
+        #expect(chunks.count == 1)
+        #expect(chunk.audio.filenameExtension == "m4a")
+        #expect(chunk.audio.mimeType == "audio/m4a")
+        #expect(chunk.audio.bytes == sourceBytes)
+    }
+
+    @MainActor
+    @Test func emptyRecordingIsRejectedBeforeCreatingAJob() throws {
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lore-empty-\(UUID().uuidString).m4a")
+        try Data().write(to: audioURL)
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+
+        #expect(throws: TranscriptionJobRunnerError.audioFileMissing) {
+            try SpeechRecognitionViewModel.inspectRecordedAudio(at: audioURL)
+        }
     }
 
     @Test func legacyStoryDecodesPayloadWithoutID() throws {

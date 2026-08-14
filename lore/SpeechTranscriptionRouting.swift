@@ -92,6 +92,7 @@ protocol RemoteSpeechTranscribing: Sendable {
 enum RemoteSpeechTranscriptionError: Error, LocalizedError, Equatable {
     case notConfigured
     case audioFileMissing
+    case audioFileUnreadable
     case audioTranscodeFailed
     case emptyTranscript
 
@@ -101,6 +102,8 @@ enum RemoteSpeechTranscriptionError: Error, LocalizedError, Equatable {
             return "Remote transcription is not configured yet. The recording was kept on this iPhone for retry."
         case .audioFileMissing:
             return "Lore could not find the recorded audio to transcribe."
+        case .audioFileUnreadable:
+            return "Lore could not read the saved recording. Please record the story again."
         case .audioTranscodeFailed:
             return "Lore could not prepare the recording for transcription. The recording was kept on this iPhone for retry."
         case .emptyTranscript:
