@@ -6,6 +6,8 @@ Provider-neutral, request-ephemeral backend for Lore transcription and grounded 
 
 - Daily entries: direct Fireworks Chat Completions using `accounts/fireworks/models/gpt-oss-120b`
 - Transcription: direct Groq Audio Transcriptions using `whisper-large-v3-turbo`
+- Reflect dialogue and finalization: direct Fireworks structured Chat Completions
+- Reflect live speech: two single-use, capability-scoped Soniox WebSocket credentials minted server-side
 - No provider-side files, batch jobs, stored response objects, or extra routing layer
 
 The public Lore request and response contracts remain provider-neutral. Provider names and exact model IDs are recorded only in processing provenance. The model aliases `daily-entry-v1` and `transcription-fallback-v1` are stable app-facing identifiers.
@@ -43,6 +45,9 @@ npm test
 - `POST /v1/auth/sessions`
 - `POST /v1/transcriptions`
 - `POST /v1/daily-entries`
+- `POST /v1/reflections/session-credentials`
+- `POST /v1/reflections/respond`
+- `POST /v1/reflections/finalize`
 
 Vercel Cron alone calls the server-only `GET /api/internal/security-metadata-cleanup` maintenance route. It is intentionally excluded from the public OpenAPI contract.
 
@@ -54,13 +59,15 @@ Copy `.env.example` to a local untracked environment file. Never commit credenti
 
 - `FIREWORKS_API_KEY`: server-only Fireworks API key for daily-entry generation
 - `GROQ_API_KEY`: server-only Groq API key for audio transcription
+- `SONIOX_API_KEY`: server-only long-lived Soniox key used only to mint short-lived STT/TTS keys
+- `SONIOX_TTS_VOICE`: optional built-in Soniox voice name; defaults to `Adrian`
 - `DATABASE_URL`: pooled Neon Postgres connection URL, injected automatically by the Vercel Marketplace integration
 - `CRON_SECRET`: independent random secret of at least 32 characters used by Vercel Cron
 - `LORE_SESSION_SIGNING_SECRET`: independent random secret of at least 32 characters
 - `LORE_AUTH_STATE_HMAC_SECRET`: independent random secret of at least 32 characters for opaque database references
 - `LORE_AUTH_RECEIPT_ENCRYPTION_KEY`: independent random 32-byte key encoded as base64
 
-Those are the only seven Production variables, and all seven are secrets or contain credentials. Provider/model policy, Apple Team ID `6PP52WCRHS`, bundle ID `cascadianpines.lore`, Production App Attest categories, TTLs, and cleanup bounds are public source-controlled constants. Production routes are available whenever their provider key exists; there is no redundant remote-processing flag. Provider privacy approval is a release checklist decision, not a runtime environment switch.
+Provider/model policy, Apple Team ID `6PP52WCRHS`, bundle ID `cascadianpines.lore`, Production App Attest categories, TTLs, and cleanup bounds are public source-controlled constants. Production routes are available whenever their provider key exists; there is no redundant remote-processing flag. Provider privacy approval is a release checklist decision, not a runtime environment switch.
 
 Install one Production Neon database from Vercel Marketplace and apply migrations `001`, `002`, then `003` in filename order. Neon is not Lore's content store: it holds only App Attest public-key/counter state, one-time challenge hashes, content-free rate-limit buckets, and HMAC-pseudonymized processing leases. Serverless functions need this shared transactional state to prevent challenge, assertion, and paid-inference replay across instances. Audio, transcripts, prompts, generated text, names, and biography data are forbidden from the database.
 
@@ -77,4 +84,7 @@ The retention attestation returned by Lore records the policy configuration unde
 - <https://docs.fireworks.ai/guides/security_compliance/data_handling>
 - <https://console.groq.com/docs/speech-to-text>
 - <https://console.groq.com/docs/your-data>
+- <https://soniox.com/docs/api-reference/auth/create_temporary_api_key>
+- <https://soniox.com/docs/api-reference/stt/websocket-api>
+- <https://soniox.com/docs/api-reference/tts/websocket-api>
 - <https://vercel.com/docs/cron-jobs>

@@ -133,6 +133,78 @@ paths:
           $ref: "#/components/responses/ApiError"
         default:
           $ref: "#/components/responses/ApiError"
+  /v1/reflections/session-credentials:
+    post:
+      operationId: createReflectionSessionCredentials
+      description: Mints separate single-use Soniox credentials for one STT and one TTS WebSocket connection.
+      security: [{ bearerSession: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: ReflectionSessionCredentialsRequest v1.0; canonical validation lives in src/contracts/reflection.ts.
+      responses:
+        "200":
+          description: Two short-lived capability-scoped credentials and provider endpoints.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: ReflectionSessionCredentialsResponse v1.0.
+        default:
+          $ref: "#/components/responses/ApiError"
+  /v1/reflections/respond:
+    post:
+      operationId: createReflectionGuideTurn
+      description: Generates one bounded, structured follow-up question from committed reflection turns.
+      security: [{ bearerSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: ReflectionGuideRequest v1.0; canonical validation lives in src/contracts/reflection.ts.
+      responses:
+        "200":
+          description: One validated spoken response and finish recommendation.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: ReflectionGuideResponse v1.0.
+        default:
+          $ref: "#/components/responses/ApiError"
+  /v1/reflections/finalize:
+    post:
+      operationId: finalizeReflection
+      description: Creates a third-person grounded biography entry using only user source segments as evidence.
+      security: [{ bearerSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: ReflectionFinalizationRequest v1.0; canonical validation lives in src/contracts/reflection.ts.
+      responses:
+        "200":
+          description: Existing DailyEntryGenerationResponse v1.0 with third-person grounded prose.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Canonical validation lives in src/contracts/daily-entry.ts.
+        "409":
+          $ref: "#/components/responses/ApiError"
+        default:
+          $ref: "#/components/responses/ApiError"
 components:
   parameters:
     IdempotencyKey:

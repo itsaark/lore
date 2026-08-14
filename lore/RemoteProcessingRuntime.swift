@@ -69,6 +69,7 @@ struct LoreRemoteServices {
 
     let dailyEntryGenerator: any DailyEntryGenerationService
     let speechTranscriber: any RemoteSpeechTranscribing
+    let reflectionBackend: any LoreReflectionBackendClient
 
     @MainActor
     static func configuredForCurrentBuild(
@@ -101,7 +102,8 @@ struct LoreRemoteServices {
             )
             return Self(
                 dailyEntryGenerator: RemoteDailyEntryGenerationService(backend: backend),
-                speechTranscriber: LoreBackendRemoteSpeechTranscriber(backend: backend)
+                speechTranscriber: LoreBackendRemoteSpeechTranscriber(backend: backend),
+                reflectionBackend: backend
             )
         } catch {
             return unconfigured
@@ -113,7 +115,8 @@ struct LoreRemoteServices {
         let backend = UnconfiguredLoreBackendProcessingClient()
         return Self(
             dailyEntryGenerator: RemoteDailyEntryGenerationService(backend: backend),
-            speechTranscriber: UnavailableRemoteSpeechTranscriber()
+            speechTranscriber: UnavailableRemoteSpeechTranscriber(),
+            reflectionBackend: UnconfiguredLoreReflectionBackendClient()
         )
     }
 

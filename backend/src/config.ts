@@ -16,6 +16,11 @@ const GroqEnvironmentSchema = z.object({
   GROQ_API_KEY: z.string().min(1)
 }).passthrough();
 
+const SonioxEnvironmentSchema = z.object({
+  SONIOX_API_KEY: z.string().min(1),
+  SONIOX_TTS_VOICE: z.string().min(1).max(120).optional()
+}).passthrough();
+
 const AppAttestEnvironmentSchema = z.object({
   LORE_SESSION_SIGNING_SECRET: z.string().min(32),
   LORE_AUTH_STATE_HMAC_SECRET: z.string().min(32),
@@ -42,6 +47,16 @@ export type GroqRuntimeConfig = {
   policyVersion: string;
   baseUrl: string;
   transcriptionModel: string;
+};
+
+export type SonioxRuntimeConfig = {
+  apiKey: string;
+  baseUrl: string;
+  sttWebSocketUrl: string;
+  ttsWebSocketUrl: string;
+  sttModelAlias: string;
+  ttsModelAlias: string;
+  ttsVoice: string;
 };
 
 export type AppAttestRuntimeConfig = {
@@ -94,6 +109,27 @@ export function loadGroqRuntimeConfig(
     policyVersion: PROVIDER_POLICY_VERSION,
     baseUrl: "https://api.groq.com/openai/v1",
     transcriptionModel: "whisper-large-v3-turbo"
+  };
+}
+
+export function loadSonioxRuntimeConfig(
+  environment: NodeJS.ProcessEnv = process.env
+): SonioxRuntimeConfig {
+  const parsed = SonioxEnvironmentSchema.safeParse(environment);
+  if (!parsed.success) {
+    throw new LoreApiError("provider_policy_unverified", 503, false);
+  }
+
+  return {
+    apiKey: parsed.data.SONIOX_API_KEY,
+    baseUrl: "https://api.soniox.com/v1",
+    sttWebSocketUrl: "wss://stt-rt.soniox.com/transcribe-websocket",
+    ttsWebSocketUrl: "wss://tts-rt.soniox.com/tts-websocket",
+    sttModelAlias: "reflection-stt-v1",
+    ttsModelAlias: "reflection-voice-v1",
+    // A built-in voice only. Deployments can change this after listening tests
+    // without shipping a cloned or biometric-like voice identifier to source.
+    ttsVoice: parsed.data.SONIOX_TTS_VOICE ?? "Adrian"
   };
 }
 

@@ -1,6 +1,11 @@
 import Foundation
 import SwiftData
 
+enum StorySourceKind: String, Codable, CaseIterable, Sendable {
+    case note
+    case reflection
+}
+
 /// Model representing a single captured story entry.
 @Model
 final class Story {
@@ -13,6 +18,7 @@ final class Story {
     @Attribute(.allowsCloudEncryption) var biographyProse: String?
     @Attribute(.allowsCloudEncryption) var title: String?
     var processingStatus: String = "captured"
+    private(set) var sourceKindValue: String = StorySourceKind.note.rawValue
     var createdAt: Date = Date()
     var updatedAt: Date = Date()
 
@@ -26,6 +32,7 @@ final class Story {
         biographyProse: String? = nil,
         title: String? = nil,
         processingStatus: String = "captured",
+        sourceKind: StorySourceKind = .note,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
     ) {
@@ -38,8 +45,13 @@ final class Story {
         self.biographyProse = biographyProse
         self.title = title
         self.processingStatus = processingStatus
+        self.sourceKindValue = sourceKind.rawValue
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    var sourceKind: StorySourceKind {
+        StorySourceKind(rawValue: sourceKindValue) ?? .note
     }
 
     /// Computed property for formatted date display.

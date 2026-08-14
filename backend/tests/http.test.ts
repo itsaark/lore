@@ -12,7 +12,14 @@ describe("HTTP foundation", () => {
     expect(body).toEqual({
       status: "ok",
       api_schema_versions: ["1.0"],
-      model_aliases: ["transcription-fallback-v1", "daily-entry-v1"]
+      model_aliases: [
+        "transcription-fallback-v1",
+        "daily-entry-v1",
+        "reflection-stt-v1",
+        "reflection-voice-v1",
+        "reflection-guide-v1",
+        "reflection-entry-v1"
+      ]
     });
   });
 

@@ -5,7 +5,8 @@ import {
   loadAppAttestRuntimeConfig,
   loadFireworksRuntimeConfig,
   loadGroqRuntimeConfig,
-  loadMaintenanceRuntimeConfig
+  loadMaintenanceRuntimeConfig,
+  loadSonioxRuntimeConfig
 } from "../src/config.js";
 
 const authEnvironment = {
@@ -27,6 +28,10 @@ describe("minimal production configuration", () => {
     expect(fireworks.dailyEntryModel).toBe("accounts/fireworks/models/gpt-oss-120b");
     expect(loadGroqRuntimeConfig({ GROQ_API_KEY: "groq-test" }).apiKey)
       .toBe("groq-test");
+    const soniox = loadSonioxRuntimeConfig({ SONIOX_API_KEY: "soniox-test" });
+    expect(soniox.apiKey).toBe("soniox-test");
+    expect(soniox.ttsVoice).toBe("Adrian");
+    expect(soniox.sttWebSocketUrl).toMatch(/^wss:\/\//);
   });
 
   it("keeps public Apple identity and operating bounds in source", () => {

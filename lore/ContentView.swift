@@ -14,6 +14,7 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var speechRecognizer: SpeechRecognitionViewModel
     @State private var selectedTab: LaunchTab
+    private let reflectionBackend: any LoreReflectionBackendClient
 
     init(userProfile: UserProfile) {
         self.userProfile = userProfile
@@ -24,6 +25,7 @@ struct ContentView: View {
                 remoteTranscriber: remoteServices.speechTranscriber
             )
         )
+        reflectionBackend = remoteServices.reflectionBackend
         let opensSettings = ProcessInfo.processInfo.arguments.contains("-LoreOpenSettings")
         _selectedTab = State(initialValue: opensSettings ? .settings : .notes)
     }
@@ -36,6 +38,19 @@ struct ContentView: View {
             }
             .tag(LaunchTab.notes)
             .accessibilityIdentifier("notesTab")
+
+            ReflectHomeView {
+                ReflectionLiveSessionView(
+                    userProfile: userProfile,
+                    backend: reflectionBackend,
+                    onViewBiography: { selectedTab = .biography }
+                )
+            }
+            .tabItem {
+                Label("Reflect", systemImage: "bubble.left.and.text.bubble.right")
+            }
+            .tag(LaunchTab.reflect)
+            .accessibilityIdentifier("reflectTab")
 
             BiographyHomeView(speechRecognizer: speechRecognizer)
                 .tabItem {
@@ -69,6 +84,7 @@ struct ContentView: View {
 
 private enum LaunchTab: Hashable {
     case notes
+    case reflect
     case biography
     case settings
 }

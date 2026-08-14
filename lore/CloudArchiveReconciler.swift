@@ -72,6 +72,18 @@ enum CloudArchiveReconciler {
             prefers: { $0.updatedAt >= $1.updatedAt },
             in: context
         )
+        deleted += reconcileByKey(
+            try context.fetch(FetchDescriptor<ReflectionSession>()),
+            key: \.id,
+            prefers: { $0.updatedAt >= $1.updatedAt },
+            in: context
+        )
+        deleted += reconcileByKey(
+            try context.fetch(FetchDescriptor<ReflectionTurn>()),
+            key: \.id,
+            prefers: { $0.createdAt >= $1.createdAt },
+            in: context
+        )
 
         deleted += try reconcileDailyEntryResults(in: context)
         deleted += try reconcileDailyBiographies(in: context)

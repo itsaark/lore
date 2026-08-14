@@ -61,6 +61,8 @@ enum CloudArchiveMigrator {
             || !context.fetch(FetchDescriptor<Place>()).isEmpty
             || !context.fetch(FetchDescriptor<Theme>()).isEmpty
             || !context.fetch(FetchDescriptor<DailyEntryResultArtifact>()).isEmpty
+            || !context.fetch(FetchDescriptor<ReflectionSession>()).isEmpty
+            || !context.fetch(FetchDescriptor<ReflectionTurn>()).isEmpty
             || !context.fetch(FetchDescriptor<DailyBiographyEntry>()).isEmpty
             || !context.fetch(FetchDescriptor<VocabularyEntry>()).isEmpty
     }
@@ -96,6 +98,7 @@ enum CloudArchiveMigrator {
                 biographyProse: value.biographyProse,
                 title: value.title,
                 processingStatus: value.processingStatus,
+                sourceKind: value.sourceKind,
                 createdAt: value.createdAt,
                 updatedAt: value.updatedAt
             ))
@@ -265,6 +268,46 @@ enum CloudArchiveMigrator {
             ))
         }
 
+        let reflectionSessionIDs = Set(try target.fetch(FetchDescriptor<ReflectionSession>()).map(\.id))
+        for value in try source.fetch(FetchDescriptor<ReflectionSession>()) where !reflectionSessionIDs.contains(value.id) {
+            target.insert(ReflectionSession(
+                id: value.id,
+                startedAt: value.startedAt,
+                endedAt: value.endedAt,
+                capturedLocalDate: value.capturedLocalDate,
+                state: value.state,
+                storyId: value.storyId,
+                transcriptArtifactId: value.transcriptArtifactId,
+                resultArtifactId: value.resultArtifactId,
+                sttModelAlias: value.sttModelAlias,
+                ttsModelAlias: value.ttsModelAlias,
+                guideModelAlias: value.guideModelAlias,
+                entryModelAlias: value.entryModelAlias,
+                policyVersion: value.policyVersion,
+                schemaVersion: value.schemaVersion,
+                createdAt: value.createdAt,
+                updatedAt: value.updatedAt
+            ))
+        }
+
+        let reflectionTurnIDs = Set(try target.fetch(FetchDescriptor<ReflectionTurn>()).map(\.id))
+        for value in try source.fetch(FetchDescriptor<ReflectionTurn>()) where !reflectionTurnIDs.contains(value.id) {
+            target.insert(ReflectionTurn(
+                id: value.id,
+                sessionId: value.sessionId,
+                sequence: value.sequence,
+                role: value.role,
+                text: value.text,
+                isEvidenceEligible: value.isEvidenceEligible,
+                startedAt: value.startedAt,
+                endedAt: value.endedAt,
+                languageCode: value.languageCode,
+                confidence: value.confidence,
+                sourceSegmentsJSON: value.sourceSegmentsJSON,
+                createdAt: value.createdAt
+            ))
+        }
+
         let biographyIDs = Set(try target.fetch(FetchDescriptor<DailyBiographyEntry>()).map(\.id))
         for value in try source.fetch(FetchDescriptor<DailyBiographyEntry>()) where !biographyIDs.contains(value.id) {
             let provider = RemoteProcessingProvenance(
@@ -377,6 +420,8 @@ enum CloudArchiveMigrator {
         try requireSubset(source.fetch(FetchDescriptor<Theme>()).map(\.id), in: target.fetch(FetchDescriptor<Theme>()).map(\.id))
         try requireSubset(source.fetch(FetchDescriptor<VocabularyEntry>()).map(\.id), in: target.fetch(FetchDescriptor<VocabularyEntry>()).map(\.id))
         try requireSubset(source.fetch(FetchDescriptor<DailyEntryResultArtifact>()).map(\.id), in: target.fetch(FetchDescriptor<DailyEntryResultArtifact>()).map(\.id))
+        try requireSubset(source.fetch(FetchDescriptor<ReflectionSession>()).map(\.id), in: target.fetch(FetchDescriptor<ReflectionSession>()).map(\.id))
+        try requireSubset(source.fetch(FetchDescriptor<ReflectionTurn>()).map(\.id), in: target.fetch(FetchDescriptor<ReflectionTurn>()).map(\.id))
         try requireSubset(source.fetch(FetchDescriptor<DailyBiographyEntry>()).map(\.id), in: target.fetch(FetchDescriptor<DailyBiographyEntry>()).map(\.id))
         try requireSubset(source.fetch(FetchDescriptor<AudioAsset>()).map(\.id), in: target.fetch(FetchDescriptor<AudioAsset>()).map(\.id))
         try requireSubset(source.fetch(FetchDescriptor<ProcessingJob>()).map(\.id), in: target.fetch(FetchDescriptor<ProcessingJob>()).map(\.id))

@@ -2,7 +2,11 @@ import { createHmac, randomBytes } from "node:crypto";
 import type { ProcessingAuthorization } from "../http/auth.js";
 import { LoreApiError } from "../http/errors.js";
 
-export type ProcessingTask = "transcription" | "daily_entry";
+export type ProcessingTask =
+  | "transcription"
+  | "daily_entry"
+  | "reflection_guide"
+  | "reflection_finalize";
 
 export type HeldProcessingLease = {
   claimRef: string;

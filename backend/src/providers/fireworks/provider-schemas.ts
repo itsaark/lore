@@ -3,6 +3,7 @@ import {
   DailyEntryGenerationResponseSchema,
   GroundedJournalEntrySchema
 } from "../../contracts/daily-entry.js";
+import { z as reflectionZ } from "zod";
 
 const DailyEntryContentSchema = DailyEntryGenerationResponseSchema.omit({
   schema_version: true,
@@ -40,5 +41,15 @@ export const FireworksChatCompletionSchema = z.object({
     finish_reason: z.string().nullable()
   }).passthrough()).length(1)
 }).passthrough();
+
+export const FireworksReflectionGuideOutputSchema = reflectionZ.object({
+  spoken_text: reflectionZ.string().trim().min(1).max(500),
+  should_offer_finish: reflectionZ.boolean()
+}).strict();
+
+export const FireworksReflectionGuideJsonSchema = reflectionZ.toJSONSchema(
+  FireworksReflectionGuideOutputSchema,
+  { target: "draft-7", reused: "ref" }
+);
 
 export type FireworksDailyEntryOutput = z.infer<typeof FireworksDailyEntryOutputSchema>;

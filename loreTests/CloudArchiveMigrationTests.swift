@@ -105,7 +105,22 @@ struct CloudArchiveMigrationTests {
                 text: "The durable source transcript.",
                 date: Date(timeIntervalSince1970: 1_800_000_000),
                 duration: 42,
-                title: "A day worth keeping"
+                title: "A day worth keeping",
+                sourceKind: .reflection
+            ))
+            context.insert(ReflectionSession(
+                id: storyID,
+                startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                capturedLocalDate: "2027-01-15"
+            ))
+            context.insert(ReflectionTurn(
+                sessionId: storyID,
+                sequence: 0,
+                role: .lore,
+                text: "What felt worth remembering?",
+                isEvidenceEligible: false,
+                startedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                endedAt: Date(timeIntervalSince1970: 1_800_000_002)
             ))
             context.insert(TranscriptArtifact(
                 id: artifactID,
@@ -170,6 +185,8 @@ struct CloudArchiveMigrationTests {
         let versions = try context.fetch(FetchDescriptor<TranscriptVersion>())
         let audioAssets = try context.fetch(FetchDescriptor<AudioAsset>())
         let jobs = try context.fetch(FetchDescriptor<ProcessingJob>())
+        let reflectionSessions = try context.fetch(FetchDescriptor<ReflectionSession>())
+        let reflectionTurns = try context.fetch(FetchDescriptor<ReflectionTurn>())
 
         #expect(profiles.count == 1)
         #expect(profiles.first?.id == profileID)
@@ -177,6 +194,7 @@ struct CloudArchiveMigrationTests {
         #expect(stories.count == 1)
         #expect(stories.first?.id == storyID)
         #expect(stories.first?.text == "The durable source transcript.")
+        #expect(stories.first?.sourceKind == .reflection)
         #expect(artifacts.first?.id == artifactID)
         #expect(artifacts.first?.rawText == "The durable source transcript.")
         #expect(versions.first?.id == versionID)
@@ -185,6 +203,9 @@ struct CloudArchiveMigrationTests {
         #expect(audioAssets.first?.id == storyID)
         #expect(jobs.count == 1)
         #expect(jobs.first?.id == jobID)
+        #expect(reflectionSessions.first?.id == storyID)
+        #expect(reflectionTurns.first?.sessionId == storyID)
+        #expect(reflectionTurns.first?.isEvidenceEligible == false)
 
         #expect(fileManager.fileExists(atPath: legacyURL.path))
         #expect(fileManager.fileExists(atPath: archiveURL.path))

@@ -9,7 +9,14 @@ export async function handleHealth(request: Request): Promise<Response> {
     return Response.json({
       status: "ok",
       api_schema_versions: [API_SCHEMA_VERSION],
-      model_aliases: ["transcription-fallback-v1", "daily-entry-v1"]
+      model_aliases: [
+        "transcription-fallback-v1",
+        "daily-entry-v1",
+        "reflection-stt-v1",
+        "reflection-voice-v1",
+        "reflection-guide-v1",
+        "reflection-entry-v1"
+      ]
     }, {
       status: 200,
       headers: {

@@ -73,6 +73,7 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
     static let maximumAudioChunkBytes = 3_250_000
     static let maximumMultipartBodyBytes = 3_500_000
     static let maximumDailyEntryBodyBytes = 1_000_000
+    static let maximumReflectionBodyBytes = 1_000_000
 
     private let configuration: LoreBackendHTTPClientConfiguration
     private let transport: LoreBackendHTTPTransport
@@ -172,6 +173,82 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         let result: DailyEntryGenerationResponse = try decodeSuccess(data, response: response)
         try validate(result, for: wireRequest)
         return result
+    }
+
+    func createReflectionSessionCredentials(
+        _ request: ReflectionSessionCredentialsRequest
+    ) async throws -> ReflectionSessionCredentialsResponse {
+        try Task.checkCancellation()
+        try validate(request)
+
+        let result: ReflectionSessionCredentialsResponse = try await postJSON(
+            request,
+            path: "v1/reflections/session-credentials",
+            idempotencyKey: "reflection-credentials:\(request.sessionId.uuidString.lowercased())",
+            maximumBodyBytes: Self.maximumReflectionBodyBytes
+        )
+        try validate(result, for: request)
+        return result
+    }
+
+    func generateReflectionResponse(
+        _ request: ReflectionResponseRequest
+    ) async throws -> ReflectionResponse {
+        try Task.checkCancellation()
+        try validate(request)
+        let turnIdentity = request.turns.last?.id.uuidString.lowercased() ?? "initial"
+
+        let result: ReflectionResponse = try await postJSON(
+            request,
+            path: "v1/reflections/respond",
+            idempotencyKey: "reflection-response:\(request.sessionId.uuidString.lowercased()):\(turnIdentity)",
+            maximumBodyBytes: Self.maximumReflectionBodyBytes
+        )
+        try validate(result, for: request)
+        return result
+    }
+
+    func finalizeReflection(
+        _ request: ReflectionFinalizationRequest
+    ) async throws -> DailyEntryGenerationResponse {
+        try Task.checkCancellation()
+        try validate(request)
+
+        let result: DailyEntryGenerationResponse = try await postJSON(
+            request,
+            path: "v1/reflections/finalize",
+            idempotencyKey: "reflection-finalize:\(request.entryRequest.jobId.uuidString.lowercased())",
+            maximumBodyBytes: Self.maximumReflectionBodyBytes
+        )
+        try validate(result, for: request.entryRequest)
+        return result
+    }
+
+    private func postJSON<Request: Encodable, Response: Decodable>(
+        _ bodyValue: Request,
+        path: String,
+        idempotencyKey: String,
+        maximumBodyBytes: Int
+    ) async throws -> Response {
+        let body: Data
+        do {
+            body = try Self.jsonEncoder.encode(bodyValue)
+        } catch {
+            throw LoreBackendProcessingError.invalidRequest
+        }
+        guard body.count <= maximumBodyBytes else {
+            throw LoreBackendProcessingError.payloadTooLarge(maximumBytes: maximumBodyBytes)
+        }
+
+        var urlRequest = try await makeRequest(
+            path: path,
+            requestId: Self.makeRequestId(),
+            idempotencyKey: idempotencyKey
+        )
+        urlRequest.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
+        urlRequest.httpBody = body
+        let (data, response) = try await perform(urlRequest)
+        return try decodeSuccess(data, response: response)
     }
 
     private func makeRequest(
@@ -401,6 +478,125 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         }
     }
 
+    private func validate(_ request: ReflectionSessionCredentialsRequest) throws {
+        guard
+            request.schemaVersion == ReflectionSessionCredentialsRequest.currentSchemaVersion,
+            Self.isValidLanguageCode(request.languageCode)
+        else {
+            throw LoreBackendProcessingError.invalidRequest
+        }
+    }
+
+    private func validate(
+        _ response: ReflectionSessionCredentialsResponse,
+        for request: ReflectionSessionCredentialsRequest
+    ) throws {
+        guard
+            response.schemaVersion == ReflectionSessionCredentialsResponse.currentSchemaVersion,
+            response.sessionId == request.sessionId,
+            Self.isValid(response.stt.websocketUrl),
+            Self.isValid(response.tts.websocketUrl),
+            !response.stt.temporaryApiKey.isEmpty,
+            !response.tts.temporaryApiKey.isEmpty,
+            response.stt.temporaryApiKey.count <= 512,
+            response.tts.temporaryApiKey.count <= 512,
+            response.stt.temporaryApiKey != response.tts.temporaryApiKey,
+            !response.stt.modelAlias.isEmpty,
+            !response.tts.modelAlias.isEmpty,
+            !response.stt.audioFormat.isEmpty,
+            !response.tts.audioFormat.isEmpty,
+            response.stt.sampleRate > 0,
+            response.tts.sampleRate > 0,
+            response.stt.numChannels > 0,
+            !response.tts.voice.isEmpty,
+            response.maximumSessionDurationSeconds > 0,
+            response.maximumSessionDurationSeconds <= 1_200
+        else {
+            throw LoreBackendProcessingError.invalidResponse(requestId: nil)
+        }
+    }
+
+    private func validate(_ request: ReflectionResponseRequest) throws {
+        let rolesAndTextAreValid = request.turns.allSatisfy { turn in
+            !turn.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && turn.text.count <= 8_000
+                && turn.sequence >= 0
+                && (turn.isEvidenceEligible == (turn.role == .user))
+        }
+        guard
+            request.schemaVersion == ReflectionResponseRequest.currentSchemaVersion,
+            request.promptVersion == ReflectionResponseRequest.currentPromptVersion,
+            Self.isValidLanguageCode(request.languageCode),
+            !request.subject.displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            request.subject.displayName.count <= 120,
+            request.subject.pronouns.count <= 8,
+            request.subject.pronouns.allSatisfy({ !$0.isEmpty && $0.count <= 30 }),
+            request.turns.count <= 80,
+            Set(request.turns.map(\.id)).count == request.turns.count,
+            zip(request.turns, request.turns.dropFirst()).allSatisfy({ previous, current in
+                previous.sequence < current.sequence
+            }),
+            rolesAndTextAreValid,
+            request.turns.last?.role != .lore,
+            request.acceptedPriorFacts.count <= 200,
+            request.retentionPolicy.mode == .zeroDataRetention,
+            request.retentionPolicy.maximumRetentionSeconds == 0
+        else {
+            throw LoreBackendProcessingError.invalidRequest
+        }
+    }
+
+    private func validate(
+        _ response: ReflectionResponse,
+        for request: ReflectionResponseRequest
+    ) throws {
+        let spokenText = response.spokenText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let wordCount = spokenText.split(whereSeparator: { $0.isWhitespace }).count
+        guard
+            response.schemaVersion == ReflectionResponse.currentSchemaVersion,
+            response.promptVersion == request.promptVersion,
+            response.sessionId == request.sessionId,
+            !response.requestId.isEmpty,
+            !spokenText.isEmpty,
+            wordCount <= 45,
+            isValid(response.provenance)
+        else {
+            throw LoreBackendProcessingError.invalidResponse(requestId: response.requestId)
+        }
+    }
+
+    private func validate(_ request: ReflectionFinalizationRequest) throws {
+        try validate(request.entryRequest)
+        let entryRequest = request.entryRequest
+        let sourceIds = entryRequest.sourceSegments.map(\.id)
+        let evidenceSourceIds = request.evidenceTurns.flatMap(\.sourceSegmentIds)
+        let evidenceTurnIds = Set(request.evidenceTurns.map(\.turnId))
+        let assistantTurnIds = Set(request.assistantTurns.map(\.turnId))
+        guard
+            request.schemaVersion == ReflectionFinalizationRequest.currentSchemaVersion,
+            request.promptVersion == ReflectionFinalizationRequest.currentPromptVersion,
+            entryRequest.renderConfiguration.perspective == .thirdPerson,
+            !request.evidenceTurns.isEmpty,
+            request.evidenceTurns.count <= 80,
+            request.evidenceTurns.allSatisfy({
+                !$0.sourceSegmentIds.isEmpty && $0.sourceSegmentIds.count <= 250
+            }),
+            Set(evidenceSourceIds).count == evidenceSourceIds.count,
+            Set(sourceIds) == Set(evidenceSourceIds),
+            evidenceTurnIds.count == request.evidenceTurns.count,
+            assistantTurnIds.count == request.assistantTurns.count,
+            evidenceTurnIds.isDisjoint(with: assistantTurnIds),
+            request.assistantTurns.count <= 80,
+            request.assistantTurns.allSatisfy({
+                $0.sequence >= 0
+                    && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && $0.text.count <= 2_000
+            })
+        else {
+            throw LoreBackendProcessingError.invalidRequest
+        }
+    }
+
     private func validate(
         _ response: RemoteTranscriptionResponse,
         for request: RemoteTranscriptionRequest,
@@ -465,6 +661,19 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
             && provenance.retentionAttestation.mode == .zeroDataRetention
             && provenance.retentionAttestation.maximumRetentionSeconds == 0
             && !provenance.retentionAttestation.policyVersion.isEmpty
+    }
+
+    private static func isValid(_ webSocketURL: URL) -> Bool {
+        webSocketURL.scheme?.lowercased() == "wss"
+            && webSocketURL.host?.isEmpty == false
+            && webSocketURL.user == nil
+            && webSocketURL.password == nil
+            && webSocketURL.fragment == nil
+    }
+
+    private static func isValidLanguageCode(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.count >= 2 && trimmed.count <= 35 && !trimmed.contains("\n")
     }
 
     private func makeTranscriptionBody(
@@ -573,6 +782,9 @@ private protocol LoreRequestIdentifiedResponse {
 
 extension RemoteTranscriptionResponse: LoreRequestIdentifiedResponse {}
 extension DailyEntryGenerationResponse: LoreRequestIdentifiedResponse {}
+extension ReflectionResponse: LoreRequestIdentifiedResponse {}
+
+extension LoreBackendHTTPClient: LoreReflectionBackendClient {}
 
 private struct LoreBackendErrorEnvelope: Decodable {
     struct Detail: Decodable {
