@@ -553,6 +553,78 @@ struct loreTests {
     }
 
     @MainActor
+    @Test func managedAudioAssetPersistsContainerRelativeReference() throws {
+        let audioDirectory = try SpeechRecognitionViewModel.audioStorageDirectory()
+        let storyID = UUID()
+        let audioFileURL = audioDirectory.appendingPathComponent("\(storyID.uuidString).caf")
+
+        let asset = SpeechRecognitionViewModel.makeAudioAsset(
+            storyID: storyID,
+            fileURL: audioFileURL,
+            createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            duration: 12
+        )
+
+        #expect(asset.fileURL == audioFileURL.lastPathComponent)
+    }
+
+    @MainActor
+    @Test func staleContainerAudioURLRecoversFromCurrentManagedDirectory() throws {
+        let fileManager = FileManager.default
+        let testRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("lore-path-recovery-\(UUID().uuidString)", isDirectory: true)
+        let currentAudioDirectory = testRoot
+            .appendingPathComponent("current-container", isDirectory: true)
+            .appendingPathComponent("Library/Application Support/Lore/Audio", isDirectory: true)
+        try fileManager.createDirectory(
+            at: currentAudioDirectory,
+            withIntermediateDirectories: true
+        )
+        defer { try? fileManager.removeItem(at: testRoot) }
+
+        let filename = "\(UUID().uuidString).caf"
+        let currentAudioURL = currentAudioDirectory.appendingPathComponent(filename)
+        try Data([0, 1, 2, 3]).write(to: currentAudioURL)
+        let staleAudioURL = testRoot
+            .appendingPathComponent("old-container", isDirectory: true)
+            .appendingPathComponent("Library/Application Support/Lore/Audio", isDirectory: true)
+            .appendingPathComponent(filename)
+
+        let resolvedURL = SpeechRecognitionViewModel.resolveAudioFileURL(
+            storedReference: staleAudioURL.absoluteString,
+            audioDirectory: currentAudioDirectory,
+            fileManager: fileManager
+        )
+
+        #expect(resolvedURL?.standardizedFileURL == currentAudioURL.standardizedFileURL)
+        #expect(
+            SpeechRecognitionViewModel.persistedAudioFileReference(
+                for: try #require(resolvedURL),
+                audioDirectory: currentAudioDirectory
+            ) == filename
+        )
+    }
+
+    @MainActor
+    @Test func relativeAudioReferenceCannotEscapeManagedDirectory() throws {
+        let fileManager = FileManager.default
+        let testRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("lore-path-safety-\(UUID().uuidString)", isDirectory: true)
+        let audioDirectory = testRoot.appendingPathComponent("Audio", isDirectory: true)
+        try fileManager.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: testRoot) }
+        try Data([0]).write(to: testRoot.appendingPathComponent("outside.caf"))
+
+        let resolvedURL = SpeechRecognitionViewModel.resolveAudioFileURL(
+            storedReference: "../outside.caf",
+            audioDirectory: audioDirectory,
+            fileManager: fileManager
+        )
+
+        #expect(resolvedURL == nil)
+    }
+
+    @MainActor
     @Test func cleanupDeletesOnlyAudioWithCommittedImmutableTranscript() throws {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)
@@ -1112,6 +1184,65 @@ struct loreTests {
         #expect(storedJobs.first?.transcriptArtifactId == artifacts.first?.id)
         #expect(try context.fetch(FetchDescriptor<AudioAsset>()).isEmpty)
         #expect(FileManager.default.fileExists(atPath: audioURL.path) == false)
+    }
+
+    @MainActor
+    @Test func transcriptionJobRecoversAndCanonicalizesStaleContainerURL() async throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let audioDirectory = try SpeechRecognitionViewModel.audioStorageDirectory()
+        let filename = "\(UUID().uuidString).caf"
+        let audioURL = audioDirectory.appendingPathComponent(filename)
+        try Data([1, 2, 3]).write(to: audioURL)
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+
+        let (_, job) = try SpeechRecognitionViewModel.persistRemoteCaptureForTranscription(
+            startTime: Date(timeIntervalSince1970: 1_800_000_000),
+            endTime: Date(timeIntervalSince1970: 1_800_000_010),
+            audioFileURL: audioURL,
+            modelContext: context
+        )
+        let asset = try #require(try context.fetch(FetchDescriptor<AudioAsset>()).first)
+        asset.fileURL = URL(fileURLWithPath: "/stale-app-container/Library/Application Support/Lore/Audio")
+            .appendingPathComponent(filename)
+            .absoluteString
+        try context.save()
+
+        var recoveredCurrentFile = false
+        let transcriber = InspectingRemoteSpeechTranscriber { requestedURL, _ in
+            let storedAsset = try #require(
+                try context.fetch(FetchDescriptor<AudioAsset>()).first
+            )
+            recoveredCurrentFile = requestedURL.standardizedFileURL == audioURL.standardizedFileURL
+                && storedAsset.fileURL == filename
+            return RemoteSpeechTranscription(
+                transcript: "The recovered recording was transcribed.",
+                provider: "groq",
+                model: "whisper-large-v3-turbo"
+            )
+        }
+
+        _ = try await SpeechRecognitionViewModel.runTranscriptionJob(
+            jobID: job.id,
+            remoteTranscriber: transcriber,
+            localeIdentifier: "en-US",
+            modelContext: context
+        )
+
+        #expect(recoveredCurrentFile)
+        #expect(FileManager.default.fileExists(atPath: audioURL.path) == false)
+    }
+
+    @MainActor
+    @Test func audioTranscodeFailureHasDistinctRetryableJobCode() {
+        let story = Story(text: "", date: Date(), duration: 1)
+        let job = SpeechRecognitionViewModel.makePendingTranscriptionJob(
+            for: story,
+            route: .remote,
+            failure: RemoteSpeechTranscriptionError.audioTranscodeFailed
+        )
+
+        #expect(job.lastErrorCode == "audio_transcode_failed")
     }
 
     @MainActor

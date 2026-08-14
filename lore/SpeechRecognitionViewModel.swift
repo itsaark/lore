@@ -1239,6 +1239,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         case .audioFileMissing:
             state = .failed
             errorCode = "audio_file_missing"
+        case .audioTranscodeFailed:
+            state = .failed
+            errorCode = "audio_transcode_failed"
         case .emptyTranscript:
             state = .failed
             errorCode = "empty_remote_transcript"
@@ -1348,12 +1351,25 @@ class SpeechRecognitionViewModel: ObservableObject {
             try modelContext.save()
             throw TranscriptionJobRunnerError.audioAssetNotFound
         }
-        guard let audioFileURL = URL(string: audioAsset.fileURL),
-              audioFileURL.isFileURL,
-              FileManager.default.fileExists(atPath: audioFileURL.path) else {
+        let audioDirectory = try audioStorageDirectory()
+        guard let audioFileURL = resolveAudioFileURL(
+            storedReference: audioAsset.fileURL,
+            audioDirectory: audioDirectory
+        ) else {
             job.markFailed(errorCode: "audio_file_missing", at: now)
             try modelContext.save()
             throw TranscriptionJobRunnerError.audioFileMissing
+        }
+
+        // Absolute sandbox paths become stale when iOS moves the app container
+        // during an install or update. Canonicalize recovered legacy rows so all
+        // future attempts use a container-relative reference.
+        let canonicalReference = persistedAudioFileReference(
+            for: audioFileURL,
+            audioDirectory: audioDirectory
+        )
+        if audioAsset.fileURL != canonicalReference {
+            audioAsset.fileURL = canonicalReference
         }
 
         job.beginAttempt(at: now, leaseDuration: leaseDuration)
@@ -1528,6 +1544,8 @@ class SpeechRecognitionViewModel: ObservableObject {
              TranscriptionJobRunnerError.audioFileMissing,
              TranscriptionJobRunnerError.audioAssetNotFound:
             return "audio_file_missing"
+        case RemoteSpeechTranscriptionError.audioTranscodeFailed:
+            return "audio_transcode_failed"
         case RemoteSpeechTranscriptionError.emptyTranscript:
             return "empty_remote_transcript"
         case let LoreBackendProcessingError.rejected(code, _, _):
@@ -1680,11 +1698,22 @@ class SpeechRecognitionViewModel: ObservableObject {
         storyID: UUID,
         fileURL: URL,
         createdAt: Date,
-        duration: TimeInterval
+        duration: TimeInterval,
+        fileManager: FileManager = .default
     ) -> AudioAsset {
-        AudioAsset(
+        let storedReference: String
+        if let audioDirectory = try? audioStorageDirectory(fileManager: fileManager) {
+            storedReference = persistedAudioFileReference(
+                for: fileURL,
+                audioDirectory: audioDirectory
+            )
+        } else {
+            storedReference = fileURL.absoluteString
+        }
+
+        return AudioAsset(
             id: storyID,
-            fileURL: fileURL.absoluteString,
+            fileURL: storedReference,
             createdAt: createdAt,
             expiresAt: createdAt.addingTimeInterval(audioRetentionInterval),
             duration: duration,
@@ -1742,6 +1771,69 @@ class SpeechRecognitionViewModel: ObservableObject {
             ofItemAtPath: directory.path
         )
         return directory
+    }
+
+    /// Returns a durable reference for an audio file. Files owned by Lore's audio
+    /// directory are stored by filename because the app container's absolute path
+    /// is not stable across installs and updates.
+    static func persistedAudioFileReference(
+        for fileURL: URL,
+        audioDirectory: URL
+    ) -> String {
+        let standardizedFileURL = fileURL.standardizedFileURL
+        let standardizedDirectory = audioDirectory.standardizedFileURL
+        guard standardizedFileURL.deletingLastPathComponent() == standardizedDirectory else {
+            // Keep compatibility for callers that provide a file outside Lore's
+            // managed directory (including imports and test fixtures).
+            return fileURL.absoluteString
+        }
+        return standardizedFileURL.lastPathComponent
+    }
+
+    /// Resolves both the current filename-only format and legacy absolute URLs.
+    /// If iOS moved the app container, the legacy URL no longer exists, so recover
+    /// the file from the current managed directory using only its last path item.
+    static func resolveAudioFileURL(
+        storedReference: String,
+        audioDirectory: URL,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        guard !isPlaceholderAudioURL(storedReference) else {
+            return nil
+        }
+
+        let legacyURL: URL?
+        if let parsedURL = URL(string: storedReference), parsedURL.scheme != nil {
+            legacyURL = parsedURL.isFileURL ? parsedURL : nil
+        } else if storedReference.hasPrefix("/") {
+            legacyURL = URL(fileURLWithPath: storedReference)
+        } else {
+            legacyURL = nil
+        }
+
+        if let legacyURL,
+           fileManager.fileExists(atPath: legacyURL.path) {
+            return legacyURL
+        }
+
+        let filename: String
+        if let legacyURL {
+            filename = legacyURL.lastPathComponent
+        } else {
+            filename = storedReference
+        }
+        guard !filename.isEmpty,
+              filename != ".",
+              filename != "..",
+              filename == URL(fileURLWithPath: filename).lastPathComponent else {
+            return nil
+        }
+
+        let currentURL = audioDirectory.appendingPathComponent(filename)
+        guard fileManager.fileExists(atPath: currentURL.path) else {
+            return nil
+        }
+        return currentURL
     }
 
     @discardableResult
@@ -1827,19 +1919,12 @@ class SpeechRecognitionViewModel: ObservableObject {
         at fileURL: String,
         fileManager: FileManager
     ) throws {
-        let candidateURL: URL
-
-        if let url = URL(string: fileURL), url.scheme != nil {
-            candidateURL = url
-        } else {
-            candidateURL = URL(fileURLWithPath: fileURL)
-        }
-
-        guard candidateURL.isFileURL else {
-            return
-        }
-
-        if fileManager.fileExists(atPath: candidateURL.path) {
+        let audioDirectory = try audioStorageDirectory(fileManager: fileManager)
+        if let candidateURL = resolveAudioFileURL(
+            storedReference: fileURL,
+            audioDirectory: audioDirectory,
+            fileManager: fileManager
+        ) {
             try fileManager.removeItem(at: candidateURL)
         }
     }

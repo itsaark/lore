@@ -131,7 +131,7 @@ struct LoreRemoteAudioFileLoader: Sendable {
             asset: asset,
             presetName: AVAssetExportPresetAppleM4A
         ) else {
-            throw RemoteSpeechTranscriptionError.audioFileMissing
+            throw RemoteSpeechTranscriptionError.audioTranscodeFailed
         }
         exporter.timeRange = CMTimeRange(
             start: CMTime(seconds: startSeconds, preferredTimescale: 600),
@@ -145,7 +145,7 @@ struct LoreRemoteAudioFileLoader: Sendable {
             throw CancellationError()
         } catch {
             try? FileManager.default.removeItem(at: outputURL)
-            throw RemoteSpeechTranscriptionError.audioFileMissing
+            throw RemoteSpeechTranscriptionError.audioTranscodeFailed
         }
     }
 }
