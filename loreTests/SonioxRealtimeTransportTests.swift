@@ -3,6 +3,10 @@ import Testing
 @testable import lore
 
 struct SonioxRealtimeTransportTests {
+    @Test func defaultTTSConfigurationUsesCurrentProductionModel() {
+        #expect(SonioxTTSConfiguration().model == "tts-rt-v1")
+    }
+
     @Test func credentialsOnlyAllowSecureSonioxEndpoints() throws {
         let valid = try makeCredential(endpoint: SonioxRealtimeEndpoint.speechToText)
         #expect(valid.endpoint == SonioxRealtimeEndpoint.speechToText)

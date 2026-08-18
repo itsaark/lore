@@ -74,6 +74,8 @@ The tab opens to a quiet, minimal screen that reuses Lore’s visual language wi
 - Primary action: **Start reflection**
 - Secondary explanation, shown only before the first reflection: “Your voice is transcribed by Soniox. Lore uses the transcript to guide the conversation and write your biography entry.”
 
+The Start reflection tap immediately begins authorization and connection. There is no second ready screen or Begin confirmation.
+
 Do not present model names, voice settings, or a conversation-mode picker on this screen.
 
 ### Live reflection
@@ -205,7 +207,7 @@ This maintains Lore’s existing “never delete on hope” rule while allowing 
 - STT WebSocket: `wss://stt-rt.soniox.com/transcribe-websocket`
 - STT model: `stt-rt-v5`
 - TTS WebSocket: `wss://tts-rt.soniox.com/tts-websocket`
-- TTS model: `tts-rt-v2`
+- TTS model: `tts-rt-v1`
 - Initial output: mono `pcm_s16le` at 24 kHz for low-overhead playback
 - Initial voice: a built-in voice selected during product testing; do not ship voice cloning in this feature
 
@@ -269,7 +271,7 @@ Suggested components:
 - `ReflectionGuideClient`: Lore backend response requests
 - `ReflectionFinalizer`: atomic source commit and biography job creation
 
-`ReflectionSessionModel` owns the live flow because it spans multiple asynchronous services and must survive view updates. Services are explicitly injected into the model. The view starts and cancels lifecycle work with `.task`; cancellation caused by navigation is not shown as an error. The durable persistence/finalization work remains in a runner so it can recover after app relaunch.
+`ReflectionSessionModel` owns the live flow because it spans multiple asynchronous services and must survive view updates. Services are explicitly injected into the model. The user’s Start reflection action begins the flow exactly once; view lifecycle tasks are reserved for relaunch recovery. The durable persistence/finalization work remains in a runner so it can recover after app relaunch.
 
 Suggested state machine:
 
@@ -445,7 +447,7 @@ The MVP currently follows these decisions; revise them before release if needed:
 - [Soniox real-time TTS](https://soniox.com/docs/tts/rt/real-time-generation)
 - [Soniox TTS WebSocket API](https://soniox.com/docs/api-reference/tts/websocket-api)
 - [Soniox TTS limits](https://soniox.com/docs/tts/rt/limits-and-quotas)
-- [Soniox TTS v2 announcement](https://soniox.com/blog/soniox-tts-v2)
+- [Soniox TTS models and changelog](https://soniox.com/docs/tts/models)
 - [Soniox security and privacy](https://soniox.com/docs/security-and-privacy)
 - [Lore inference strategy](./inference-strategy.md)
 - [Lore architecture](./architecture.md)

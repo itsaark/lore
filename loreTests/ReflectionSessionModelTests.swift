@@ -6,6 +6,70 @@ import Testing
 @Suite(.serialized)
 struct ReflectionSessionModelTests {
     @MainActor
+    @Test func firstStartTapBeginsImmediatelyAndOnlyOnce() async throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let profile = UserProfile(name: "Maya", hometown: "Portland", birthYear: 1990)
+        context.insert(profile)
+        try context.save()
+
+        let audio = ReflectionFakeAudio()
+        let backend = ReflectionFakeBackend()
+        let model = ReflectionSessionModel(
+            backend: backend,
+            modelContext: context,
+            userProfile: profile,
+            transport: SonioxRealtimeSessionTransport(
+                speechToText: ReflectionFakeSTT(),
+                textToSpeech: ReflectionFakeTTS()
+            ),
+            audio: audio
+        )
+
+        model.begin()
+        #expect(model.presentation.phase == .connecting)
+        model.begin()
+
+        try await waitUntil { model.presentation.phase == .listening }
+        #expect(audio.permissionRequestCount == 1)
+        #expect(await backend.credentialRequestCount == 1)
+        #expect(model.presentation.turns.count == 1)
+    }
+
+    @MainActor
+    @Test func permissionDeniedRetryStartsFreshAfterPermissionIsGranted() async throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let profile = UserProfile(name: "Maya", hometown: "Portland", birthYear: 1990)
+        context.insert(profile)
+        try context.save()
+
+        let audio = ReflectionFakeAudio(permissionResponses: [false, true])
+        let backend = ReflectionFakeBackend()
+        let model = ReflectionSessionModel(
+            backend: backend,
+            modelContext: context,
+            userProfile: profile,
+            transport: SonioxRealtimeSessionTransport(
+                speechToText: ReflectionFakeSTT(),
+                textToSpeech: ReflectionFakeTTS()
+            ),
+            audio: audio
+        )
+
+        model.begin()
+        try await waitUntil { model.presentation.phase == .error }
+        #expect(model.presentation.canSavePartialReflection == false)
+        #expect(try context.fetch(FetchDescriptor<ReflectionSession>()).isEmpty)
+
+        model.retry()
+        try await waitUntil { model.presentation.phase == .listening }
+        #expect(audio.permissionRequestCount == 2)
+        #expect(await backend.credentialRequestCount == 1)
+        #expect(try context.fetch(FetchDescriptor<ReflectionSession>()).count == 1)
+    }
+
+    @MainActor
     @Test func controlledTurnCommitsOnlyFinalUserSpeechBeforeRequestingGuide() async throws {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)
@@ -82,11 +146,13 @@ struct ReflectionSessionModelTests {
 
 private actor ReflectionFakeBackend: LoreReflectionBackendClient {
     private(set) var lastGuideRequest: ReflectionResponseRequest?
+    private(set) var credentialRequestCount = 0
 
     func createReflectionSessionCredentials(
         _ request: ReflectionSessionCredentialsRequest
     ) async throws -> ReflectionSessionCredentialsResponse {
-        ReflectionSessionCredentialsResponse(
+        credentialRequestCount += 1
+        return ReflectionSessionCredentialsResponse(
             schemaVersion: "1.0",
             sessionId: request.sessionId,
             stt: ReflectionSTTCredential(
@@ -191,8 +257,18 @@ private actor ReflectionFakeTTS: SonioxRealtimeSynthesizing {
 private final class ReflectionFakeAudio: ReflectionAudioControlling {
     private(set) var isCapturing = false
     private(set) var isPlaying = false
+    private(set) var permissionRequestCount = 0
+    private var permissionResponses: [Bool]
 
-    func requestMicrophonePermission() async -> Bool { true }
+    init(permissionResponses: [Bool] = [true]) {
+        self.permissionResponses = permissionResponses
+    }
+
+    func requestMicrophonePermission() async -> Bool {
+        permissionRequestCount += 1
+        guard !permissionResponses.isEmpty else { return true }
+        return permissionResponses.removeFirst()
+    }
 
     func startCapture(
         recordingTo fileURL: URL,

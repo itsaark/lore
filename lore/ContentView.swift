@@ -39,13 +39,11 @@ struct ContentView: View {
             .tag(LaunchTab.notes)
             .accessibilityIdentifier("notesTab")
 
-            ReflectHomeView {
-                ReflectionLiveSessionView(
-                    userProfile: userProfile,
-                    backend: reflectionBackend,
-                    onViewBiography: { selectedTab = .biography }
-                )
-            }
+            ReflectionLiveSessionView(
+                userProfile: userProfile,
+                backend: reflectionBackend,
+                onViewBiography: { selectedTab = .biography }
+            )
             .tabItem {
                 Label("Reflect", systemImage: "bubble.left.and.text.bubble.right")
             }

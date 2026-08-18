@@ -384,7 +384,7 @@ actor SonioxRealtimeSTTClient: SonioxRealtimeTranscribing {
 }
 
 struct SonioxTTSConfiguration: Equatable, Sendable {
-    var model = "tts-rt-v2"
+    var model = "tts-rt-v1"
     var language = "en"
     var voice = "Adrian"
     var audioFormat = "pcm_s16le"

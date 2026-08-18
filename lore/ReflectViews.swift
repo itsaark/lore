@@ -6,41 +6,22 @@ enum ReflectionSessionPhase: String, CaseIterable, Hashable {
     case listening
     case thinking
     case speaking
+    case ending
     case review
     case completed
     case error
 
     var accessibilityValue: String {
         switch self {
-        case .idle:
-            "Ready"
-        case .connecting:
-            "Connecting"
-        case .listening:
-            "Listening"
-        case .thinking:
-            "Lore is preparing a response"
-        case .speaking:
-            "Lore is speaking"
-        case .review:
-            "Reviewing the reflection"
-        case .completed:
-            "Reflection saved"
-        case .error:
-            "The reflection needs attention"
-        }
-    }
-
-    fileprivate var orbState: VoiceOrbState {
-        switch self {
-        case .listening:
-            .listening
-        case .connecting, .thinking:
-            .processing
-        case .speaking:
-            .speaking
-        case .idle, .review, .completed, .error:
-            .idle
+        case .idle: "Ready"
+        case .connecting: "Connecting"
+        case .listening: "Listening"
+        case .thinking: "Lore is preparing a response"
+        case .speaking: "Lore is speaking"
+        case .ending: "Finishing the reflection"
+        case .review: "Reviewing the reflection"
+        case .completed: "Reflection saved"
+        case .error: "The reflection needs attention"
         }
     }
 }
@@ -107,6 +88,7 @@ struct ReflectionSessionActions {
     var retry: () -> Void
     var savePartialReflection: () -> Void
     var discardReflection: () -> Void
+    var close: () -> Void
     var viewBiography: () -> Void
 
     static let disabled = Self(
@@ -119,44 +101,69 @@ struct ReflectionSessionActions {
         retry: {},
         savePartialReflection: {},
         discardReflection: {},
+        close: {},
         viewBiography: {}
     )
 }
 
-struct ReflectHomeView<SessionContent: View>: View {
-    private let sessionContent: () -> SessionContent
-
-    init(@ViewBuilder sessionContent: @escaping () -> SessionContent) {
-        self.sessionContent = sessionContent
-    }
+/// The entire Reflect tab has one state owner and one navigation surface. The
+/// first tap starts the session; there is intentionally no pushed "ready" page.
+struct ReflectRootView: View {
+    let presentation: ReflectionSessionPresentation
+    let actions: ReflectionSessionActions
 
     var body: some View {
         NavigationStack {
-            GeometryReader { geometry in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 28)
+            Group {
+                if presentation.phase == .idle {
+                    ReflectHomeView(start: actions.begin)
+                        .transition(.opacity)
+                } else {
+                    ReflectionSessionView(
+                        presentation: presentation,
+                        actions: actions
+                    )
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeInOut(duration: 0.24), value: presentation.phase == .idle)
+        }
+        .toolbar(presentation.phase == .idle ? .visible : .hidden, for: .tabBar)
+    }
+}
 
-                        ReflectionOrb(phase: .idle, audioLevel: 0, size: heroSize(in: geometry.size))
-                            .padding(.bottom, 28)
+struct ReflectHomeView: View {
+    let start: () -> Void
 
-                        VStack(spacing: 12) {
-                            Text("Take a moment")
-                                .font(.largeTitle.bold())
-                                .multilineTextAlignment(.center)
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                reflectionCanvasBackground
+                    .ignoresSafeArea()
 
-                            Text("Talk through your day. Lore will ask a few questions and save only what you tell it.")
-                                .font(.body)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: 420)
-                        }
+                ReflectionWaveField(phase: .idle, audioLevel: 0)
+                    .frame(height: geometry.size.height * 0.54)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .ignoresSafeArea(edges: .bottom)
 
-                        Spacer(minLength: 32)
+                VStack(spacing: 0) {
+                    Spacer(minLength: 36)
 
-                        NavigationLink {
-                            sessionContent()
-                        } label: {
+                    VStack(spacing: 12) {
+                        Text("Take a moment")
+                            .font(.largeTitle.bold())
+                            .multilineTextAlignment(.center)
+
+                        Text("Talk through your day with Lore.")
+                            .font(.title3)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    Spacer()
+
+                    VStack(spacing: 14) {
+                        Button(action: start) {
                             Label("Start reflection", systemImage: "waveform.and.mic")
                                 .font(.headline)
                                 .frame(maxWidth: .infinity)
@@ -164,245 +171,346 @@ struct ReflectHomeView<SessionContent: View>: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .buttonBorderShape(.capsule)
+                        .tint(.white)
+                        .foregroundStyle(.black)
+                        .accessibilityHint("Starts the conversation immediately")
                         .accessibilityIdentifier("reflectStartButton")
 
                         Label(
-                            "Only your words can become biography evidence.",
+                            "Only your finalized words become biography evidence.",
                             systemImage: "checkmark.shield"
                         )
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white.opacity(0.82))
                         .multilineTextAlignment(.center)
-                        .padding(.top, 16)
                         .accessibilityIdentifier("reflectPrivacySummary")
 
-                        Text("Soniox transcribes your live voice and speaks Lore’s questions. Finalized text is sent to Lore’s secure processing service to guide the conversation and write the biography entry.")
+                        Text("Live speech is processed by Soniox.")
                             .font(.caption)
-                            .foregroundStyle(.tertiary)
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 430)
-                            .padding(.top, 10)
+                            .foregroundStyle(.white.opacity(0.62))
                             .accessibilityIdentifier("reflectProviderDisclosure")
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 24)
-                    .frame(maxWidth: .infinity)
-                    .frame(minHeight: geometry.size.height)
+                    .padding(.bottom, max(22, geometry.safeAreaInsets.bottom + 12))
                 }
-                .scrollBounceBehavior(.basedOnSize)
+                .padding(.horizontal, 24)
             }
-            .background(Color(.systemBackground))
             .navigationTitle("Reflect")
             .navigationBarTitleDisplayMode(.inline)
         }
-    }
-
-    private func heroSize(in availableSize: CGSize) -> CGFloat {
-        min(max(availableSize.width * 0.50, 150), 220)
+        .background(reflectionCanvasBackground)
     }
 }
 
 struct ReflectionSessionView: View {
-    @Environment(\.dismiss) private var dismiss
-
     let presentation: ReflectionSessionPresentation
     let actions: ReflectionSessionActions
 
+    @State private var showsCaptions = true
+
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(spacing: 24) {
-                    statusHeader
-
-                    if presentation.phase == .review {
-                        reviewExplanation
-                    }
-
-                    conversation
-
-                    if let provisionalTranscript = presentation.provisionalTranscript,
-                       !provisionalTranscript.isEmpty,
-                       presentation.phase == .listening {
-                        provisionalCaption(provisionalTranscript)
-                    }
-
-                    controls
-                        .padding(.top, 4)
-
-                    Color.clear
-                        .frame(height: 1)
-                        .id(Self.bottomAnchor)
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 24)
+        Group {
+            switch presentation.phase {
+            case .review:
+                reviewScreen
+            case .completed:
+                completionScreen
+            case .idle:
+                EmptyView()
+            case .connecting, .listening, .thinking, .speaking, .ending, .error:
+                liveCallScreen
             }
-            .onChange(of: presentation.turns.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.25)) {
-                    proxy.scrollTo(Self.bottomAnchor, anchor: .bottom)
+        }
+        .navigationBarBackButtonHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    private var liveCallScreen: some View {
+        GeometryReader { geometry in
+            ZStack {
+                reflectionCanvasBackground
+                    .ignoresSafeArea()
+
+                ReflectionWaveField(
+                    phase: presentation.phase,
+                    audioLevel: presentation.audioLevel
+                )
+                .frame(height: geometry.size.height * 0.60)
+                .frame(maxHeight: .infinity, alignment: .bottom)
+                .ignoresSafeArea(edges: .bottom)
+
+                VStack(spacing: 0) {
+                    callHeader
+
+                    Spacer(minLength: 28)
+
+                    VStack(spacing: 16) {
+                        Text(statusTitle)
+                            .font(.title2.bold())
+                            .multilineTextAlignment(.center)
+                            .contentTransition(.numericText())
+
+                        if presentation.phase == .error {
+                            VStack(spacing: 14) {
+                                Text(presentation.errorMessage ?? "Your completed answers are still safe on this iPhone.")
+                                    .font(.body)
+                                    .foregroundStyle(.secondary)
+                                    .multilineTextAlignment(.center)
+                                    .frame(maxWidth: 340)
+
+                                if presentation.canSavePartialReflection {
+                                    Button("Save completed answers", action: actions.savePartialReflection)
+                                        .font(.subheadline.weight(.semibold))
+                                        .buttonStyle(.bordered)
+                                        .buttonBorderShape(.capsule)
+                                        .accessibilityIdentifier("reflectionSavePartialButton")
+                                }
+                            }
+                        } else if showsCaptions, let captionText {
+                            Text(captionText)
+                                .font(.body)
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(3)
+                                .frame(maxWidth: 340, minHeight: 66, alignment: .top)
+                                .transition(.opacity)
+                                .accessibilityIdentifier("reflectionLiveCaption")
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Reflection status")
+                    .accessibilityValue(presentation.phase.accessibilityValue)
+                    .accessibilityIdentifier("reflectionStatus")
+
+                    Spacer()
+
+                    liveControls
+                        .padding(.bottom, max(24, geometry.safeAreaInsets.bottom + 12))
                 }
+                .padding(.horizontal, 22)
+                .padding(.top, 14)
             }
+        }
+    }
+
+    private var callHeader: some View {
+        HStack {
+            Text("Reflection")
+                .font(.headline)
+
+            Spacer()
+
+            Text(presentation.elapsedTime)
+                .font(.subheadline.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .accessibilityLabel("Reflection duration")
+        }
+    }
+
+    private var liveControls: some View {
+        HStack(alignment: .top, spacing: 24) {
+            CallControlButton(
+                title: "Captions",
+                systemImage: showsCaptions ? "captions.bubble.fill" : "captions.bubble",
+                tint: .primary,
+                background: Color(.systemBackground).opacity(0.88),
+                action: { showsCaptions.toggle() }
+            )
+            .accessibilityValue(showsCaptions ? "On" : "Off")
+            .accessibilityIdentifier("reflectionCaptionsButton")
+
+            contextualCallControl
+
+            if presentation.phase == .error {
+                CallControlButton(
+                    title: "Close",
+                    systemImage: "xmark",
+                    tint: .white,
+                    background: .red,
+                    action: actions.discardReflection
+                )
+                .accessibilityIdentifier("reflectionDiscardButton")
+            } else {
+                CallControlButton(
+                    title: "End",
+                    systemImage: "phone.down.fill",
+                    tint: .white,
+                    background: .red,
+                    action: actions.requestEnd
+                )
+                .accessibilityIdentifier("reflectionEndButton")
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var contextualCallControl: some View {
+        switch presentation.phase {
+        case .speaking:
+            CallControlButton(
+                title: "Answer",
+                systemImage: "mic.fill",
+                tint: .primary,
+                background: Color(.systemBackground).opacity(0.88),
+                action: actions.interruptLore
+            )
+            .accessibilityIdentifier("reflectionAnswerButton")
+
+        case .listening:
+            CallControlButton(
+                title: "Done",
+                systemImage: "checkmark",
+                tint: .primary,
+                background: Color(.systemBackground).opacity(0.88),
+                action: actions.finishAnswer
+            )
+            .accessibilityIdentifier("reflectionFinishAnswerButton")
+
+        case .error:
+            CallControlButton(
+                title: "Retry",
+                systemImage: "arrow.clockwise",
+                tint: .primary,
+                background: Color(.systemBackground).opacity(0.88),
+                action: actions.retry
+            )
+            .accessibilityIdentifier("reflectionRetryButton")
+
+        case .connecting, .thinking, .ending:
+            CallProgressControl(title: progressTitle)
+
+        case .idle, .review, .completed:
+            EmptyView()
+        }
+    }
+
+    private var reviewScreen: some View {
+        ScrollView {
+            VStack(spacing: 22) {
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.shield.fill")
+                        .font(.system(size: 42))
+                        .foregroundStyle(.green)
+
+                    Text("Review your reflection")
+                        .font(.title2.bold())
+
+                    Text("Only your replies are used to write the biography entry.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                LazyVStack(spacing: 12) {
+                    ForEach(presentation.turns) { turn in
+                        ReflectionTurnBubble(turn: turn)
+                    }
+                }
+                .accessibilityIdentifier("reflectionTranscript")
+
+                VStack(spacing: 12) {
+                    primaryButton(
+                        "Save to Biography",
+                        systemImage: "checkmark.circle",
+                        action: actions.saveReflection
+                    )
+
+                    Button("Keep talking", action: actions.continueReflection)
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.capsule)
+                        .accessibilityIdentifier("reflectionContinueButton")
+
+                    Button("Discard reflection", role: .destructive, action: actions.discardReflection)
+                        .font(.footnote)
+                        .accessibilityIdentifier("reflectionDiscardButton")
+                }
+                .padding(.top, 4)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 28)
         }
         .background(Color(.systemBackground))
         .navigationTitle("Reflection")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            if presentation.phase.showsEndButton {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("End", action: actions.requestEnd)
-                        .accessibilityIdentifier("reflectionEndButton")
+        .toolbar(.visible, for: .navigationBar)
+        .accessibilityIdentifier("reflectionReviewScreen")
+    }
+
+    private var completionScreen: some View {
+        GeometryReader { geometry in
+            ZStack {
+                reflectionCanvasBackground.ignoresSafeArea()
+
+                ReflectionWaveField(phase: .completed, audioLevel: 0)
+                    .frame(height: geometry.size.height * 0.52)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
+                    .ignoresSafeArea(edges: .bottom)
+
+                VStack(spacing: 18) {
+                    Spacer()
+
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 54))
+                        .foregroundStyle(.green)
+
+                    Text("Added to Biography")
+                        .font(.title.bold())
+
+                    Text("Lore created a faithful third-person entry from your words.")
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 340)
+
+                    Spacer()
+
+                    VStack(spacing: 12) {
+                        primaryButton(
+                            "View in Biography",
+                            systemImage: "book.closed",
+                            action: actions.viewBiography
+                        )
+
+                        Button("Done", action: actions.close)
+                            .buttonStyle(.bordered)
+                            .buttonBorderShape(.capsule)
+                            .accessibilityIdentifier("reflectionDoneButton")
+                    }
+                    .padding(.bottom, max(24, geometry.safeAreaInsets.bottom + 12))
                 }
+                .padding(.horizontal, 24)
             }
         }
-        .accessibilityIdentifier("reflectionSessionScreen")
+        .accessibilityIdentifier("reflectionCompletedScreen")
     }
 
-    private var statusHeader: some View {
-        VStack(spacing: 14) {
-            ReflectionOrb(
-                phase: presentation.phase,
-                audioLevel: presentation.audioLevel,
-                size: 150
-            )
-
-            VStack(spacing: 5) {
-                Text(statusTitle)
-                    .font(.title2.bold())
-                    .multilineTextAlignment(.center)
-
-                Text(statusDetail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 390)
-            }
-
-            if presentation.phase.isTimedSessionState {
-                Text(presentation.elapsedTime)
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("Reflection duration")
-            }
+    private var captionText: String? {
+        if let provisional = presentation.provisionalTranscript,
+           !provisional.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return provisional
         }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Reflection status")
-        .accessibilityValue(presentation.phase.accessibilityValue)
-        .accessibilityIdentifier("reflectionStatus")
+        return presentation.turns.last?.text
     }
 
-    @ViewBuilder
-    private var conversation: some View {
-        if presentation.turns.isEmpty {
-            if presentation.phase == .idle {
-                Text("When you’re ready, Lore will begin with one simple question.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 360)
-                    .padding(.vertical, 8)
-            }
-        } else {
-            LazyVStack(spacing: 12) {
-                ForEach(presentation.turns) { turn in
-                    ReflectionTurnBubble(turn: turn)
-                }
-            }
-            .accessibilityIdentifier("reflectionTranscript")
-        }
-    }
-
-    private var reviewExplanation: some View {
-        Label {
-            Text("Lore’s questions add context, but only your finalized replies are used as evidence for the biography entry.")
-        } icon: {
-            Image(systemName: "checkmark.shield")
-        }
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 14))
-        .accessibilityIdentifier("reflectionReviewExplanation")
-    }
-
-    private func provisionalCaption(_ text: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Label("Listening", systemImage: "waveform")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-
-            Text(text)
-                .font(.body)
-                .foregroundStyle(.secondary)
-                .italic()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
-        .background(Color(.secondarySystemBackground).opacity(0.72), in: RoundedRectangle(cornerRadius: 16))
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Live transcript")
-        .accessibilityIdentifier("reflectionProvisionalTranscript")
-    }
-
-    @ViewBuilder
-    private var controls: some View {
+    private var statusTitle: String {
         switch presentation.phase {
-        case .idle:
-            primaryButton("Begin", systemImage: "sparkles", action: actions.begin)
+        case .idle: ""
+        case .connecting: "Connecting…"
+        case .listening: "Listening…"
+        case .thinking: "Thinking…"
+        case .speaking: "Lore is speaking…"
+        case .ending: "Finishing…"
+        case .review: "Review your reflection"
+        case .completed: "Added to Biography"
+        case .error: "We lost the thread"
+        }
+    }
 
-        case .connecting:
-            progressControl("Connecting securely…")
-
-        case .speaking:
-            primaryButton("Answer now", systemImage: "mic.fill", action: actions.interruptLore)
-
-        case .listening:
-            primaryButton("Done answering", systemImage: "checkmark", action: actions.finishAnswer)
-
-        case .thinking:
-            progressControl("Understanding…")
-
-        case .review:
-            VStack(spacing: 12) {
-                primaryButton("Save reflection", systemImage: "checkmark.circle", action: actions.saveReflection)
-
-                Button("Keep talking", action: actions.continueReflection)
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.capsule)
-                    .accessibilityIdentifier("reflectionContinueButton")
-
-                Button("Discard reflection", role: .destructive, action: actions.discardReflection)
-                    .font(.footnote)
-                    .accessibilityIdentifier("reflectionDiscardButton")
-            }
-
-        case .completed:
-            VStack(spacing: 12) {
-                primaryButton("View in Biography", systemImage: "book.closed", action: actions.viewBiography)
-
-                Button("Done") {
-                    dismiss()
-                }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
-                .accessibilityIdentifier("reflectionDoneButton")
-            }
-
-        case .error:
-            VStack(spacing: 12) {
-                primaryButton("Try again", systemImage: "arrow.clockwise", action: actions.retry)
-
-                if presentation.canSavePartialReflection {
-                    Button("Save what we have", action: actions.savePartialReflection)
-                        .buttonStyle(.bordered)
-                        .buttonBorderShape(.capsule)
-                        .accessibilityIdentifier("reflectionSavePartialButton")
-                }
-
-                Button("Discard reflection", role: .destructive, action: actions.discardReflection)
-                    .font(.footnote)
-                    .accessibilityIdentifier("reflectionDiscardButton")
-            }
+    private var progressTitle: String {
+        switch presentation.phase {
+        case .connecting: "Connecting"
+        case .thinking: "Thinking"
+        case .ending: "Finishing"
+        default: "Working"
         }
     }
 
@@ -421,102 +529,52 @@ struct ReflectionSessionView: View {
         .buttonBorderShape(.capsule)
         .accessibilityIdentifier("reflectionPrimaryButton")
     }
-
-    private func progressControl(_ title: String) -> some View {
-        HStack(spacing: 10) {
-            ProgressView()
-            Text(title)
-                .font(.headline)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 15)
-        .background(Color(.secondarySystemBackground), in: Capsule())
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("reflectionProgress")
-    }
-
-    private var statusTitle: String {
-        switch presentation.phase {
-        case .idle:
-            "Ready when you are"
-        case .connecting:
-            "Getting things ready"
-        case .listening:
-            "I’m listening"
-        case .thinking:
-            "One moment"
-        case .speaking:
-            "Lore is speaking"
-        case .review:
-            "Review your reflection"
-        case .completed:
-            "Reflection saved"
-        case .error:
-            "We lost the thread"
-        }
-    }
-
-    private var statusDetail: String {
-        switch presentation.phase {
-        case .idle:
-            "You can end at any time."
-        case .connecting:
-            "This should only take a moment."
-        case .listening:
-            "Take your time. Tap Done answering when you’ve finished."
-        case .thinking:
-            "Lore is choosing one short follow-up."
-        case .speaking:
-            "Tap Answer now if you’re ready to respond."
-        case .review:
-            "Check the conversation before it becomes a biography entry."
-        case .completed:
-            "Lore is preparing a faithful third-person entry from your words."
-        case .error:
-            presentation.errorMessage ?? "Your completed answers are still safe on this iPhone."
-        }
-    }
-
-    private static let bottomAnchor = "reflectionBottom"
 }
 
-private struct ReflectionOrb: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let phase: ReflectionSessionPhase
-    let audioLevel: Float
-    let size: CGFloat
+private struct CallControlButton: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+    let background: Color
+    let action: () -> Void
 
     var body: some View {
-        ZStack {
-            BreathingOrb(
-                size: size,
-                speed: breathingSpeed,
-                tint: phase == .error ? .secondary : nil
-            )
-            .opacity(phase == .error ? 0.22 : 0.42)
+        Button(action: action) {
+            VStack(spacing: 7) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 21, weight: .semibold))
+                    .frame(width: 58, height: 58)
+                    .foregroundStyle(tint)
+                    .background(background, in: Circle())
 
-            Circle()
-                .fill(Color(.systemBackground).opacity(0.82))
-                .frame(width: size * 0.62, height: size * 0.62)
-
-            CloudWaveOrb(
-                size: size * 0.58,
-                state: phase.orbState,
-                audioLevel: reduceMotion ? 0 : audioLevel
-            )
+                Text(title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 76)
         }
-        .frame(width: size, height: size)
-        .accessibilityHidden(true)
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
     }
+}
 
-    private var breathingSpeed: Double {
-        switch phase {
-        case .listening: 0.34
-        case .speaking: 0.26
-        case .connecting, .thinking: 0.14
-        case .idle, .review, .completed, .error: 0.07
+private struct CallProgressControl: View {
+    let title: String
+
+    var body: some View {
+        VStack(spacing: 7) {
+            ProgressView()
+                .tint(.primary)
+                .frame(width: 58, height: 58)
+                .background(Color(.systemBackground).opacity(0.88), in: Circle())
+
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.white)
         }
+        .frame(width: 76)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("reflectionProgress")
     }
 }
 
@@ -554,31 +612,25 @@ private struct ReflectionTurnBubble: View {
 
     private var bubbleColor: Color {
         switch turn.speaker {
-        case .lore:
-            Color(.secondarySystemBackground)
-        case .user:
-            Color.accentColor.opacity(0.13)
+        case .lore: Color(.secondarySystemBackground)
+        case .user: Color.accentColor.opacity(0.13)
         }
     }
 }
 
-private extension ReflectionSessionPhase {
-    var showsEndButton: Bool {
-        switch self {
-        case .connecting, .listening, .thinking, .speaking:
-            true
-        case .idle, .review, .completed, .error:
-            false
-        }
-    }
+private var reflectionCanvasBackground: Color {
+    Color(light: Color(red: 0.97, green: 0.95, blue: 0.91), dark: .black)
+}
 
-    var isTimedSessionState: Bool {
-        switch self {
-        case .connecting, .listening, .thinking, .speaking, .review:
-            true
-        case .idle, .completed, .error:
-            false
-        }
+private extension Color {
+    init(light: Color, dark: Color) {
+#if canImport(UIKit)
+        self.init(UIColor { traits in
+            traits.userInterfaceStyle == .dark ? UIColor(dark) : UIColor(light)
+        })
+#else
+        self = light
+#endif
     }
 }
 
@@ -598,53 +650,45 @@ private let reflectionPreviewTurns = [
 ]
 
 #Preview("Reflect home") {
-    ReflectHomeView {
-        ReflectionSessionView(
-            presentation: ReflectionSessionPresentation(phase: .idle),
-            actions: .disabled
-        )
-    }
+    ReflectRootView(
+        presentation: ReflectionSessionPresentation(phase: .idle),
+        actions: .disabled
+    )
 }
 
 #Preview("Listening") {
-    NavigationStack {
-        ReflectionSessionView(
-            presentation: ReflectionSessionPresentation(
-                phase: .listening,
-                turns: reflectionPreviewTurns,
-                provisionalTranscript: "It made the idea feel possible…",
-                elapsedTime: "3:18",
-                audioLevel: 0.28
-            ),
-            actions: .disabled
-        )
-    }
+    ReflectRootView(
+        presentation: ReflectionSessionPresentation(
+            phase: .listening,
+            turns: reflectionPreviewTurns,
+            provisionalTranscript: "It made the idea feel possible…",
+            elapsedTime: "3:18",
+            audioLevel: 0.28
+        ),
+        actions: .disabled
+    )
 }
 
 #Preview("Review") {
-    NavigationStack {
-        ReflectionSessionView(
-            presentation: ReflectionSessionPresentation(
-                phase: .review,
-                turns: reflectionPreviewTurns,
-                elapsedTime: "5:42"
-            ),
-            actions: .disabled
-        )
-    }
+    ReflectRootView(
+        presentation: ReflectionSessionPresentation(
+            phase: .review,
+            turns: reflectionPreviewTurns,
+            elapsedTime: "5:42"
+        ),
+        actions: .disabled
+    )
 }
 
 #Preview("Recoverable error") {
-    NavigationStack {
-        ReflectionSessionView(
-            presentation: ReflectionSessionPresentation(
-                phase: .error,
-                turns: reflectionPreviewTurns,
-                elapsedTime: "4:03",
-                errorMessage: "The connection paused before your last answer finished.",
-                canSavePartialReflection: true
-            ),
-            actions: .disabled
-        )
-    }
+    ReflectRootView(
+        presentation: ReflectionSessionPresentation(
+            phase: .error,
+            turns: reflectionPreviewTurns,
+            elapsedTime: "4:03",
+            errorMessage: "The connection paused before your last answer finished.",
+            canSavePartialReflection: true
+        ),
+        actions: .disabled
+    )
 }

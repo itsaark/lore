@@ -67,6 +67,7 @@ final class ReflectionSessionModel: ObservableObject {
             retry: { [weak self] in self?.retry() },
             savePartialReflection: { [weak self] in self?.savePartialReflection() },
             discardReflection: { [weak self] in self?.discardReflection() },
+            close: { [weak self] in self?.closeCompletedReflection() },
             viewBiography: {}
         )
     }
@@ -74,6 +75,7 @@ final class ReflectionSessionModel: ObservableObject {
     func begin() {
         guard !hasStarted, presentation.phase == .idle else { return }
         hasStarted = true
+        presentation = ReflectionSessionPresentation(phase: .connecting)
         currentFlowTask = Task { [weak self] in
             await self?.beginFlow()
         }
@@ -141,11 +143,22 @@ final class ReflectionSessionModel: ObservableObject {
         case .listening:
             endAfterCurrentTurn = true
             finishAnswer()
+            presentation.phase = .ending
         case .speaking:
+            guard hasFinalizedUserTurn else {
+                discardReflection()
+                return
+            }
             endAfterCurrentTurn = true
             interruptLore()
-        case .connecting, .thinking:
+            presentation.phase = .ending
+        case .connecting:
+            discardReflection()
+        case .thinking:
             endAfterCurrentTurn = true
+            presentation.phase = .ending
+        case .ending:
+            break
         case .idle, .review, .completed, .error:
             presentation.phase = turns.contains(where: { $0.role == .user }) ? .review : .idle
         }
@@ -154,7 +167,8 @@ final class ReflectionSessionModel: ObservableObject {
     func continueReflection() {
         guard presentation.phase == .review else { return }
         endAfterCurrentTurn = false
-        Task { [weak self] in await self?.startListening() }
+        presentation.phase = .connecting
+        currentFlowTask = Task { [weak self] in await self?.startListening() }
     }
 
     func saveReflection() {
@@ -165,8 +179,10 @@ final class ReflectionSessionModel: ObservableObject {
     func retry() {
         if finalizationPackage != nil {
             currentFlowTask = Task { [weak self] in await self?.finalizeFlow() }
-        } else {
+        } else if session?.state == .active, hasFinalizedUserTurn {
             currentFlowTask = Task { [weak self] in await self?.reconnectFlow() }
+        } else {
+            currentFlowTask = Task { [weak self] in await self?.restartFlow() }
         }
     }
 
@@ -177,21 +193,21 @@ final class ReflectionSessionModel: ObservableObject {
     }
 
     func discardReflection() {
-        currentFlowTask?.cancel()
-        receiveTask?.cancel()
-        keepAliveTask?.cancel()
-        keepAliveTask = nil
-        timerTask?.cancel()
-        audio.tearDown()
+        cancelRuntimeWork()
         let storedTurns = turns
         turns.removeAll()
         storedTurns.forEach(modelContext.delete)
         session?.discard()
         try? modelContext.save()
         Task { [transport] in await transport.disconnect() }
-        credentials = nil
-        presentation = ReflectionSessionPresentation(phase: .idle)
-        hasStarted = false
+        resetInMemoryState()
+    }
+
+    func closeCompletedReflection() {
+        guard presentation.phase == .completed else { return }
+        cancelRuntimeWork()
+        Task { [transport] in await transport.disconnect() }
+        resetInMemoryState()
     }
 
     func pauseForInterruption() {
@@ -204,11 +220,13 @@ final class ReflectionSessionModel: ObservableObject {
         audio.tearDown()
         Task { [transport] in await transport.disconnect() }
         credentials = nil
-        fail("The reflection paused when Lore became inactive. Your finalized answers are still safe.", canSavePartial: !turns.isEmpty)
+        fail(
+            "The reflection paused while Lore was in the background. Your finalized answers are still safe.",
+            canSavePartial: hasFinalizedUserTurn
+        )
     }
 
     private func beginFlow() async {
-        presentation.phase = .connecting
         guard await audio.requestMicrophonePermission() else {
             fail("Microphone access is required to start a reflection.", canSavePartial: false)
             return
@@ -241,8 +259,26 @@ final class ReflectionSessionModel: ObservableObject {
         } catch {
             activeSession.markFailed()
             try? modelContext.save()
-            fail(message(for: error), canSavePartial: !turns.isEmpty)
+            fail(message(for: error), canSavePartial: hasFinalizedUserTurn)
         }
+    }
+
+    private func restartFlow() async {
+        cancelRuntimeWork(cancelCurrentFlow: false)
+        await transport.disconnect()
+
+        let storedTurns = turns
+        turns.removeAll()
+        storedTurns.forEach(modelContext.delete)
+        if let session, session.state != .completed, session.state != .finalizing {
+            session.discard()
+        }
+        try? modelContext.save()
+
+        resetInMemoryState()
+        hasStarted = true
+        presentation = ReflectionSessionPresentation(phase: .connecting)
+        await beginFlow()
     }
 
     private func reconnectFlow() async {
@@ -276,7 +312,7 @@ final class ReflectionSessionModel: ObservableObject {
         } catch is CancellationError {
             return
         } catch {
-            fail(message(for: error), canSavePartial: !turns.isEmpty)
+            fail(message(for: error), canSavePartial: hasFinalizedUserTurn)
         }
     }
 
@@ -329,14 +365,19 @@ final class ReflectionSessionModel: ObservableObject {
     }
 
     private func handleTranscriptUpdate(_ update: SonioxTranscriptUpdate) async {
-        guard presentation.phase == .listening || presentation.phase == .thinking else { return }
+        guard presentation.phase == .listening
+            || presentation.phase == .thinking
+            || presentation.phase == .ending
+        else { return }
         finalTokens.append(contentsOf: update.tokens.filter(\.isFinal))
         let provisionalTokens = update.tokens.filter { !$0.isFinal }
         let caption = (finalTokens + provisionalTokens).map(\.text).joined()
             .trimmingCharacters(in: .whitespacesAndNewlines)
         presentation.provisionalTranscript = caption.isEmpty ? nil : caption
 
-        guard update.boundary != nil, !isCompletingUserTurn || presentation.phase == .thinking else { return }
+        guard update.boundary != nil,
+              !isCompletingUserTurn || presentation.phase == .thinking || presentation.phase == .ending
+        else { return }
         if presentation.phase == .listening {
             isCompletingUserTurn = true
             presentation.phase = .thinking
@@ -356,7 +397,10 @@ final class ReflectionSessionModel: ObservableObject {
 
         let text = finalTokens.map(\.text).joined().trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            fail("Lore did not catch enough speech to save that answer. Please try again.", canSavePartial: !turns.isEmpty)
+            fail(
+                "Lore did not catch enough speech to save that answer. Please try again.",
+                canSavePartial: hasFinalizedUserTurn
+            )
             return
         }
         let evidenceTokens = finalTokens.filter {
@@ -406,6 +450,10 @@ final class ReflectionSessionModel: ObservableObject {
                     turns: turns.map(\.conversationTurn)
                 )
             )
+            if endAfterCurrentTurn {
+                presentation.phase = .review
+                return
+            }
             try persistLoreTurn(response.spokenText)
             try await speak(response.spokenText)
             if endAfterCurrentTurn {
@@ -541,7 +589,37 @@ final class ReflectionSessionModel: ObservableObject {
         keepAliveTask = nil
         await transport.disconnect()
         credentials = nil
-        fail("The live speech connection was interrupted. Your finalized answers are still safe.", canSavePartial: !turns.isEmpty)
+        fail(
+            "The live speech connection was interrupted. Your finalized answers are still safe.",
+            canSavePartial: hasFinalizedUserTurn
+        )
+    }
+
+    private var hasFinalizedUserTurn: Bool {
+        turns.contains(where: { $0.role == .user })
+    }
+
+    private func cancelRuntimeWork(cancelCurrentFlow: Bool = true) {
+        if cancelCurrentFlow {
+            currentFlowTask?.cancel()
+        }
+        receiveTask?.cancel()
+        keepAliveTask?.cancel()
+        keepAliveTask = nil
+        timerTask?.cancel()
+        audio.tearDown()
+    }
+
+    private func resetInMemoryState() {
+        session = nil
+        finalizationPackage = nil
+        credentials = nil
+        currentTTSStreamID = nil
+        endAfterCurrentTurn = false
+        isCompletingUserTurn = false
+        resetCurrentUserTurn()
+        presentation = ReflectionSessionPresentation(phase: .idle)
+        hasStarted = false
     }
 
     private func refreshPresentationTurns() {
@@ -652,7 +730,6 @@ struct ReflectionLiveSessionView: View {
 }
 
 private struct ReflectionLiveSessionBoundView: View {
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model: ReflectionSessionModel
     let onViewBiography: () -> Void
@@ -672,7 +749,7 @@ private struct ReflectionLiveSessionBoundView: View {
     }
 
     var body: some View {
-        ReflectionSessionView(
+        ReflectRootView(
             presentation: model.presentation,
             actions: wiredActions
         )
@@ -680,7 +757,7 @@ private struct ReflectionLiveSessionBoundView: View {
             model.resumePendingFinalizationIfNeeded()
         }
         .onChange(of: scenePhase) { _, newPhase in
-            if newPhase != .active { model.pauseForInterruption() }
+            if newPhase == .background { model.pauseForInterruption() }
         }
     }
 
@@ -688,11 +765,10 @@ private struct ReflectionLiveSessionBoundView: View {
         var actions = model.actions
         actions.discardReflection = {
             model.discardReflection()
-            dismiss()
         }
         actions.viewBiography = {
+            model.closeCompletedReflection()
             onViewBiography()
-            dismiss()
         }
         return actions
     }
