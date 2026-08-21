@@ -31,6 +31,11 @@ export class SonioxClient {
     clientReferenceId: string,
     signal?: AbortSignal
   ): Promise<SonioxTemporaryKey> {
+    // STT authenticates one long-lived WebSocket session, so a single-use key
+    // is the narrowest safe credential. TTS authenticates every stream config
+    // on the shared WebSocket; a multi-turn reflection therefore needs the
+    // same bounded key to remain valid across several distinct stream IDs.
+    const isMultiStreamTTS = usageType === "tts_rt";
     const response = await this.fetchImpl(`${this.options.config.baseUrl}/auth/temporary-api-key`, {
       method: "POST",
       headers: {
@@ -40,11 +45,9 @@ export class SonioxClient {
       },
       body: JSON.stringify({
         usage_type: usageType,
-        // This is only the window in which the one-time WebSocket connection
-        // may be opened. The connected session has its own bounded duration.
-        expires_in_seconds: 300,
+        expires_in_seconds: isMultiStreamTTS ? 1_200 : 300,
         client_reference_id: clientReferenceId,
-        single_use: true,
+        single_use: !isMultiStreamTTS,
         max_session_duration_seconds: 1_200
       }),
       signal: signal ?? null

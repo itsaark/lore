@@ -43,16 +43,20 @@ describe("reflection contracts", () => {
 });
 
 describe("reflection routes", () => {
-  it("mints separate single-use Soniox STT and TTS keys", async () => {
+  it("mints single-use STT and reusable bounded TTS credentials", async () => {
     const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>(async (_input, init) => {
       expect(init?.headers).toMatchObject({ Authorization: "Bearer test-soniox-key-never-use-live" });
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       expect(body).toMatchObject({
-        single_use: true,
         max_session_duration_seconds: 1_200,
         client_reference_id: `reflection:${sessionId}`
       });
+      if (body.usage_type === "tts_rt") {
+        expect(body).toMatchObject({ single_use: false, expires_in_seconds: 1_200 });
+      } else {
+        expect(body).toMatchObject({ single_use: true, expires_in_seconds: 300 });
+      }
       const usage = String(body.usage_type);
       return Response.json({
         api_key: usage === "tts_rt" ? "temp:tts" : "temp:stt",
