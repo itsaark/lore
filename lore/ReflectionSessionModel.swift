@@ -682,13 +682,38 @@ final class ReflectionSessionModel: ObservableObject {
     private func message(for error: Error) -> String {
         switch error {
         case LoreBackendProcessingError.notConfigured:
-            "Reflect requires a physical iPhone with Lore's secure processing service configured."
+            return "Reflect requires a physical iPhone with Lore's secure processing service configured."
         case ReflectionAudioError.microphonePermissionDenied:
-            "Microphone access is required to start a reflection."
-        case is SonioxRealtimeError:
-            "Lore could not connect to the live speech service. Please try again."
+            return "Microphone access is required to start a reflection."
+        case SonioxRealtimeError.provider(let providerError):
+            // Provider status/type/request IDs are safe diagnostic metadata;
+            // never print the provider message because it is not a stable or
+            // content-audited field.
+            print(
+                "Reflection live speech provider failure: "
+                    + "status=\(providerError.statusCode) "
+                    + "type=\(providerError.type) "
+                    + "request_id=\(providerError.requestID ?? "none")"
+            )
+            return "Lore could not connect to the live speech service. Please try again."
+        case let realtimeError as SonioxRealtimeError:
+            print("Reflection live speech client failure: \(Self.diagnosticCode(for: realtimeError))")
+            return "Lore could not connect to the live speech service. Please try again."
         default:
-            "Lore could not continue the reflection. Your finalized answers are still safe."
+            return "Lore could not continue the reflection. Your finalized answers are still safe."
+        }
+    }
+
+    private static func diagnosticCode(for error: SonioxRealtimeError) -> String {
+        switch error {
+        case .invalidConfiguration: "invalid_configuration"
+        case .notConnected: "not_connected"
+        case .alreadyConnected: "already_connected"
+        case .invalidMessage: "invalid_message"
+        case .invalidAudioPayload: "invalid_audio_payload"
+        case .streamAlreadyActive: "stream_already_active"
+        case .provider: "provider"
+        case .transport: "transport"
         }
     }
 

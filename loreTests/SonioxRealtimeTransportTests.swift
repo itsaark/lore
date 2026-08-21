@@ -4,7 +4,23 @@ import Testing
 
 struct SonioxRealtimeTransportTests {
     @Test func defaultTTSConfigurationUsesCurrentProductionModel() {
-        #expect(SonioxTTSConfiguration().model == "tts-rt-v1")
+        #expect(SonioxTTSConfiguration().model == "tts-rt-v2")
+    }
+
+    @Test func ttsConfigurationOmitsUnsupportedOptionalFeaturesByDefault() throws {
+        let message = try SonioxRealtimeTTSClient.configurationMessage(
+            credential: makeCredential(endpoint: SonioxRealtimeEndpoint.textToSpeech),
+            streamID: "turn-1",
+            configuration: .init()
+        )
+        let object = try #require(try JSONSerialization.jsonObject(
+            with: Data(message.utf8)
+        ) as? [String: Any])
+
+        #expect(object["model"] as? String == "tts-rt-v2")
+        #expect(object["audio_format"] as? String == "pcm_s16le")
+        #expect(object["sample_rate"] as? Int == 24_000)
+        #expect(object["reduce_silence"] == nil)
     }
 
     @Test func credentialsOnlyAllowSecureSonioxEndpoints() throws {

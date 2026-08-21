@@ -189,6 +189,7 @@ private final class URLSessionSonioxWebSocketBox: @unchecked Sendable {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            reportTransportFailure(error, operation: "send")
             throw SonioxRealtimeError.transport
         }
     }
@@ -205,6 +206,7 @@ private final class URLSessionSonioxWebSocketBox: @unchecked Sendable {
         } catch let error as SonioxRealtimeError {
             throw error
         } catch {
+            reportTransportFailure(error, operation: "receive")
             throw SonioxRealtimeError.transport
         }
     }
@@ -212,6 +214,18 @@ private final class URLSessionSonioxWebSocketBox: @unchecked Sendable {
     func close() async {
         task.cancel(with: .goingAway, reason: nil)
         session.invalidateAndCancel()
+    }
+
+    private func reportTransportFailure(_ error: Error, operation: String) {
+        let value = error as NSError
+        // Domain/code/close code are content-free connection diagnostics. Do
+        // not log localized descriptions, URLs, credentials, or frame bodies.
+        print(
+            "Soniox WebSocket \(operation) failure: "
+                + "domain=\(value.domain) "
+                + "code=\(value.code) "
+                + "close_code=\(task.closeCode.rawValue)"
+        )
     }
 }
 
@@ -384,13 +398,13 @@ actor SonioxRealtimeSTTClient: SonioxRealtimeTranscribing {
 }
 
 struct SonioxTTSConfiguration: Equatable, Sendable {
-    var model = "tts-rt-v1"
+    var model = "tts-rt-v2"
     var language = "en"
     var voice = "Adrian"
     var audioFormat = "pcm_s16le"
     var sampleRate = 24_000
     var speed = 1.0
-    var reducesSilence = false
+    var reducesSilence: Bool?
     var returnsTimestamps = true
 }
 
@@ -503,7 +517,7 @@ actor SonioxRealtimeTTSClient: SonioxRealtimeSynthesizing {
         streamID: String,
         configuration: SonioxTTSConfiguration
     ) throws -> String {
-        try encodeJSONObject([
+        var value: [String: Any] = [
             "api_key": credential.apiKey,
             "model": configuration.model,
             "language": configuration.language,
@@ -512,9 +526,14 @@ actor SonioxRealtimeTTSClient: SonioxRealtimeSynthesizing {
             "sample_rate": configuration.sampleRate,
             "stream_id": streamID,
             "return_timestamps": configuration.returnsTimestamps,
-            "speed": configuration.speed,
-            "reduce_silence": configuration.reducesSilence
-        ])
+            "speed": configuration.speed
+        ]
+        // Silence reduction is capability-gated by Soniox. Keep the default
+        // payload minimal and send it only when a caller deliberately opts in.
+        if let reducesSilence = configuration.reducesSilence {
+            value["reduce_silence"] = reducesSilence
+        }
+        return try encodeJSONObject(value)
     }
 
     static func parseResponse(_ data: Data) throws -> SonioxTTSEvent {
