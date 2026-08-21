@@ -146,7 +146,10 @@ struct SonioxWebSocketConnector: Sendable {
         try await connectImplementation(url)
     }
 
-    static func urlSession(configuration: URLSessionConfiguration = .ephemeral) -> Self {
+    static func urlSession(
+        configuration: URLSessionConfiguration = .ephemeral,
+        diagnosticChannel: String = "unknown"
+    ) -> Self {
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieStorage = nil
@@ -154,8 +157,12 @@ struct SonioxWebSocketConnector: Sendable {
         configuration.waitsForConnectivity = true
 
         return Self { url in
-            let box = URLSessionSonioxWebSocketBox(url: url, configuration: configuration)
-            box.resume()
+            let box = URLSessionSonioxWebSocketBox(
+                url: url,
+                configuration: configuration,
+                diagnosticChannel: diagnosticChannel
+            )
+            try await box.connect()
             return SonioxWebSocketConnection(
                 send: { message in try await box.send(message) },
                 receive: { try await box.receive() },
@@ -166,16 +173,40 @@ struct SonioxWebSocketConnector: Sendable {
 }
 
 private final class URLSessionSonioxWebSocketBox: @unchecked Sendable {
+    private let delegate: URLSessionSonioxWebSocketDelegate
     private let session: URLSession
     private let task: URLSessionWebSocketTask
+    private let diagnosticChannel: String
 
-    init(url: URL, configuration: URLSessionConfiguration) {
-        session = URLSession(configuration: configuration)
+    init(
+        url: URL,
+        configuration: URLSessionConfiguration,
+        diagnosticChannel: String
+    ) {
+        let delegate = URLSessionSonioxWebSocketDelegate()
+        self.delegate = delegate
+        self.diagnosticChannel = diagnosticChannel
+        session = URLSession(
+            configuration: configuration,
+            delegate: delegate,
+            delegateQueue: nil
+        )
         task = session.webSocketTask(with: url)
     }
 
-    func resume() {
-        task.resume()
+    func connect() async throws {
+        do {
+            try await delegate.waitForOpen(task: task)
+        } catch is CancellationError {
+            task.cancel(with: .goingAway, reason: nil)
+            session.invalidateAndCancel()
+            throw CancellationError()
+        } catch {
+            reportTransportFailure(error, operation: "connect")
+            task.cancel(with: .goingAway, reason: nil)
+            session.invalidateAndCancel()
+            throw SonioxRealtimeError.transport
+        }
     }
 
     func send(_ message: SonioxWebSocketMessage) async throws {
@@ -222,10 +253,72 @@ private final class URLSessionSonioxWebSocketBox: @unchecked Sendable {
         // not log localized descriptions, URLs, credentials, or frame bodies.
         print(
             "Soniox WebSocket \(operation) failure: "
+                + "channel=\(diagnosticChannel) "
                 + "domain=\(value.domain) "
                 + "code=\(value.code) "
                 + "close_code=\(task.closeCode.rawValue)"
         )
+    }
+}
+
+private final class URLSessionSonioxWebSocketDelegate: NSObject, URLSessionWebSocketDelegate, @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Void, Error>?
+    private var isOpen = false
+    private var terminalError: Error?
+
+    func waitForOpen(task: URLSessionWebSocketTask) async throws {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                if isOpen {
+                    lock.unlock()
+                    continuation.resume()
+                    return
+                }
+                if let terminalError {
+                    lock.unlock()
+                    continuation.resume(throwing: terminalError)
+                    return
+                }
+                self.continuation = continuation
+                lock.unlock()
+                task.resume()
+            }
+        } onCancel: {
+            task.cancel(with: .goingAway, reason: nil)
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        webSocketTask: URLSessionWebSocketTask,
+        didOpenWithProtocol protocol: String?
+    ) {
+        lock.lock()
+        isOpen = true
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: Error?
+    ) {
+        lock.lock()
+        guard !isOpen else {
+            lock.unlock()
+            return
+        }
+        let failure = error ?? URLError(.cannotConnectToHost)
+        terminalError = failure
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(throwing: failure)
     }
 }
 
@@ -277,7 +370,7 @@ actor SonioxRealtimeSTTClient: SonioxRealtimeTranscribing {
     private let connector: SonioxWebSocketConnector
     private var connection: SonioxWebSocketConnection?
 
-    init(connector: SonioxWebSocketConnector = .urlSession()) {
+    init(connector: SonioxWebSocketConnector = .urlSession(diagnosticChannel: "stt")) {
         self.connector = connector
     }
 
@@ -434,7 +527,7 @@ actor SonioxRealtimeTTSClient: SonioxRealtimeSynthesizing {
     private var credential: SonioxTemporaryCredential?
     private var activeStreamIDs = Set<String>()
 
-    init(connector: SonioxWebSocketConnector = .urlSession()) {
+    init(connector: SonioxWebSocketConnector = .urlSession(diagnosticChannel: "tts")) {
         self.connector = connector
     }
 
@@ -583,6 +676,8 @@ actor SonioxRealtimeSessionTransport {
     nonisolated let speechToText: any SonioxRealtimeTranscribing
     nonisolated let textToSpeech: any SonioxRealtimeSynthesizing
     private(set) var state: SonioxRealtimeSessionState = .disconnected
+    private var isSpeechToTextConnected = false
+    private var isTextToSpeechConnected = false
 
     init(
         speechToText: any SonioxRealtimeTranscribing = SonioxRealtimeSTTClient(),
@@ -597,20 +692,51 @@ actor SonioxRealtimeSessionTransport {
         speechToTextConfiguration: SonioxSTTConfiguration = .init()
     ) async throws {
         guard state == .disconnected else { throw SonioxRealtimeError.alreadyConnected }
-        state = .connecting
         do {
-            try Task.checkCancellation()
-            try await speechToText.connect(
+            // TTS is intentionally opened first. Reflection prompts can play
+            // before microphone capture begins, while Soniox STT expects audio
+            // promptly after its authenticated configuration frame.
+            try await connectTextToSpeech(credential: credentials.textToSpeech)
+            try await connectSpeechToText(
                 credential: credentials.speechToText,
                 configuration: speechToTextConfiguration
             )
-            try Task.checkCancellation()
-            try await textToSpeech.connect(credential: credentials.textToSpeech)
-            state = .connected
         } catch {
-            await speechToText.disconnect()
-            await textToSpeech.disconnect()
-            state = .disconnected
+            await disconnect()
+            throw error
+        }
+    }
+
+    func connectTextToSpeech(credential: SonioxTemporaryCredential) async throws {
+        guard !isTextToSpeechConnected else { return }
+        state = .connecting
+        try Task.checkCancellation()
+        do {
+            try await textToSpeech.connect(credential: credential)
+            isTextToSpeechConnected = true
+            updateState()
+        } catch {
+            updateState()
+            throw error
+        }
+    }
+
+    func connectSpeechToText(
+        credential: SonioxTemporaryCredential,
+        configuration: SonioxSTTConfiguration = .init()
+    ) async throws {
+        guard !isSpeechToTextConnected else { return }
+        state = .connecting
+        try Task.checkCancellation()
+        do {
+            try await speechToText.connect(
+                credential: credential,
+                configuration: configuration
+            )
+            isSpeechToTextConnected = true
+            updateState()
+        } catch {
+            updateState()
             throw error
         }
     }
@@ -618,7 +744,19 @@ actor SonioxRealtimeSessionTransport {
     func disconnect() async {
         await speechToText.disconnect()
         await textToSpeech.disconnect()
+        isSpeechToTextConnected = false
+        isTextToSpeechConnected = false
         state = .disconnected
+    }
+
+    private func updateState() {
+        if isSpeechToTextConnected && isTextToSpeechConnected {
+            state = .connected
+        } else if isSpeechToTextConnected || isTextToSpeechConnected {
+            state = .connecting
+        } else {
+            state = .disconnected
+        }
     }
 }
 

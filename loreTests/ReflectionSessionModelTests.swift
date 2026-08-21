@@ -128,6 +128,62 @@ struct ReflectionSessionModelTests {
     }
 
     @MainActor
+    @Test func openingPromptFinishesBeforeSpeechToTextConnects() async throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let profile = UserProfile(name: "Maya", hometown: "Portland", birthYear: 1990)
+        context.insert(profile)
+        try context.save()
+
+        let probe = ReflectionLifecycleProbe()
+        let model = ReflectionSessionModel(
+            backend: ReflectionFakeBackend(),
+            modelContext: context,
+            userProfile: profile,
+            transport: SonioxRealtimeSessionTransport(
+                speechToText: ReflectionFakeSTT(probe: probe),
+                textToSpeech: ReflectionFakeTTS(probe: probe)
+            ),
+            audio: ReflectionFakeAudio()
+        )
+
+        model.begin()
+        try await waitUntil { model.presentation.phase == .listening }
+
+        #expect(await probe.events == ["tts-connect", "tts-synthesize", "stt-connect"])
+    }
+
+    @MainActor
+    @Test func finishAnswerDrainsAudioInOrderBeforeFinalize() async throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        let profile = UserProfile(name: "Maya", hometown: "Portland", birthYear: 1990)
+        context.insert(profile)
+        try context.save()
+
+        let chunks = [Data([1, 0]), Data([2, 0]), Data([3, 0])]
+        let stt = ReflectionFakeSTT(audioSendDelay: .milliseconds(20))
+        let model = ReflectionSessionModel(
+            backend: ReflectionFakeBackend(),
+            modelContext: context,
+            userProfile: profile,
+            transport: SonioxRealtimeSessionTransport(
+                speechToText: stt,
+                textToSpeech: ReflectionFakeTTS()
+            ),
+            audio: ReflectionFakeAudio(captureChunks: chunks)
+        )
+
+        model.begin()
+        try await waitUntil { model.presentation.phase == .listening }
+        model.finishAnswer()
+        try await waitUntilAsync { await stt.didFinalize }
+
+        #expect(await stt.sentAudio == chunks)
+        #expect(await stt.actions == ["audio", "audio", "audio", "finalize"])
+    }
+
+    @MainActor
     private func waitUntil(
         timeout: Duration = .seconds(2),
         condition: @escaping @MainActor () -> Bool
@@ -137,6 +193,22 @@ struct ReflectionSessionModelTests {
         while !condition() {
             if clock.now >= deadline {
                 Issue.record("Timed out waiting for reflection state")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    @MainActor
+    private func waitUntilAsync(
+        timeout: Duration = .seconds(2),
+        condition: @escaping () async -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while !(await condition()) {
+            if clock.now >= deadline {
+                Issue.record("Timed out waiting for asynchronous reflection state")
                 return
             }
             try await Task.sleep(for: .milliseconds(10))
@@ -199,13 +271,43 @@ private actor ReflectionFakeBackend: LoreReflectionBackendClient {
     }
 }
 
+private actor ReflectionLifecycleProbe {
+    private(set) var events: [String] = []
+
+    func record(_ event: String) {
+        events.append(event)
+    }
+}
+
 private actor ReflectionFakeSTT: SonioxRealtimeTranscribing {
     private var queued: [SonioxTranscriptUpdate] = []
     private var waiter: CheckedContinuation<SonioxTranscriptUpdate, Error>?
+    private let probe: ReflectionLifecycleProbe?
+    private let audioSendDelay: Duration?
+    private(set) var sentAudio: [Data] = []
+    private(set) var actions: [String] = []
+    private(set) var didFinalize = false
 
-    func connect(credential: SonioxTemporaryCredential, configuration: SonioxSTTConfiguration) async throws {}
-    func sendAudio(_ pcmS16LE: Data) async throws {}
-    func finalizeTurn() async throws {}
+    init(
+        probe: ReflectionLifecycleProbe? = nil,
+        audioSendDelay: Duration? = nil
+    ) {
+        self.probe = probe
+        self.audioSendDelay = audioSendDelay
+    }
+
+    func connect(credential: SonioxTemporaryCredential, configuration: SonioxSTTConfiguration) async throws {
+        await probe?.record("stt-connect")
+    }
+    func sendAudio(_ pcmS16LE: Data) async throws {
+        if let audioSendDelay { try await Task.sleep(for: audioSendDelay) }
+        sentAudio.append(pcmS16LE)
+        actions.append("audio")
+    }
+    func finalizeTurn() async throws {
+        actions.append("finalize")
+        didFinalize = true
+    }
     func keepAlive() async throws {}
     func finishSession() async throws {}
     func disconnect() async {
@@ -232,10 +334,18 @@ private actor ReflectionFakeSTT: SonioxRealtimeTranscribing {
 
 private actor ReflectionFakeTTS: SonioxRealtimeSynthesizing {
     private var events: [SonioxTTSEvent] = []
+    private let probe: ReflectionLifecycleProbe?
 
-    func connect(credential: SonioxTemporaryCredential) async throws {}
+    init(probe: ReflectionLifecycleProbe? = nil) {
+        self.probe = probe
+    }
+
+    func connect(credential: SonioxTemporaryCredential) async throws {
+        await probe?.record("tts-connect")
+    }
 
     func synthesize(text: String, streamID: String, configuration: SonioxTTSConfiguration) async throws {
+        await probe?.record("tts-synthesize")
         events.append(.terminated(streamID: streamID))
     }
 
@@ -259,9 +369,14 @@ private final class ReflectionFakeAudio: ReflectionAudioControlling {
     private(set) var isPlaying = false
     private(set) var permissionRequestCount = 0
     private var permissionResponses: [Bool]
+    private let captureChunks: [Data]
 
-    init(permissionResponses: [Bool] = [true]) {
+    init(
+        permissionResponses: [Bool] = [true],
+        captureChunks: [Data] = [Data([0, 0])]
+    ) {
         self.permissionResponses = permissionResponses
+        self.captureChunks = captureChunks
     }
 
     func requestMicrophonePermission() async -> Bool {
@@ -275,7 +390,7 @@ private final class ReflectionFakeAudio: ReflectionAudioControlling {
         onPCMChunk: @escaping @Sendable (Data) -> Void
     ) throws {
         isCapturing = true
-        onPCMChunk(Data([0, 0]))
+        captureChunks.forEach(onPCMChunk)
     }
 
     func stopCapture() throws { isCapturing = false }

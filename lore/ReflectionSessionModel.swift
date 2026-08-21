@@ -17,10 +17,14 @@ final class ReflectionSessionModel: ObservableObject {
     private var session: ReflectionSession?
     private var turns: [ReflectionTurn] = []
     private var finalizationPackage: ReflectionFinalizationPackage?
-    private var credentials: ReflectionSessionCredentialsResponse?
+    private var credentials: SonioxRealtimeSessionCredentials?
+    private var sttConfiguration = SonioxSTTConfiguration()
     private var ttsConfiguration = SonioxTTSConfiguration()
     private var receiveTask: Task<Void, Never>?
     private var keepAliveTask: Task<Void, Never>?
+    private var audioSendTask: Task<Void, Error>?
+    private var audioSendMonitorTask: Task<Void, Never>?
+    private var audioPCMContinuation: AsyncStream<Data>.Continuation?
     private var timerTask: Task<Void, Never>?
     private var currentFlowTask: Task<Void, Never>?
     private var currentTTSStreamID: String?
@@ -52,6 +56,9 @@ final class ReflectionSessionModel: ObservableObject {
         receiveTask?.cancel()
         keepAliveTask?.cancel()
         keepAliveTask = nil
+        audioPCMContinuation?.finish()
+        audioSendTask?.cancel()
+        audioSendMonitorTask?.cancel()
         timerTask?.cancel()
         currentFlowTask?.cancel()
     }
@@ -126,14 +133,16 @@ final class ReflectionSessionModel: ObservableObject {
             fail("Lore could not finish recording this answer.", canSavePartial: !turns.isEmpty)
             return
         }
+        let pendingAudio = sealAudioUpload()
         Task { [weak self] in
             do {
                 guard let self else { return }
+                try await pendingAudio?.value
                 try await transport.speechToText.finalizeTurn()
             } catch is CancellationError {
                 return
             } catch {
-                await self?.handleTransportFailure()
+                await self?.handleTransportFailure(error)
             }
         }
     }
@@ -214,8 +223,10 @@ final class ReflectionSessionModel: ObservableObject {
         guard presentation.phase != .idle, presentation.phase != .completed else { return }
         currentFlowTask?.cancel()
         receiveTask?.cancel()
+        receiveTask = nil
         keepAliveTask?.cancel()
         keepAliveTask = nil
+        stopAudioUpload(cancel: true)
         timerTask?.cancel()
         audio.tearDown()
         Task { [transport] in await transport.disconnect() }
@@ -242,9 +253,8 @@ final class ReflectionSessionModel: ObservableObject {
         do {
             try modelContext.save()
             session = activeSession
-            try await connect(session: activeSession)
+            try await prepareConnection(session: activeSession)
             startTimer(at: startedAt)
-            startSTTReceiveLoop()
 
             let opening = "What felt worth remembering about today?"
             try persistLoreTurn(opening)
@@ -291,8 +301,7 @@ final class ReflectionSessionModel: ObservableObject {
         await transport.disconnect()
         credentials = nil
         do {
-            try await connect(session: session)
-            startSTTReceiveLoop()
+            try await prepareConnection(session: session)
             let isRecoveringAnswer = currentAudioURL != nil && currentUserTurnID != nil
             let resumePrompt = isRecoveringAnswer
                 ? "The connection returned. I'm safely recovering your last answer."
@@ -300,6 +309,7 @@ final class ReflectionSessionModel: ObservableObject {
             try persistLoreTurn(resumePrompt)
             try await speak(resumePrompt)
             if isRecoveringAnswer, let currentAudioURL {
+                try await connectSpeechToTextIfNeeded()
                 presentation.phase = .thinking
                 isCompletingUserTurn = true
                 try await audio.replayProtectedCapture(at: currentAudioURL) { [transport] pcm in
@@ -316,11 +326,10 @@ final class ReflectionSessionModel: ObservableObject {
         }
     }
 
-    private func connect(session: ReflectionSession) async throws {
+    private func prepareConnection(session: ReflectionSession) async throws {
         let response = try await backend.createReflectionSessionCredentials(
             ReflectionSessionCredentialsRequest(sessionId: session.id, languageCode: languageCode)
         )
-        credentials = response
         let sttCredential = try SonioxTemporaryCredential(
             endpoint: response.stt.websocketUrl,
             apiKey: response.stt.temporaryApiKey,
@@ -335,21 +344,36 @@ final class ReflectionSessionModel: ObservableObject {
         )
         var sttConfiguration = SonioxSTTConfiguration()
         sttConfiguration.languageHints = [Self.baseLanguage(languageCode)]
-        try await transport.connect(
-            credentials: SonioxRealtimeSessionCredentials(
-                speechToText: sttCredential,
-                textToSpeech: ttsCredential
-            ),
-            speechToTextConfiguration: sttConfiguration
+        self.sttConfiguration = sttConfiguration
+        let credentials = SonioxRealtimeSessionCredentials(
+            speechToText: sttCredential,
+            textToSpeech: ttsCredential
         )
+        self.credentials = credentials
         ttsConfiguration.language = Self.baseLanguage(languageCode)
         ttsConfiguration.voice = response.tts.voice
+        // The opening prompt is synthesized before capture. Only open TTS now;
+        // STT is authenticated immediately before the first microphone frame.
+        try await transport.connectTextToSpeech(credential: credentials.textToSpeech)
+    }
+
+    private func connectSpeechToTextIfNeeded() async throws {
+        guard let credentials else { throw SonioxRealtimeError.invalidConfiguration }
+        try await transport.connectSpeechToText(
+            credential: credentials.speechToText,
+            configuration: sttConfiguration
+        )
+        if receiveTask == nil {
+            startSTTReceiveLoop()
+        }
+        startKeepAliveLoopIfNeeded()
     }
 
     private func startSTTReceiveLoop() {
         receiveTask?.cancel()
         receiveTask = Task { [weak self] in
             guard let self else { return }
+            defer { receiveTask = nil }
             do {
                 while !Task.isCancelled {
                     let update = try await transport.speechToText.receive()
@@ -359,7 +383,7 @@ final class ReflectionSessionModel: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                await handleTransportFailure()
+                await handleTransportFailure(error)
             }
         }
     }
@@ -382,6 +406,14 @@ final class ReflectionSessionModel: ObservableObject {
             isCompletingUserTurn = true
             presentation.phase = .thinking
             try? audio.stopCapture()
+            do {
+                try await sealAudioUpload()?.value
+            } catch is CancellationError {
+                return
+            } catch {
+                await handleTransportFailure(error)
+                return
+            }
         }
         await completeUserTurn()
     }
@@ -470,27 +502,43 @@ final class ReflectionSessionModel: ObservableObject {
 
     private func startListening() async {
         guard let session, session.state == .active else { return }
-        resetCurrentUserTurn()
-        let turnID = UUID()
-        let fileURL = ReflectionAudioController.makeProtectedTurnAudioURL(
-            sessionID: session.id,
-            turnID: turnID
-        )
-        currentUserTurnID = turnID
-        currentUserTurnStartedAt = Date()
-        currentAudioURL = fileURL
-        presentation.provisionalTranscript = nil
-        presentation.phase = .listening
         do {
-            try audio.startCapture(recordingTo: fileURL) { [weak self] pcm in
-                Task {
-                    guard let self else { return }
-                    do {
-                        try await self.transport.speechToText.sendAudio(pcm)
-                    } catch {
-                        await self.handleTransportFailure()
-                    }
+            try await connectSpeechToTextIfNeeded()
+            stopAudioUpload(cancel: true)
+            resetCurrentUserTurn()
+            let turnID = UUID()
+            let fileURL = ReflectionAudioController.makeProtectedTurnAudioURL(
+                sessionID: session.id,
+                turnID: turnID
+            )
+            currentUserTurnID = turnID
+            currentUserTurnStartedAt = Date()
+            currentAudioURL = fileURL
+            presentation.provisionalTranscript = nil
+            presentation.phase = .listening
+
+            let (stream, continuation) = AsyncStream<Data>.makeStream()
+            audioPCMContinuation = continuation
+            let sendTask = Task { [transport] in
+                for await pcm in stream {
+                    try Task.checkCancellation()
+                    try await transport.speechToText.sendAudio(pcm)
                 }
+            }
+            audioSendTask = sendTask
+            audioSendMonitorTask?.cancel()
+            audioSendMonitorTask = Task { [weak self] in
+                do {
+                    try await sendTask.value
+                } catch is CancellationError {
+                    return
+                } catch {
+                    await self?.handleTransportFailure(error)
+                }
+            }
+
+            try audio.startCapture(recordingTo: fileURL) { pcm in
+                continuation.yield(pcm)
             }
         } catch {
             fail(message(for: error), canSavePartial: turns.contains(where: { $0.role == .user }))
@@ -508,7 +556,6 @@ final class ReflectionSessionModel: ObservableObject {
             streamID: streamID,
             configuration: ttsConfiguration
         )
-        startKeepAliveLoopIfNeeded()
         while !Task.isCancelled {
             switch try await transport.textToSpeech.receive() {
             case let .audio(eventStreamID, bytes, _, _) where eventStreamID == streamID:
@@ -545,8 +592,10 @@ final class ReflectionSessionModel: ObservableObject {
         presentation.phase = .thinking
         audio.tearDown()
         receiveTask?.cancel()
+        receiveTask = nil
         keepAliveTask?.cancel()
         keepAliveTask = nil
+        stopAudioUpload(cancel: true)
         await transport.disconnect()
         credentials = nil
         do {
@@ -580,13 +629,16 @@ final class ReflectionSessionModel: ObservableObject {
         }
     }
 
-    private func handleTransportFailure() async {
+    private func handleTransportFailure(_ cause: Error) async {
+        reportLiveSpeechDiagnostic(cause, channel: "runtime")
         guard presentation.phase != .error, presentation.phase != .completed else { return }
         try? audio.stopCapture()
         audio.stopPlayback()
         receiveTask?.cancel()
+        receiveTask = nil
         keepAliveTask?.cancel()
         keepAliveTask = nil
+        stopAudioUpload(cancel: true)
         await transport.disconnect()
         credentials = nil
         fail(
@@ -604,8 +656,10 @@ final class ReflectionSessionModel: ObservableObject {
             currentFlowTask?.cancel()
         }
         receiveTask?.cancel()
+        receiveTask = nil
         keepAliveTask?.cancel()
         keepAliveTask = nil
+        stopAudioUpload(cancel: true)
         timerTask?.cancel()
         audio.tearDown()
     }
@@ -640,6 +694,21 @@ final class ReflectionSessionModel: ObservableObject {
         presentation.provisionalTranscript = nil
     }
 
+    private func stopAudioUpload(cancel: Bool) {
+        let pendingAudio = sealAudioUpload()
+        if cancel { pendingAudio?.cancel() }
+    }
+
+    private func sealAudioUpload() -> Task<Void, Error>? {
+        audioPCMContinuation?.finish()
+        audioPCMContinuation = nil
+        let pendingAudio = audioSendTask
+        audioSendTask = nil
+        audioSendMonitorTask?.cancel()
+        audioSendMonitorTask = nil
+        return pendingAudio
+    }
+
     private func startTimer(at startedAt: Date) {
         timerTask?.cancel()
         timerTask = Task { [weak self] in
@@ -662,7 +731,7 @@ final class ReflectionSessionModel: ObservableObject {
                     try await transport.speechToText.keepAlive()
                     try await transport.textToSpeech.keepAlive()
                 } catch {
-                    await handleTransportFailure()
+                    await handleTransportFailure(error)
                     return
                 }
             }
@@ -685,22 +754,35 @@ final class ReflectionSessionModel: ObservableObject {
             return "Reflect requires a physical iPhone with Lore's secure processing service configured."
         case ReflectionAudioError.microphonePermissionDenied:
             return "Microphone access is required to start a reflection."
-        case SonioxRealtimeError.provider(let providerError):
+        case SonioxRealtimeError.provider:
+            reportLiveSpeechDiagnostic(error, channel: "startup")
+            return "Lore could not connect to the live speech service. Please try again."
+        case let realtimeError as SonioxRealtimeError:
+            reportLiveSpeechDiagnostic(realtimeError, channel: "startup")
+            return "Lore could not connect to the live speech service. Please try again."
+        default:
+            return "Lore could not continue the reflection. Your finalized answers are still safe."
+        }
+    }
+
+    private func reportLiveSpeechDiagnostic(_ error: Error, channel: String) {
+        if case SonioxRealtimeError.provider(let providerError) = error {
             // Provider status/type/request IDs are safe diagnostic metadata;
             // never print the provider message because it is not a stable or
             // content-audited field.
             print(
                 "Reflection live speech provider failure: "
+                    + "channel=\(channel) "
                     + "status=\(providerError.statusCode) "
                     + "type=\(providerError.type) "
                     + "request_id=\(providerError.requestID ?? "none")"
             )
-            return "Lore could not connect to the live speech service. Please try again."
-        case let realtimeError as SonioxRealtimeError:
-            print("Reflection live speech client failure: \(Self.diagnosticCode(for: realtimeError))")
-            return "Lore could not connect to the live speech service. Please try again."
-        default:
-            return "Lore could not continue the reflection. Your finalized answers are still safe."
+        } else if let realtimeError = error as? SonioxRealtimeError {
+            print(
+                "Reflection live speech client failure: "
+                    + "channel=\(channel) "
+                    + "code=\(Self.diagnosticCode(for: realtimeError))"
+            )
         }
     }
 
