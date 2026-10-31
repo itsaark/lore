@@ -68,7 +68,8 @@ struct JournalHomeView: View {
                         captureFeedback
                         captureBar(width: geometry.size.width)
                     }
-                    .padding(.bottom, 10)
+                    // Keeps side-button captions clear of the home indicator.
+                    .padding(.bottom, 14)
                 }
             }
             .loreCanvas()
@@ -143,10 +144,15 @@ struct JournalHomeView: View {
             .accessibilityIdentifier("recordingSupportMessage")
     }
 
+    /// Camera-style capture row: the record button is the one large control,
+    /// centered, with two equal secondary buttons mirrored on either side.
     private func captureBar(width: CGFloat) -> some View {
-        HStack(spacing: 0) {
-            Spacer(minLength: 0)
-                .frame(maxWidth: .infinity)
+        let todayKey = JournalCalendar().dayKey(for: today)
+        return HStack(alignment: .center, spacing: 0) {
+            TodayCaptureButton(dayKey: todayKey) {
+                path.append(JournalRoute.day(todayKey))
+            }
+            .frame(maxWidth: .infinity)
 
             VoiceCaptureButton(
                 containerWidth: width,
@@ -156,24 +162,23 @@ struct JournalHomeView: View {
                 action: speechRecognizer.toggleRecording
             )
 
-            Button {
+            CaptureSideButton(title: "Talk") {
                 showsReflection = true
-            } label: {
-                Label("Talk", systemImage: "bubble.left.and.text.bubble.right")
-                    .labelStyle(.titleAndIcon)
-                    .font(.footnote.weight(.semibold))
-                    .lineLimit(1)
+            } icon: {
+                Image(systemName: "waveform")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(LoreTheme.ink)
             }
-            .buttonStyle(.lorePillSecondary)
-            .dynamicTypeSize(...DynamicTypeSize.xxLarge)
             .accessibilityLabel("Talk with Lore")
             .accessibilityHint("Starts a spoken reflection")
             .accessibilityIdentifier("reflectButton")
             .frame(maxWidth: .infinity)
-            .opacity(isCapturing ? 0 : 1)
-            .disabled(isCapturing)
         }
-        .padding(.horizontal, 16)
+        .frame(maxWidth: 420)
+        .padding(.horizontal, 24)
+        // Side controls step aside while recording so only the record button
+        // remains, matching the full-screen capture overlay.
+        .modifier(CaptureSideVisibility(isCapturing: isCapturing))
     }
 
     /// Fades the calendar out beneath the floating capture bar.
@@ -1270,4 +1275,109 @@ private extension View {
     )
     .modelContainer(LoreModelContainer.preview)
     .environmentObject(CloudArchiveStatusMonitor(startsImmediately: false))
+}
+
+/// Hides the secondary capture buttons while a voice note is recording or
+/// processing, leaving only the record control.
+private struct CaptureSideVisibility: ViewModifier {
+    let isCapturing: Bool
+
+    func body(content: Content) -> some View {
+        content.environment(\.captureSideButtonsHidden, isCapturing)
+    }
+}
+
+private struct CaptureSideButtonsHiddenKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+private extension EnvironmentValues {
+    var captureSideButtonsHidden: Bool {
+        get { self[CaptureSideButtonsHiddenKey.self] }
+        set { self[CaptureSideButtonsHiddenKey.self] = newValue }
+    }
+}
+
+/// A 52pt circular secondary control with a small caption beneath. The
+/// caption is an overlay so the circle, not the circle plus label, is what
+/// centers against the record button.
+private struct CaptureSideButton<Icon: View>: View {
+    let title: String
+    let action: () -> Void
+    @ViewBuilder let icon: () -> Icon
+    @Environment(\.captureSideButtonsHidden) private var isHidden
+
+    static var diameter: CGFloat { 52 }
+
+    var body: some View {
+        Button(action: action) {
+            icon()
+                .frame(width: Self.diameter, height: Self.diameter)
+                .background(Circle().fill(LoreTheme.raisedSurface))
+                .overlay(Circle().strokeBorder(LoreTheme.hairline))
+                .clipShape(Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(CaptureSideButtonStyle())
+        .overlay(alignment: .bottom) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(LoreTheme.secondaryInk)
+                .lineLimit(1)
+                .fixedSize()
+                .offset(y: 18)
+                .accessibilityHidden(true)
+        }
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+        .opacity(isHidden ? 0 : 1)
+        .scaleEffect(isHidden ? 0.85 : 1)
+        .disabled(isHidden)
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: isHidden)
+    }
+}
+
+private struct CaptureSideButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.8), value: configuration.isPressed)
+    }
+}
+
+/// Opens today's journal page; shows today's photo when there is one, or the
+/// day number otherwise.
+private struct TodayCaptureButton: View {
+    let dayKey: String
+    let action: () -> Void
+    @Query private var photos: [DayPhoto]
+
+    init(dayKey: String, action: @escaping () -> Void) {
+        self.dayKey = dayKey
+        self.action = action
+        _photos = Query(
+            filter: #Predicate<DayPhoto> { $0.dayKey == dayKey },
+            sort: \DayPhoto.updatedAt,
+            order: .reverse
+        )
+    }
+
+    var body: some View {
+        CaptureSideButton(title: "Today", action: action) {
+            if let photo = photos.first {
+                DayPhotoImage(photo: photo)
+            } else {
+                Text(dayNumber)
+                    .font(.system(size: 22, weight: .bold, design: .serif))
+                    .foregroundStyle(LoreTheme.ink)
+            }
+        }
+        .accessibilityLabel("Open today")
+        .accessibilityHint("Shows today's journal page")
+        .accessibilityIdentifier("todayButton")
+    }
+
+    private var dayNumber: String {
+        dayKey.split(separator: "-").last.map { String(Int($0) ?? 0) } ?? ""
+    }
 }
