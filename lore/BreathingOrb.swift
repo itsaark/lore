@@ -174,11 +174,11 @@ private struct BreathingDot {
     VStack(spacing: 28) {
         BreathingOrb(size: 64, speed: 0.75)
             .padding(20)
-            .background(Color(.systemBackground))
+            .background(LoreTheme.canvas)
 
         BreathingOrb(size: 64, speed: 0.75)
             .padding(20)
-            .background(Color(.systemBackground))
+            .background(LoreTheme.canvas)
             .preferredColorScheme(.dark)
     }
 }

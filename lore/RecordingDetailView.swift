@@ -22,67 +22,58 @@ struct StoryDetailView: View {
     
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 28) {
                 // Story metadata
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
-                        Image(systemName: "calendar")
-                            .foregroundColor(.blue)
-                        Text(story.formattedDate)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    
-                    HStack {
-                        Image(systemName: "clock")
-                            .foregroundColor(.blue)
-                        Text("Duration: \(story.formattedDuration)")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
+                VStack(alignment: .leading, spacing: 10) {
+                    LoreSectionHeader(story.formattedDate)
+
+                    Text(story.formattedDuration)
+                        .font(LoreTheme.caption())
+                        .foregroundStyle(LoreTheme.secondaryInk)
+                        .accessibilityLabel("Duration: \(story.formattedDuration)")
                 }
-                .padding(.horizontal)
-                
-                Divider()
 
                 if let biographyProse = displayContent.biographyDetailText {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 14) {
                         Text("Journal Entry")
-                            .font(.headline)
-                            .foregroundColor(.primary)
+                            .font(LoreTheme.title())
+                            .foregroundStyle(LoreTheme.ink)
+                            .accessibilityAddTraits(.isHeader)
 
                         Text(biographyProse)
-                            .font(.body)
-                            .foregroundColor(.primary)
-                            .lineSpacing(4)
+                            .font(.system(.title3, design: .serif))
+                            .foregroundStyle(LoreTheme.ink)
+                            .lineSpacing(6)
                             .textSelection(.enabled)
                     }
-                    .padding(.horizontal)
 
-                    Divider()
+                    LoreHairline()
                 }
-                
+
                 // Story content
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Transcript")
-                        .font(.headline)
-                        .foregroundColor(.primary)
-                    
+                VStack(alignment: .leading, spacing: 14) {
+                    LoreSectionHeader("Transcript")
+
                     if isEditing {
                         // Edit mode - show text field
-                        VStack(alignment: .trailing, spacing: 12) {
+                        VStack(alignment: .trailing, spacing: 14) {
                             TextEditor(text: $editedText)
                                 .focused($isTextFieldFocused)
-                                .font(.body)
+                                .font(LoreTheme.body)
+                                .foregroundStyle(LoreTheme.ink)
                                 .lineSpacing(4)
+                                .scrollContentBackground(.hidden)
                                 .padding(12)
                                 .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color(.systemGray6))
-                                        .stroke(Color(.systemGray4), lineWidth: 1)
+                                    LoreTheme.surface,
+                                    in: RoundedRectangle(cornerRadius: LoreTheme.tileCornerRadius, style: .continuous)
                                 )
-                                .frame(minHeight: 120)
-                            
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: LoreTheme.tileCornerRadius, style: .continuous)
+                                        .strokeBorder(LoreTheme.hairline)
+                                }
+                                .frame(minHeight: 160)
+
                             // Edit action buttons
                             HStack(spacing: 12) {
                                 Button("Cancel") {
@@ -90,54 +81,51 @@ struct StoryDetailView: View {
                                     isEditing = false
                                     isTextFieldFocused = false
                                 }
-                                .foregroundColor(.secondary)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color(.systemGray5))
-                                )
-                                
+                                .buttonStyle(.lorePillSecondary)
+
                                 Button("Save") {
                                     speechRecognizer.updateStory(story, withText: editedText)
                                     isEditing = false
                                     isTextFieldFocused = false
                                 }
-                                .foregroundColor(.white)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color.blue)
-                                )
+                                .buttonStyle(.lorePill)
                             }
                         }
                     } else {
                         // View mode - show text
-                        Text(transcriptDisplayText)
-                            .font(.body)
-                            .foregroundColor(displayContent.hasTranscript ? .primary : .secondary)
-                            .lineSpacing(4)
-                            .textSelection(.enabled)
+                        LoreCard {
+                            Text(transcriptDisplayText)
+                                .font(displayContent.hasTranscript ? LoreTheme.body : LoreTheme.caption(.body))
+                                .foregroundStyle(displayContent.hasTranscript ? LoreTheme.ink : LoreTheme.secondaryInk)
+                                .lineSpacing(5)
+                                .textSelection(.enabled)
+                        }
 
                         if canRetryTranscription {
                             Button("Retry Transcription") {
                                 speechRecognizer.retryTranscription(for: currentStory)
                             }
-                            .buttonStyle(.borderedProminent)
+                            .buttonStyle(.lorePill)
                         }
                     }
                 }
-                .padding(.horizontal)
-                
+
                 Spacer()
             }
-            .padding(.vertical)
+            .padding(.horizontal, 22)
+            .padding(.vertical, 20)
         }
+        .loreCanvas()
         .navigationTitle("Story")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(false)
+        .toolbarBackground(LoreTheme.canvas, for: .navigationBar)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text("Story")
+                    .font(LoreTheme.title(.headline))
+                    .foregroundStyle(LoreTheme.ink)
+            }
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button(isEditing ? "Done" : "Edit") {
                     if isEditing {
@@ -152,7 +140,8 @@ struct StoryDetailView: View {
                         isTextFieldFocused = true
                     }
                 }
-                .foregroundColor(.blue)
+                .fontWeight(isEditing ? .semibold : .regular)
+                .foregroundStyle(LoreTheme.ink)
             }
         }
         .onAppear {

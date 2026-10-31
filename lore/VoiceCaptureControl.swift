@@ -38,7 +38,7 @@ struct VoiceCaptureVisual: View {
             .opacity(breathingRingOpacity)
 
             Circle()
-                .fill(Color(.systemBackground).opacity(0.78))
+                .fill(LoreTheme.canvas.opacity(0.78))
                 .frame(
                     width: diameter * Self.backgroundDiameterRatio,
                     height: diameter * Self.backgroundDiameterRatio
@@ -79,16 +79,18 @@ struct VoiceCaptureVisual: View {
 
     private var breathingRingTint: Color? {
         if !isAvailable {
-            return .secondary
+            return LoreTheme.tertiaryInk
         }
 
         return nil
     }
 
     private var breathingRingOpacity: Double {
-        guard isAvailable else { return 0.24 }
-        if isRecording { return 0.62 }
-        return isProcessing ? 0.46 : 0.32
+        // State reads through white intensity: brightest while listening,
+        // dimmer while finishing, quietest at rest.
+        guard isAvailable else { return 0.2 }
+        if isRecording { return 0.78 }
+        return isProcessing ? 0.42 : 0.3
     }
 
     private static let sphereDiameterRatio: CGFloat = 176.0 / 304.0
@@ -97,7 +99,6 @@ struct VoiceCaptureVisual: View {
 
 struct VoiceCaptureButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.colorScheme) private var colorScheme
 
     let containerWidth: CGFloat
     let isAvailable: Bool
@@ -117,7 +118,7 @@ struct VoiceCaptureButton: View {
                     BreathingOrb(
                         size: controlDiameter * Self.activeOrbDiameterRatio,
                         speed: 0.75,
-                        tint: .recordingOrbTint(for: colorScheme)
+                        tint: LoreTheme.ink
                     )
                         .transition(.scale(scale: 0.88).combined(with: .opacity))
                 } else {
@@ -198,15 +199,17 @@ struct VoiceCaptureButton: View {
     }
 
     private var buttonTint: Color {
-        guard isAvailable else { return .secondary }
-        if isProcessing { return .secondary }
-        return .primary
+        guard isAvailable else { return LoreTheme.tertiaryInk }
+        if isProcessing { return LoreTheme.secondaryInk }
+        return LoreTheme.ink
     }
 
+    // At rest the capture blob is the screen's one solid white mark; it dims
+    // to grey surfaces while processing or unavailable.
     private var buttonFill: Color {
-        guard isAvailable else { return Color(.tertiarySystemBackground) }
-        if isProcessing { return Color(.tertiarySystemBackground) }
-        return Color(.secondarySystemBackground)
+        guard isAvailable else { return LoreTheme.surface }
+        if isProcessing { return LoreTheme.raisedSurface }
+        return LoreTheme.ink.opacity(0.94)
     }
 
     private static let activeOrbDiameterRatio: CGFloat = 64.0 / 72.0
@@ -265,19 +268,9 @@ private struct VoiceCaptureButtonStyle: ButtonStyle {
     }
 }
 
-private extension Color {
-    static func recordingOrbTint(for colorScheme: ColorScheme) -> Color {
-        if colorScheme == .dark {
-            return Color(red: 0.88, green: 0.40, blue: 0.27)
-        }
-
-        return Color(red: 0.72, green: 0.27, blue: 0.16)
-    }
-}
-
 #Preview("Idle capture") {
     VStack {
-        Color(.systemBackground).ignoresSafeArea()
+        LoreTheme.canvas.ignoresSafeArea()
         VoiceCaptureVisual(
             isAvailable: true,
             isRecording: false,
@@ -297,7 +290,7 @@ private extension Color {
 
 #Preview("Recording") {
     VStack {
-        Color(.systemBackground).ignoresSafeArea()
+        LoreTheme.canvas.ignoresSafeArea()
         VoiceCaptureVisual(
             isAvailable: true,
             isRecording: true,

@@ -13,8 +13,8 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var speechRecognizer: SpeechRecognitionViewModel
-    @State private var selectedTab: LaunchTab
     private let reflectionBackend: any LoreReflectionBackendClient
+    private let opensSettings: Bool
 
     init(userProfile: UserProfile) {
         self.userProfile = userProfile
@@ -26,44 +26,16 @@ struct ContentView: View {
             )
         )
         reflectionBackend = remoteServices.reflectionBackend
-        let opensSettings = ProcessInfo.processInfo.arguments.contains("-LoreOpenSettings")
-        _selectedTab = State(initialValue: opensSettings ? .settings : .notes)
+        opensSettings = ProcessInfo.processInfo.arguments.contains("-LoreOpenSettings")
     }
-    
+
     var body: some View {
-        TabView(selection: $selectedTab) {
-            NotesHomeView(speechRecognizer: speechRecognizer)
-            .tabItem {
-                Label("Notes", systemImage: "waveform")
-            }
-            .tag(LaunchTab.notes)
-            .accessibilityIdentifier("notesTab")
-
-            ReflectionLiveSessionView(
-                userProfile: userProfile,
-                backend: reflectionBackend,
-                onViewBiography: { selectedTab = .biography }
-            )
-            .tabItem {
-                Label("Reflect", systemImage: "bubble.left.and.text.bubble.right")
-            }
-            .tag(LaunchTab.reflect)
-            .accessibilityIdentifier("reflectTab")
-
-            BiographyHomeView(speechRecognizer: speechRecognizer)
-                .tabItem {
-                    Label("Biography", systemImage: "book.closed")
-                }
-                .tag(LaunchTab.biography)
-                .accessibilityIdentifier("biographyTab")
-
-            SettingsHomeView(userProfile: userProfile)
-            .tabItem {
-                Label("Settings", systemImage: "gearshape")
-            }
-            .tag(LaunchTab.settings)
-            .accessibilityIdentifier("settingsTab")
-        }
+        JournalHomeView(
+            userProfile: userProfile,
+            speechRecognizer: speechRecognizer,
+            reflectionBackend: reflectionBackend,
+            opensSettings: opensSettings
+        )
         .onAppear {
             speechRecognizer.configure(
                 modelContext: modelContext,
@@ -78,13 +50,6 @@ struct ContentView: View {
             speechRecognizer.resumeBackgroundProcessing()
         }
     }
-}
-
-private enum LaunchTab: Hashable {
-    case notes
-    case reflect
-    case biography
-    case settings
 }
 
 #Preview {

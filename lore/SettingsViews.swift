@@ -9,6 +9,7 @@ struct SettingsHomeView: View {
     @EnvironmentObject private var cloudArchiveStatus: CloudArchiveStatusMonitor
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
     @Query private var vocabularyEntries: [VocabularyEntry]
     @State private var locationPermission: SettingsPermissionState = .notRequested
     @State private var microphonePermission: SettingsPermissionState = .notRequested
@@ -16,7 +17,26 @@ struct SettingsHomeView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Transcription") {
+                Section {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Settings")
+                            .font(LoreTheme.display(40))
+                            .foregroundStyle(LoreTheme.ink)
+                            .accessibilityAddTraits(.isHeader)
+
+                        Spacer()
+
+                        Button("Done") { dismiss() }
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(LoreTheme.ink)
+                            .buttonStyle(.borderless)
+                            .accessibilityIdentifier("settingsDoneButton")
+                    }
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 12, leading: 4, bottom: 4, trailing: 16))
+                }
+
+                Section {
                     NavigationLink {
                         VocabularyView()
                     } label: {
@@ -27,10 +47,12 @@ struct SettingsHomeView: View {
                         )
                     }
                     .accessibilityIdentifier("vocabularySettingsLink")
-
+                    .loreListRow()
+                } header: {
+                    LoreSectionHeader("Transcription")
                 }
 
-                Section("Preferences") {
+                Section {
                     NavigationLink {
                         JournalStyleSettingsView(userProfile: userProfile)
                     } label: {
@@ -40,6 +62,9 @@ struct SettingsHomeView: View {
                         )
                     }
                     .accessibilityIdentifier("journalStyleSettingsLink")
+                    .loreListRow()
+                } header: {
+                    LoreSectionHeader("Preferences")
                 }
 
                 Section {
@@ -47,13 +72,14 @@ struct SettingsHomeView: View {
                         Text(cloudArchiveStatus.status.settingsTitle)
                             .foregroundStyle(cloudArchiveStatus.status.settingsColor)
                     } label: {
-                        Label("Journal & Transcripts", systemImage: "icloud")
+                        SettingsRowLabel(title: "Journal & Transcripts", systemImage: "icloud")
                     }
                     .accessibilityIdentifier("iCloudArchiveStatus")
+                    .loreListRow()
                 } header: {
-                    Text("Private iCloud Archive")
+                    LoreSectionHeader("Private iCloud Archive")
                 } footer: {
-                    Text(cloudArchiveStatus.status.settingsDetail)
+                    SettingsFooter(cloudArchiveStatus.status.settingsDetail)
                 }
 
                 Section {
@@ -63,6 +89,7 @@ struct SettingsHomeView: View {
                         permission: locationPermission
                     )
                     .accessibilityIdentifier("locationPermissionStatus")
+                    .loreListRow()
 
                     SettingsPermissionRow(
                         title: "Microphone",
@@ -70,21 +97,31 @@ struct SettingsHomeView: View {
                         permission: microphonePermission
                     )
                     .accessibilityIdentifier("microphonePermissionStatus")
+                    .loreListRow()
 
                     Button {
                         guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
                         openURL(settingsURL)
                     } label: {
-                        Label("Open iPhone Settings", systemImage: "gearshape")
+                        HStack {
+                            SettingsRowLabel(title: "Open iPhone Settings", systemImage: "gearshape")
+                            Spacer(minLength: 8)
+                            Image(systemName: "arrow.up.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(LoreTheme.tertiaryInk)
+                                .accessibilityHidden(true)
+                        }
                     }
+                    .foregroundStyle(LoreTheme.ink)
                     .accessibilityIdentifier("openIPhoneSettingsButton")
+                    .loreListRow()
                 } header: {
-                    Text("Permissions")
+                    LoreSectionHeader("Permissions")
                 } footer: {
-                    Text("Allow Location to add local context and Microphone to record voice notes. Permissions are requested when first used and can be changed in iPhone Settings.")
+                    SettingsFooter("Allow Location to add local context and Microphone to record voice notes. Permissions are requested when first used and can be changed in iPhone Settings.")
                 }
 
-                Section("About") {
+                Section {
                     NavigationLink {
                         AboutLoreView()
                     } label: {
@@ -95,10 +132,15 @@ struct SettingsHomeView: View {
                         )
                     }
                     .accessibilityIdentifier("aboutLoreSettingsLink")
+                    .loreListRow()
+                } header: {
+                    LoreSectionHeader("About")
                 }
             }
             .listStyle(.insetGrouped)
+            .loreGroupedList()
             .navigationTitle("Settings")
+            .toolbar(.hidden, for: .navigationBar)
             .task {
                 refreshPermissionStates()
                 await cloudArchiveStatus.refreshAccountStatus()
@@ -174,11 +216,11 @@ private enum SettingsPermissionState {
     var color: Color {
         switch self {
         case .allowed:
-            .green
+            LoreTheme.ink
         case .denied:
-            .red
+            LoreTheme.attention
         case .notRequested, .restricted:
-            .secondary
+            LoreTheme.secondaryInk
         }
     }
 }
@@ -193,7 +235,7 @@ private struct SettingsPermissionRow: View {
             Text(permission.title)
                 .foregroundStyle(permission.color)
         } label: {
-            Label(title, systemImage: systemImage)
+            SettingsRowLabel(title: title, systemImage: systemImage)
         }
     }
 }
@@ -230,11 +272,11 @@ private extension CloudArchiveStatusSnapshot {
     var settingsColor: Color {
         switch displayState {
         case .synced:
-            .green
+            LoreTheme.ink
         case .accountUnavailable, .paused:
-            .orange
+            LoreTheme.attention
         default:
-            .secondary
+            LoreTheme.secondaryInk
         }
     }
 
@@ -300,9 +342,10 @@ struct VocabularyView: View {
             .padding(.top, 18)
             .padding(.bottom, 40)
         }
-        .background(Color(.systemBackground))
+        .loreCanvas()
         .navigationTitle("Vocabulary")
         .navigationBarTitleDisplayMode(.inline)
+        .loreInlineTitle("Vocabulary")
         .scrollDismissesKeyboard(.interactively)
         .alert(
             "Couldn’t update vocabulary",
@@ -333,16 +376,15 @@ struct VocabularyView: View {
                         saveEntry()
                     }
                 }
-                .padding(.horizontal, 18)
-                .frame(minHeight: 58)
-                .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 17))
+                .foregroundStyle(LoreTheme.ink)
+                .loreField(minHeight: 58)
                 .accessibilityIdentifier("vocabularyPhraseField")
 
             if isReplacementMode {
                 HStack(spacing: 12) {
                     Image(systemName: "arrow.right")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LoreTheme.secondaryInk)
 
                     TextField("Replace with", text: $replacement)
                         .textInputAutocapitalization(.words)
@@ -354,9 +396,8 @@ struct VocabularyView: View {
                         }
                         .accessibilityIdentifier("vocabularyReplacementField")
                 }
-                .padding(.horizontal, 18)
-                .frame(minHeight: 58)
-                .background(Color(.tertiarySystemBackground), in: RoundedRectangle(cornerRadius: 17))
+                .foregroundStyle(LoreTheme.ink)
+                .loreField(minHeight: 58)
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
 
@@ -371,14 +412,14 @@ struct VocabularyView: View {
                     Text(isReplacementMode ? "Cancel replacement" : "Add replacement")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(VocabularySecondaryButtonStyle(isActive: isReplacementMode))
+                .buttonStyle(.lorePillSecondary)
                 .accessibilityIdentifier("replacementModeButton")
 
                 Button(action: saveEntry) {
                     Text(isReplacementMode ? "Save replacement" : "Add to vocabulary")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(VocabularyPrimaryButtonStyle())
+                .buttonStyle(.lorePillAdaptive)
                 .disabled(!canSave)
                 .accessibilityIdentifier("saveVocabularyButton")
             }
@@ -388,11 +429,12 @@ struct VocabularyView: View {
     private var emptyState: some View {
         VStack(spacing: 9) {
             Text("No vocabulary")
-                .font(.title2.weight(.semibold))
+                .font(LoreTheme.title())
+                .foregroundStyle(LoreTheme.ink)
 
             Text("Add names, phrases, or a replacement to improve future transcripts.")
-                .font(.body)
-                .foregroundStyle(.secondary)
+                .font(LoreTheme.caption(.body))
+                .foregroundStyle(LoreTheme.secondaryInk)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
@@ -403,8 +445,8 @@ struct VocabularyView: View {
 
     private var vocabularyList: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Your vocabulary")
-                .font(.headline)
+            LoreSectionHeader("Your vocabulary")
+                .padding(.leading, 4)
 
             VStack(spacing: 0) {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
@@ -413,12 +455,16 @@ struct VocabularyView: View {
                     }
 
                     if index < entries.count - 1 {
-                        Divider()
+                        LoreHairline()
                             .padding(.leading, 18)
                     }
                 }
             }
-            .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 24))
+            .background(LoreTheme.surface, in: RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous)
+                    .strokeBorder(LoreTheme.hairline, lineWidth: 0.5)
+            }
         }
     }
 
@@ -476,23 +522,27 @@ private struct VocabularyEntryRow: View {
                 if let replacement = entry.replacement, !replacement.isEmpty {
                     HStack(spacing: 8) {
                         Text(entry.phrase)
+                            .foregroundStyle(LoreTheme.secondaryInk)
                         Image(systemName: "arrow.right")
                             .font(.caption.weight(.bold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LoreTheme.tertiaryInk)
                         Text(replacement)
                             .fontWeight(.semibold)
+                            .foregroundStyle(LoreTheme.ink)
                     }
+                    .font(LoreTheme.body)
 
                     Text("Replacement")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(LoreTheme.caption(.caption))
+                        .foregroundStyle(LoreTheme.secondaryInk)
                 } else {
                     Text(entry.phrase)
-                        .fontWeight(.medium)
+                        .font(LoreTheme.body)
+                        .foregroundStyle(LoreTheme.ink)
 
                     Text("Preferred spelling")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(LoreTheme.caption(.caption))
+                        .foregroundStyle(LoreTheme.secondaryInk)
                 }
             }
 
@@ -501,7 +551,9 @@ private struct VocabularyEntryRow: View {
             Button(role: .destructive, action: onDelete) {
                 Image(systemName: "trash")
                     .font(.subheadline)
-                    .frame(width: 36, height: 36)
+                    .foregroundStyle(LoreTheme.secondaryInk)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Delete \(entry.phrase)")
@@ -519,60 +571,76 @@ private struct SettingsNavigationLabel: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 22)
-                .accessibilityHidden(true)
-
-            Text(title)
+            SettingsRowLabel(title: title, systemImage: systemImage)
 
             if let badge {
                 Text(badge)
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
+                    .tracking(1)
+                    .foregroundStyle(LoreTheme.secondaryInk)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .overlay {
+                        Capsule().strokeBorder(LoreTheme.hairline)
+                    }
             }
 
             Spacer(minLength: 8)
 
             if let detail {
                 Text(detail)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(LoreTheme.secondaryInk)
                     .lineLimit(1)
             }
         }
     }
 }
 
-private struct VocabularyPrimaryButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
+private struct SettingsRowLabel: View {
+    let title: String
+    let systemImage: String
 
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(isEnabled ? Color(.systemBackground) : .secondary)
-            .padding(.vertical, 15)
-            .background(
-                isEnabled ? Color.primary : Color(.tertiarySystemBackground),
-                in: RoundedRectangle(cornerRadius: 15)
-            )
-            .opacity(configuration.isPressed ? 0.78 : 1)
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.body.weight(.regular))
+                .foregroundStyle(LoreTheme.secondaryInk)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+
+            Text(title)
+                .foregroundStyle(LoreTheme.ink)
+        }
     }
 }
 
-private struct VocabularySecondaryButtonStyle: ButtonStyle {
-    let isActive: Bool
+private struct SettingsFooter: View {
+    let text: String
 
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(isActive ? .primary : .secondary)
-            .padding(.vertical, 15)
-            .background(
-                isActive ? Color(.systemGray4) : Color(.tertiarySystemBackground),
-                in: RoundedRectangle(cornerRadius: 15)
-            )
-            .opacity(configuration.isPressed ? 0.78 : 1)
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(LoreTheme.caption(.footnote))
+            .foregroundStyle(LoreTheme.secondaryInk)
+    }
+}
+
+private extension View {
+    /// Serif inline title for pushed settings screens.
+    func loreInlineTitle(_ title: String) -> some View {
+        toolbar {
+            ToolbarItem(placement: .principal) {
+                Text(title)
+                    .font(LoreTheme.title(.headline))
+                    .foregroundStyle(LoreTheme.ink)
+                    .accessibilityAddTraits(.isHeader)
+            }
+        }
+        .loreNavigationBar()
     }
 }
 
@@ -582,24 +650,33 @@ private struct JournalStyleSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Daily entries") {
+            Section {
                 Picker("Perspective", selection: $journalPerspective) {
                     Text("Third person").tag("thirdPerson")
                     Text("First person").tag("firstPerson")
                 }
                 .accessibilityIdentifier("journalPerspectivePicker")
+                .loreListRow()
+            } header: {
+                LoreSectionHeader("Daily entries")
             }
 
-            Section("Subject") {
+            Section {
                 LabeledContent("Name", value: userProfile.name)
+                    .loreListRow()
                 TextField("Hometown", text: $userProfile.hometown)
                     .textContentType(.addressCity)
                     .autocorrectionDisabled()
                     .accessibilityIdentifier("journalHometownField")
+                    .loreListRow()
+            } header: {
+                LoreSectionHeader("Subject")
             }
         }
+        .loreGroupedList()
         .navigationTitle("Journal Style")
         .navigationBarTitleDisplayMode(.inline)
+        .loreInlineTitle("Journal Style")
         .onChange(of: userProfile.hometown) { _, _ in
             userProfile.updatedAt = Date()
         }
@@ -615,18 +692,27 @@ private struct AboutLoreView: View {
         Form {
             Section {
                 LabeledContent("Version", value: version)
+                    .loreListRow()
                 LabeledContent("Archive", value: "Private iCloud")
+                    .loreListRow()
             } footer: {
-                Text("Lore is a private, voice-first journal that turns faithful transcripts into an evolving life story.")
+                SettingsFooter("Lore is a private, voice-first journal that turns faithful transcripts into an evolving life story.")
             }
 
-            Section("How processing works") {
+            Section {
                 Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks AI for journal writing. Lore does not keep this content in its server database; finished transcripts and stories sync through your private iCloud database.")
-                    .foregroundStyle(.secondary)
+                    .font(LoreTheme.body)
+                    .foregroundStyle(LoreTheme.secondaryInk)
+                    .lineSpacing(3)
+                    .loreListRow()
+            } header: {
+                LoreSectionHeader("How processing works")
             }
         }
+        .loreGroupedList()
         .navigationTitle("About Lore")
         .navigationBarTitleDisplayMode(.inline)
+        .loreInlineTitle("About Lore")
     }
 }
 

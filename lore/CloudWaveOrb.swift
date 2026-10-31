@@ -45,10 +45,13 @@ struct CloudWaveOrb: View {
                         .float(min(max(audioLevel, 0), 1)),
                         .float(state.rawValue),
                         .float(patternSeed),
-                        .float3(0.58, 0.82, 0.68),
-                        .float3(0.09, 0.50, 0.32),
-                        .float3(0.24, 0.68, 0.46),
-                        .float3(0.88, 0.96, 0.91)
+                        // Silver palette: main, low, mid, high. Low stays
+                        // above the linear-burn floor so troughs read as
+                        // graphite instead of vanishing into the canvas.
+                        .float3(0.80, 0.81, 0.83),
+                        .float3(0.44, 0.45, 0.48),
+                        .float3(0.62, 0.63, 0.66),
+                        .float3(0.97, 0.97, 0.98)
                     ),
                     maxSampleOffset: .zero
                 )
@@ -81,7 +84,7 @@ struct CloudWaveOrb: View {
 
 #Preview {
     ZStack {
-        Color.black.ignoresSafeArea()
+        LoreTheme.canvas.ignoresSafeArea()
         CloudWaveOrb(state: .listening, audioLevel: 0.35)
     }
 }

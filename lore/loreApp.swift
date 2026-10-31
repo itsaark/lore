@@ -26,6 +26,8 @@ struct loreApp: App {
             RootView()
                 .modelContainer(modelContainer)
                 .environmentObject(cloudArchiveStatus)
+                .preferredColorScheme(.dark)
+                .tint(LoreTheme.ink)
         }
     }
 }

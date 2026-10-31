@@ -68,17 +68,19 @@ struct ReflectionWaveField: View {
     }
 
     private static let lightPalette: [Color] = [
-        Color(red: 0.84, green: 0.91, blue: 0.77),
-        Color(red: 0.58, green: 0.78, blue: 0.55),
-        Color(red: 0.27, green: 0.61, blue: 0.40),
-        Color(red: 0.11, green: 0.39, blue: 0.25)
+        Color(white: 0.90),
+        Color(white: 0.80),
+        Color(white: 0.66),
+        Color(white: 0.50)
     ]
 
+    // Silver layers that recede from a pale back ridge into the near-black
+    // canvas, so the field glows without introducing color.
     private static let darkPalette: [Color] = [
-        Color(red: 0.17, green: 0.30, blue: 0.22),
-        Color(red: 0.12, green: 0.39, blue: 0.26),
-        Color(red: 0.08, green: 0.50, blue: 0.30),
-        Color(red: 0.04, green: 0.27, blue: 0.16)
+        Color(red: 0.25, green: 0.255, blue: 0.27),
+        Color(red: 0.17, green: 0.175, blue: 0.185),
+        Color(red: 0.11, green: 0.113, blue: 0.12),
+        Color(red: 0.065, green: 0.066, blue: 0.07)
     ]
 }
 
@@ -114,7 +116,7 @@ extension ReflectionSessionPhase {
 
 #Preview("Reflection waves") {
     ZStack {
-        Color(.systemBackground).ignoresSafeArea()
+        LoreTheme.canvas.ignoresSafeArea()
         ReflectionWaveField(phase: .listening, audioLevel: 0.35)
             .frame(height: 420)
             .frame(maxHeight: .infinity, alignment: .bottom)

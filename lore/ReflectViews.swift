@@ -132,8 +132,23 @@ struct ReflectRootView: View {
     }
 }
 
+private struct ReflectionDismissKey: EnvironmentKey {
+    static let defaultValue: (() -> Void)? = nil
+}
+
+extension EnvironmentValues {
+    /// Set by a presenter so the idle Reflect screen can offer a close button.
+    /// Live and review phases never show it, so a call can't be torn down by
+    /// an accidental dismiss.
+    var reflectionDismiss: (() -> Void)? {
+        get { self[ReflectionDismissKey.self] }
+        set { self[ReflectionDismissKey.self] = newValue }
+    }
+}
+
 struct ReflectHomeView: View {
     let start: () -> Void
+    @Environment(\.reflectionDismiss) private var dismissReflection
 
     var body: some View {
         GeometryReader { geometry in
@@ -151,12 +166,13 @@ struct ReflectHomeView: View {
 
                     VStack(spacing: 12) {
                         Text("Take a moment")
-                            .font(.largeTitle.bold())
+                            .font(LoreTheme.display(38))
+                            .foregroundStyle(LoreTheme.ink)
                             .multilineTextAlignment(.center)
 
                         Text("Talk through your day with Lore.")
-                            .font(.title3)
-                            .foregroundStyle(.secondary)
+                            .font(LoreTheme.caption(.title3))
+                            .foregroundStyle(LoreTheme.secondaryInk)
                             .multilineTextAlignment(.center)
                     }
 
@@ -167,12 +183,9 @@ struct ReflectHomeView: View {
                             Label("Start reflection", systemImage: "waveform.and.mic")
                                 .font(.headline)
                                 .frame(maxWidth: .infinity)
-                                .padding(.vertical, 16)
+                                .padding(.vertical, 3)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .buttonBorderShape(.capsule)
-                        .tint(.white)
-                        .foregroundStyle(.black)
+                        .buttonStyle(.lorePill)
                         .accessibilityHint("Starts the conversation immediately")
                         .accessibilityIdentifier("reflectStartButton")
 
@@ -181,13 +194,13 @@ struct ReflectHomeView: View {
                             systemImage: "checkmark.shield"
                         )
                         .font(.footnote)
-                        .foregroundStyle(.white.opacity(0.82))
+                        .foregroundStyle(LoreTheme.secondaryInk)
                         .multilineTextAlignment(.center)
                         .accessibilityIdentifier("reflectPrivacySummary")
 
                         Text("Live speech is processed by Soniox.")
-                            .font(.caption)
-                            .foregroundStyle(.white.opacity(0.62))
+                            .font(LoreTheme.caption(.caption))
+                            .foregroundStyle(LoreTheme.secondaryInk)
                             .accessibilityIdentifier("reflectProviderDisclosure")
                     }
                     .padding(.bottom, max(22, geometry.safeAreaInsets.bottom + 12))
@@ -196,6 +209,19 @@ struct ReflectHomeView: View {
             }
             .navigationTitle("Reflect")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if let dismissReflection {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: dismissReflection) {
+                            Image(systemName: "xmark")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(LoreTheme.ink)
+                        }
+                        .accessibilityLabel("Close reflection")
+                        .accessibilityIdentifier("closeReflectionButton")
+                    }
+                }
+            }
         }
         .background(reflectionCanvasBackground)
     }
@@ -245,30 +271,29 @@ struct ReflectionSessionView: View {
 
                     VStack(spacing: 16) {
                         Text(statusTitle)
-                            .font(.title2.bold())
+                            .font(LoreTheme.title(.title))
+                            .foregroundStyle(LoreTheme.ink)
                             .multilineTextAlignment(.center)
                             .contentTransition(.numericText())
 
                         if presentation.phase == .error {
                             VStack(spacing: 14) {
                                 Text(presentation.errorMessage ?? "Your completed answers are still safe on this iPhone.")
-                                    .font(.body)
-                                    .foregroundStyle(.secondary)
+                                    .font(LoreTheme.caption(.body))
+                                    .foregroundStyle(LoreTheme.attention)
                                     .multilineTextAlignment(.center)
                                     .frame(maxWidth: 340)
 
                                 if presentation.canSavePartialReflection {
                                     Button("Save completed answers", action: actions.savePartialReflection)
-                                        .font(.subheadline.weight(.semibold))
-                                        .buttonStyle(.bordered)
-                                        .buttonBorderShape(.capsule)
+                                        .buttonStyle(.lorePillSecondary)
                                         .accessibilityIdentifier("reflectionSavePartialButton")
                                 }
                             }
                         } else if showsCaptions, let captionText {
                             Text(captionText)
-                                .font(.body)
-                                .foregroundStyle(.secondary)
+                                .font(LoreTheme.body)
+                                .foregroundStyle(LoreTheme.secondaryInk)
                                 .multilineTextAlignment(.center)
                                 .lineLimit(3)
                                 .frame(maxWidth: 340, minHeight: 66, alignment: .top)
@@ -295,13 +320,14 @@ struct ReflectionSessionView: View {
     private var callHeader: some View {
         HStack {
             Text("Reflection")
-                .font(.headline)
+                .font(LoreTheme.title(.headline))
+                .foregroundStyle(LoreTheme.ink)
 
             Spacer()
 
             Text(presentation.elapsedTime)
                 .font(.subheadline.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LoreTheme.secondaryInk)
                 .accessibilityLabel("Reflection duration")
         }
     }
@@ -311,8 +337,8 @@ struct ReflectionSessionView: View {
             CallControlButton(
                 title: "Captions",
                 systemImage: showsCaptions ? "captions.bubble.fill" : "captions.bubble",
-                tint: .primary,
-                background: Color(.systemBackground).opacity(0.88),
+                tint: LoreTheme.ink,
+                background: LoreTheme.raisedSurface,
                 action: { showsCaptions.toggle() }
             )
             .accessibilityValue(showsCaptions ? "On" : "Off")
@@ -324,8 +350,8 @@ struct ReflectionSessionView: View {
                 CallControlButton(
                     title: "Close",
                     systemImage: "xmark",
-                    tint: .white,
-                    background: .red,
+                    tint: .black,
+                    background: LoreTheme.ink,
                     action: actions.discardReflection
                 )
                 .accessibilityIdentifier("reflectionDiscardButton")
@@ -333,8 +359,8 @@ struct ReflectionSessionView: View {
                 CallControlButton(
                     title: "End",
                     systemImage: "phone.down.fill",
-                    tint: .white,
-                    background: .red,
+                    tint: .black,
+                    background: LoreTheme.ink,
                     action: actions.requestEnd
                 )
                 .accessibilityIdentifier("reflectionEndButton")
@@ -350,8 +376,8 @@ struct ReflectionSessionView: View {
             CallControlButton(
                 title: "Answer",
                 systemImage: "mic.fill",
-                tint: .primary,
-                background: Color(.systemBackground).opacity(0.88),
+                tint: LoreTheme.ink,
+                background: LoreTheme.raisedSurface,
                 action: actions.interruptLore
             )
             .accessibilityIdentifier("reflectionAnswerButton")
@@ -360,8 +386,8 @@ struct ReflectionSessionView: View {
             CallControlButton(
                 title: "Done",
                 systemImage: "checkmark",
-                tint: .primary,
-                background: Color(.systemBackground).opacity(0.88),
+                tint: LoreTheme.ink,
+                background: LoreTheme.raisedSurface,
                 action: actions.finishAnswer
             )
             .accessibilityIdentifier("reflectionFinishAnswerButton")
@@ -370,8 +396,8 @@ struct ReflectionSessionView: View {
             CallControlButton(
                 title: "Retry",
                 systemImage: "arrow.clockwise",
-                tint: .primary,
-                background: Color(.systemBackground).opacity(0.88),
+                tint: LoreTheme.ink,
+                background: LoreTheme.raisedSurface,
                 action: actions.retry
             )
             .accessibilityIdentifier("reflectionRetryButton")
@@ -388,16 +414,18 @@ struct ReflectionSessionView: View {
         ScrollView {
             VStack(spacing: 22) {
                 VStack(spacing: 8) {
-                    Image(systemName: "checkmark.shield.fill")
-                        .font(.system(size: 42))
-                        .foregroundStyle(.green)
+                    Image(systemName: "checkmark.shield")
+                        .font(.system(size: 34, weight: .light))
+                        .foregroundStyle(LoreTheme.secondaryInk)
 
                     Text("Review your reflection")
-                        .font(.title2.bold())
+                        .font(LoreTheme.display(30))
+                        .foregroundStyle(LoreTheme.ink)
+                        .multilineTextAlignment(.center)
 
                     Text("Only your replies are used to write the biography entry.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(LoreTheme.caption())
+                        .foregroundStyle(LoreTheme.secondaryInk)
                         .multilineTextAlignment(.center)
                 }
 
@@ -416,12 +444,13 @@ struct ReflectionSessionView: View {
                     )
 
                     Button("Keep talking", action: actions.continueReflection)
-                        .buttonStyle(.bordered)
-                        .buttonBorderShape(.capsule)
+                        .buttonStyle(.lorePillSecondary)
                         .accessibilityIdentifier("reflectionContinueButton")
 
                     Button("Discard reflection", role: .destructive, action: actions.discardReflection)
-                        .font(.footnote)
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(LoreTheme.secondaryInk)
+                        .padding(.top, 6)
                         .accessibilityIdentifier("reflectionDiscardButton")
                 }
                 .padding(.top, 4)
@@ -429,7 +458,8 @@ struct ReflectionSessionView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 28)
         }
-        .background(Color(.systemBackground))
+        .loreCanvas()
+        .toolbarBackground(LoreTheme.canvas, for: .navigationBar)
         .navigationTitle("Reflection")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
@@ -449,15 +479,18 @@ struct ReflectionSessionView: View {
                 VStack(spacing: 18) {
                     Spacer()
 
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 54))
-                        .foregroundStyle(.green)
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 44, weight: .ultraLight))
+                        .foregroundStyle(LoreTheme.ink)
 
                     Text("Added to Biography")
-                        .font(.title.bold())
+                        .font(LoreTheme.display(34))
+                        .foregroundStyle(LoreTheme.ink)
+                        .multilineTextAlignment(.center)
 
                     Text("Lore created a faithful third-person entry from your words.")
-                        .foregroundStyle(.secondary)
+                        .font(LoreTheme.caption(.body))
+                        .foregroundStyle(LoreTheme.secondaryInk)
                         .multilineTextAlignment(.center)
                         .frame(maxWidth: 340)
 
@@ -471,8 +504,7 @@ struct ReflectionSessionView: View {
                         )
 
                         Button("Done", action: actions.close)
-                            .buttonStyle(.bordered)
-                            .buttonBorderShape(.capsule)
+                            .buttonStyle(.lorePillSecondary)
                             .accessibilityIdentifier("reflectionDoneButton")
                     }
                     .padding(.bottom, max(24, geometry.safeAreaInsets.bottom + 12))
@@ -501,7 +533,7 @@ struct ReflectionSessionView: View {
         case .ending: "Finishing…"
         case .review: "Review your reflection"
         case .completed: "Added to Biography"
-        case .error: "We lost the thread"
+        case .error: "Connection interrupted"
         }
     }
 
@@ -523,10 +555,9 @@ struct ReflectionSessionView: View {
             Label(title, systemImage: systemImage)
                 .font(.headline)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
+                .padding(.vertical, 3)
         }
-        .buttonStyle(.borderedProminent)
-        .buttonBorderShape(.capsule)
+        .buttonStyle(.lorePill)
         .accessibilityIdentifier("reflectionPrimaryButton")
     }
 }
@@ -546,10 +577,13 @@ private struct CallControlButton: View {
                     .frame(width: 58, height: 58)
                     .foregroundStyle(tint)
                     .background(background, in: Circle())
+                    .overlay {
+                        Circle().strokeBorder(LoreTheme.hairline, lineWidth: 0.5)
+                    }
 
                 Text(title)
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(LoreTheme.secondaryInk)
             }
             .frame(width: 76)
         }
@@ -564,13 +598,16 @@ private struct CallProgressControl: View {
     var body: some View {
         VStack(spacing: 7) {
             ProgressView()
-                .tint(.primary)
+                .tint(LoreTheme.ink)
                 .frame(width: 58, height: 58)
-                .background(Color(.systemBackground).opacity(0.88), in: Circle())
+                .background(LoreTheme.raisedSurface, in: Circle())
+                .overlay {
+                    Circle().strokeBorder(LoreTheme.hairline, lineWidth: 0.5)
+                }
 
             Text(title)
                 .font(.caption.weight(.medium))
-                .foregroundStyle(.white)
+                .foregroundStyle(LoreTheme.secondaryInk)
         }
         .frame(width: 76)
         .accessibilityElement(children: .combine)
@@ -587,18 +624,21 @@ private struct ReflectionTurnBubble: View {
                 Spacer(minLength: 44)
             }
 
-            VStack(alignment: .leading, spacing: 5) {
-                Text(turn.speaker.name)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(turn.speaker.name.uppercased())
+                    .font(LoreTheme.eyebrow)
+                    .tracking(1.2)
+                    .foregroundStyle(LoreTheme.secondaryInk)
 
                 Text(turn.text)
-                    .font(.body)
-                    .foregroundStyle(.primary)
+                    .font(turn.speaker == .lore ? LoreTheme.caption(.body) : LoreTheme.body)
+                    .foregroundStyle(turn.speaker == .lore ? LoreTheme.secondaryInk : LoreTheme.ink)
                     .multilineTextAlignment(.leading)
+                    .lineSpacing(3)
             }
-            .padding(14)
-            .background(bubbleColor, in: RoundedRectangle(cornerRadius: 16))
+            .padding(turn.speaker == .user ? 14 : 0)
+            .padding(.vertical, turn.speaker == .lore ? 6 : 0)
+            .background(bubbleColor, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
 
             if turn.speaker == .lore {
                 Spacer(minLength: 44)
@@ -612,26 +652,14 @@ private struct ReflectionTurnBubble: View {
 
     private var bubbleColor: Color {
         switch turn.speaker {
-        case .lore: Color(.secondarySystemBackground)
-        case .user: Color.accentColor.opacity(0.13)
+        case .lore: Color.clear
+        case .user: LoreTheme.raisedSurface
         }
     }
 }
 
 private var reflectionCanvasBackground: Color {
-    Color(light: Color(red: 0.97, green: 0.95, blue: 0.91), dark: .black)
-}
-
-private extension Color {
-    init(light: Color, dark: Color) {
-#if canImport(UIKit)
-        self.init(UIColor { traits in
-            traits.userInterfaceStyle == .dark ? UIColor(dark) : UIColor(light)
-        })
-#else
-        self = light
-#endif
-    }
+    LoreTheme.canvas
 }
 
 private let reflectionPreviewTurns = [

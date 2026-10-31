@@ -13,17 +13,31 @@ struct RootView: View {
     var body: some View {
         Group {
             if !didCheckLegacyData {
-                ProgressView("Loading Lore")
+                VStack(spacing: 18) {
+                    Text("Lore")
+                        .font(LoreTheme.display(44))
+                        .foregroundStyle(LoreTheme.ink)
+                    ProgressView()
+                        .tint(LoreTheme.secondaryInk)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Loading Lore")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .loreCanvas()
             } else if let migrationError {
-                VStack(spacing: 12) {
+                VStack(spacing: 14) {
                     Text("Lore could not load your local archive.")
-                        .font(.headline)
+                        .font(LoreTheme.title())
+                        .foregroundStyle(LoreTheme.ink)
+                        .multilineTextAlignment(.center)
                     Text(migrationError)
-                        .font(.footnote)
-                        .foregroundColor(.secondary)
+                        .font(LoreTheme.caption(.footnote))
+                        .foregroundStyle(LoreTheme.attention)
                         .multilineTextAlignment(.center)
                 }
-                .padding()
+                .padding(28)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .loreCanvas()
             } else if let userProfile = userProfiles.first {
                 if userProfile.hasRemoteProcessingConsent {
                     ContentView(userProfile: userProfile)
@@ -69,39 +83,47 @@ struct RootView: View {
 
     @ViewBuilder
     private var cloudArchiveRecoveryGate: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 24) {
             Image(systemName: recoverySymbol)
-                .font(.system(size: 38, weight: .light))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 34, weight: .ultraLight))
+                .foregroundStyle(LoreTheme.secondaryInk)
+                .accessibilityHidden(true)
 
-            VStack(spacing: 8) {
+            VStack(spacing: 12) {
                 Text(recoveryTitle)
-                    .font(.headline)
+                    .font(LoreTheme.title(.title))
+                    .foregroundStyle(LoreTheme.ink)
+                    .multilineTextAlignment(.center)
                 Text(recoveryDetail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .font(LoreTheme.caption(.callout))
+                    .foregroundStyle(LoreTheme.secondaryInk)
                     .multilineTextAlignment(.center)
             }
 
             if cloudArchiveStatus.status.accountState == .checking
                 || cloudArchiveStatus.status.activeOperation != nil {
                 ProgressView()
+                    .tint(LoreTheme.secondaryInk)
+                    .frame(height: 46)
             } else {
                 Button("Retry") {
                     Task {
                         await cloudArchiveStatus.refreshAccountStatus()
                     }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.lorePill)
             }
 
             Button("This is my first Lore setup") {
                 showsFreshArchiveConfirmation = true
             }
-            .font(.footnote)
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(LoreTheme.secondaryInk)
         }
         .padding(28)
         .frame(maxWidth: 440)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .loreCanvas()
     }
 
     private var recoverySymbol: String {

@@ -20,22 +20,23 @@ struct StoriesView: View {
         VStack {
             if speechRecognizer.stories.isEmpty {
                 // Empty state
-                VStack(spacing: 20) {
-                    Image(systemName: "mic.slash")
-                        .font(.system(size: 60))
-                        .foregroundColor(.secondary)
-                    
+                VStack(spacing: 18) {
+                    Image(systemName: "waveform")
+                        .font(.system(size: 34, weight: .ultraLight))
+                        .foregroundStyle(LoreTheme.secondaryInk)
+                        .accessibilityHidden(true)
+
                     Text("No Stories Yet")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .foregroundColor(.primary)
-                    
+                        .font(LoreTheme.title(.title))
+                        .foregroundStyle(LoreTheme.ink)
+
                     Text("Speak your first story to begin your biography")
-                        .font(.body)
-                        .foregroundColor(.secondary)
+                        .font(LoreTheme.caption(.body))
+                        .foregroundStyle(LoreTheme.secondaryInk)
                         .multilineTextAlignment(.center)
                 }
-                .padding()
+                .padding(28)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 // Stories list
                 List {
@@ -43,25 +44,26 @@ struct StoriesView: View {
                         NavigationLink(destination: StoryDetailView(story: story, speechRecognizer: speechRecognizer)) {
                             StoryRowView(story: story)
                         }
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                        .listRowBackground(Color(.systemGray6))
+                        .listRowInsets(EdgeInsets(top: 14, leading: 20, bottom: 14, trailing: 20))
+                        .listRowBackground(LoreTheme.canvas)
+                        .listRowSeparatorTint(LoreTheme.hairline)
                     }
                     .onDelete(perform: speechRecognizer.deleteStories)
                 }
                 .listStyle(PlainListStyle())
                 .scrollContentBackground(.hidden)
-                .background(Color(.systemBackground))
             }
         }
+        .loreCanvas()
         .navigationTitle("Stories")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(false)
+        .toolbarBackground(LoreTheme.canvas, for: .navigationBar)
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
-                Button("Edit") {
-                    // Placeholder for edit mode
-                }
-                .foregroundColor(.blue)
+            ToolbarItem(placement: .principal) {
+                Text("Stories")
+                    .font(LoreTheme.title(.headline))
+                    .foregroundStyle(LoreTheme.ink)
             }
         }
     }
@@ -78,13 +80,12 @@ struct StoryRowView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 8) {
-                Text(story.formattedDate)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                LoreSectionHeader(story.formattedDate)
 
                 Text(displayContent.primaryPreview)
-                    .font(.body)
-                    .foregroundColor(.primary)
+                    .font(LoreTheme.body)
+                    .foregroundStyle(displayContent.hasTranscript || displayContent.hasBiographyDraft ? LoreTheme.ink : LoreTheme.secondaryInk)
+                    .lineSpacing(3)
                     .lineLimit(displayContent.hasBiographyDraft ? 3 : 2)
 
                 if let sourceTranscriptPreview = displayContent.sourceTranscriptPreview {
@@ -92,25 +93,23 @@ struct StoryRowView: View {
                         Text("Source transcript")
                             .font(.caption2)
                             .fontWeight(.semibold)
-                            .foregroundColor(.secondary)
+                            .foregroundStyle(LoreTheme.secondaryInk)
 
                         Text(sourceTranscriptPreview)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(LoreTheme.caption(.caption))
+                            .foregroundStyle(LoreTheme.secondaryInk)
                             .lineLimit(1)
                     }
                 }
 
                 Text(story.formattedDuration)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    .font(LoreTheme.caption(.caption))
+                    .foregroundStyle(LoreTheme.secondaryInk)
             }
             
             Spacer()
         }
-        .padding(.vertical, 8)
-        .background(Color(.systemGray6))
-        .cornerRadius(8)
+        .padding(.vertical, 4)
     }
 }
 

@@ -21,6 +21,7 @@ enum LoreModelContainer {
         ReflectionSession.self,
         ReflectionTurn.self,
         DailyBiographyEntry.self,
+        DayPhoto.self,
         VocabularyEntry.self
     ])
 
@@ -51,6 +52,7 @@ enum LoreModelContainer {
         ReflectionTurn.self,
         DailyBiographyEntry.self,
         DailyBiographyGenerationSnapshot.self,
+        DayPhoto.self,
         VocabularyEntry.self
     ])
 
