@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		4C1AB0012F00000000000001 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = 4C1AB0032F00000000000001 /* FluidAudio */; };
+		4C1AB0022F00000000000001 /* Voz in Frameworks */ = {isa = PBXBuildFile; productRef = 4C1AB0042F00000000000001 /* Voz */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		413077962E2B1B6000EE1780 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +57,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4C1AB0012F00000000000001 /* FluidAudio in Frameworks */,
+				4C1AB0022F00000000000001 /* Voz in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +119,8 @@
 			);
 			name = lore;
 			packageProductDependencies = (
+				4C1AB0032F00000000000001 /* FluidAudio */,
+				4C1AB0042F00000000000001 /* Voz */,
 			);
 			productName = lore;
 			productReference = 413077852E2B1B5F00EE1780 /* lore.app */;
@@ -210,6 +219,8 @@
 			mainGroup = 4130777C2E2B1B5F00EE1780;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				4C1AB0052F00000000000001 /* XCRemoteSwiftPackageReference "FluidAudio" */,
+				4C1AB0062F00000000000001 /* XCRemoteSwiftPackageReference "desert-ant-core" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 413077862E2B1B5F00EE1780 /* Products */;
@@ -584,6 +595,38 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		4C1AB0052F00000000000001 /* XCRemoteSwiftPackageReference "FluidAudio" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/FluidInference/FluidAudio";
+			requirement = {
+				kind = exactVersion;
+				version = 0.18.0;
+			};
+		};
+		4C1AB0062F00000000000001 /* XCRemoteSwiftPackageReference "desert-ant-core" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/Desert-Ant-Labs/desert-ant-core";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 4.2.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		4C1AB0032F00000000000001 /* FluidAudio */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4C1AB0052F00000000000001 /* XCRemoteSwiftPackageReference "FluidAudio" */;
+			productName = FluidAudio;
+		};
+		4C1AB0042F00000000000001 /* Voz */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 4C1AB0062F00000000000001 /* XCRemoteSwiftPackageReference "desert-ant-core" */;
+			productName = Voz;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4130777D2E2B1B5F00EE1780 /* Project object */;
 }

@@ -136,6 +136,24 @@ struct SettingsHomeView: View {
                 } header: {
                     LoreSectionHeader("About")
                 }
+
+#if DEBUG
+                Section {
+                    NavigationLink {
+                        TranscriptionLabView()
+                    } label: {
+                        SettingsNavigationLabel(
+                            title: "Transcription Lab",
+                            systemImage: "waveform.badge.magnifyingglass",
+                            badge: "DEBUG"
+                        )
+                    }
+                    .accessibilityIdentifier("transcriptionLabSettingsLink")
+                    .loreListRow()
+                } header: {
+                    LoreSectionHeader("Developer")
+                }
+#endif
             }
             .listStyle(.insetGrouped)
             .loreGroupedList()
