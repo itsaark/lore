@@ -994,14 +994,17 @@ class SpeechRecognitionViewModel: ObservableObject {
     /// own attack/release easing, so this only has to say how far above the
     /// room's noise the voice is.
     private func startAudioLevelTimer() {
-        audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
+        // 60 Hz so the glow sees each syllable's rise and fall, not a
+        // 20 Hz staircase it has to smooth over.
+        let interval = 1.0 / 60.0
+        audioLevelTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.isRecording, let recorder = self.audioRecorder else { return }
                 recorder.updateMeters()
                 self.voiceGlowLevel = self.voicePresence.process(
                     averageDecibels: recorder.averagePower(forChannel: 0),
                     peakDecibels: recorder.peakPower(forChannel: 0),
-                    frameDuration: 0.05
+                    frameDuration: interval
                 )
             }
         }
@@ -2166,7 +2169,7 @@ struct VoicePresenceLevel {
     /// dB above the floor a sound must reach before it counts as voice.
     static let gateMargin: Float = 7
     /// dB above the gate that reads as full voice.
-    static let speechRange: Float = 26
+    static let speechRange: Float = 24
     /// How long after the tap the room is sampled before anything shows.
     static let calibrationDuration: TimeInterval = 0.3
     static let initialFloor: Float = -55
@@ -2188,9 +2191,9 @@ struct VoicePresenceLevel {
             return 0
         }
 
-        // Plosives and consonants show in the peak before the average moves;
-        // weighting it in a little makes the rise feel immediate.
-        let energy = max(average, max(peakDecibels, -90) - 8)
+        // The recorder's average reacts late; its peak tracks syllables as
+        // they happen. Leaning on the peak makes the glow move with speech.
+        let energy = max(average, max(peakDecibels, -90) - 5)
 
         let timeConstant: TimeInterval
         if average < noiseFloor {

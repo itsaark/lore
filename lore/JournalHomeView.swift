@@ -132,24 +132,15 @@ struct JournalHomeView: View {
 
     private static let voiceGlowOptions: VoiceGlowOptions = {
         var options = VoiceGlowOptions()
-        // Our level is already gated against room noise, so rise quickly
-        // with the first syllable and ease down over a natural pause.
-        options.attack = 0.16
-        options.release = 0.75
+        // Our level is already gated against room noise and sampled at 60 Hz,
+        // so the glow can follow each syllable: a near-instant rise, and a
+        // fall quick enough to dip between words instead of blurring a
+        // sentence into one slow swell.
+        options.attack = 0.05
+        options.release = 0.2
         options.threshold = 0.01
         // A faint breath while silent, so the screen still reads as listening.
         options.idle = 0.14
-        // Recallza's paywall gradient ("Original" aurora), minus its near-black
-        // first stop. Lobes are ordered centre, then pairs moving outward, so
-        // this lays the gradient left to right: blue → yellow → magenta → pink.
-        options.colors = [
-            "FFD400", // centre
-            "E1ECFE", "FA3D1D", // inner left, inner right
-            "5092C7", "FD02F5", // middle left, middle right
-            "0358F7", "FFC0FD", // outer left, outer right
-        ].compactMap { VoiceGlowColor(hex: $0) }
-        // Hold the brand colours still instead of drifting the hue.
-        options.hueRange = 0
         return options
     }()
 
