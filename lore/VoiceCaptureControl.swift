@@ -1,102 +1,5 @@
 import SwiftUI
 
-struct VoiceCaptureVisual: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    let isAvailable: Bool
-    let isRecording: Bool
-    let isProcessing: Bool
-    let audioLevel: Float
-    let responseLevel: Float
-
-    private var visualState: VoiceOrbState {
-        if isProcessing { return .processing }
-        return isRecording ? .listening : .idle
-    }
-
-    var body: some View {
-        GeometryReader { geometry in
-            let diameter = captureDiameter(in: geometry.size)
-
-            captureSurface(diameter: diameter)
-                .frame(width: diameter, height: diameter)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .accessibilityHidden(true)
-    }
-
-    private func captureSurface(diameter: CGFloat) -> some View {
-        let normalizedLevel = CGFloat(min(max(responseLevel, 0), 1))
-        let response = isRecording && !reduceMotion ? normalizedLevel : 0
-
-        return ZStack {
-            BreathingOrb(
-                size: diameter,
-                speed: breathingRingSpeed(response: response),
-                tint: breathingRingTint
-            )
-            .opacity(breathingRingOpacity)
-
-            Circle()
-                .fill(LoreTheme.canvas.opacity(0.78))
-                .frame(
-                    width: diameter * Self.backgroundDiameterRatio,
-                    height: diameter * Self.backgroundDiameterRatio
-                )
-
-            CloudWaveOrb(
-                size: diameter * Self.sphereDiameterRatio,
-                state: visualState,
-                audioLevel: isRecording ? audioLevel : 0
-            )
-            // Scale the completed orb as a single layer. Its internal Metal wave
-            // animation remains exactly as authored in CloudWaveOrb.
-            .scaleEffect(
-                x: 1 + response * 0.018,
-                y: 1 + response * 0.058
-            )
-        }
-        .animation(.easeInOut(duration: 0.24), value: isRecording)
-        .animation(.easeInOut(duration: 0.24), value: isProcessing)
-    }
-
-    private func captureDiameter(in availableSize: CGSize) -> CGFloat {
-        let widthTarget = availableSize.width * 0.824
-        let widthLimit = max(1, availableSize.width - 32)
-        let heightLimit = max(1, availableSize.height * 0.58)
-        let upperBound = min(360, min(widthLimit, heightLimit))
-
-        return min(max(widthTarget, 160), upperBound)
-    }
-
-    private func breathingRingSpeed(response: CGFloat) -> Double {
-        if isRecording {
-            return 0.14 + Double(response) * 0.16
-        }
-
-        return isProcessing ? 0.10 : 0.05
-    }
-
-    private var breathingRingTint: Color? {
-        if !isAvailable {
-            return LoreTheme.tertiaryInk
-        }
-
-        return nil
-    }
-
-    private var breathingRingOpacity: Double {
-        // State reads through white intensity: brightest while listening,
-        // dimmer while finishing, quietest at rest.
-        guard isAvailable else { return 0.2 }
-        if isRecording { return 0.78 }
-        return isProcessing ? 0.42 : 0.3
-    }
-
-    private static let sphereDiameterRatio: CGFloat = 176.0 / 304.0
-    private static let backgroundDiameterRatio: CGFloat = 184.0 / 304.0
-}
-
 struct VoiceCaptureButton: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -269,15 +172,8 @@ private struct VoiceCaptureButtonStyle: ButtonStyle {
 }
 
 #Preview("Idle capture") {
-    VStack {
+    ZStack {
         LoreTheme.canvas.ignoresSafeArea()
-        VoiceCaptureVisual(
-            isAvailable: true,
-            isRecording: false,
-            isProcessing: false,
-            audioLevel: 0,
-            responseLevel: 0
-        )
         VoiceCaptureButton(
             containerWidth: 320,
             isAvailable: true,
@@ -289,15 +185,8 @@ private struct VoiceCaptureButtonStyle: ButtonStyle {
 }
 
 #Preview("Recording") {
-    VStack {
+    ZStack {
         LoreTheme.canvas.ignoresSafeArea()
-        VoiceCaptureVisual(
-            isAvailable: true,
-            isRecording: true,
-            isProcessing: false,
-            audioLevel: 0.58,
-            responseLevel: 0.58
-        )
         VoiceCaptureButton(
             containerWidth: 430,
             isAvailable: true,

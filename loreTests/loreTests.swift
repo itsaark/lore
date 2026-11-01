@@ -27,62 +27,60 @@ struct loreTests {
         #expect(louderTime - quietTime < 0.02)
     }
 
-    @Test func audioLevelEnvelopeRespondsToWhispersWithoutJumping() {
-        var envelope = AudioLevelEnvelope()
-        let whisperRMS = pow(Float(10), -56 / 20)
-        let whisperPeak = pow(Float(10), -49 / 20)
+    @Test func voicePresenceStaysSilentOverSteadyRoomNoise() {
+        var presence = VoicePresenceLevel()
+        var level = 1.0
+        // A humming fan: loud, but steady — the floor learns it.
+        for _ in 0..<40 {
+            level = presence.process(averageDecibels: -44, peakDecibels: -37, frameDuration: 0.05)
+        }
 
-        let firstFrame = envelope.process(
-            rms: whisperRMS,
-            peak: whisperPeak,
-            frameDuration: 1.0 / 43.0
-        )
-        _ = envelope.process(
-            rms: whisperRMS,
-            peak: whisperPeak,
-            frameDuration: 1.0 / 43.0
-        )
-        let thirdFrame = envelope.process(
-            rms: whisperRMS,
-            peak: whisperPeak,
-            frameDuration: 1.0 / 43.0
-        )
-
-        #expect(firstFrame > 0.1)
-        #expect(thirdFrame > firstFrame)
-        #expect(thirdFrame < 0.4)
+        #expect(level == 0)
+        #expect(presence.noiseFloor > -46)
     }
 
-    @Test func audioLevelEnvelopeReleasesSmoothlyAfterSpeech() {
-        var envelope = AudioLevelEnvelope()
-        let speechRMS = pow(Float(10), -28 / 20)
-        let speechPeak = pow(Float(10), -18 / 20)
-
-        for _ in 0..<6 {
-            _ = envelope.process(
-                rms: speechRMS,
-                peak: speechPeak,
-                frameDuration: 1.0 / 43.0
-            )
+    @Test func voicePresenceCatchesUpWhenTheRoomGetsLouder() {
+        var presence = VoicePresenceLevel()
+        for _ in 0..<20 {
+            _ = presence.process(averageDecibels: -62, peakDecibels: -55, frameDuration: 0.05)
         }
-        let spokenLevel = envelope.value
-        let firstSilentFrame = envelope.process(
-            rms: 0,
-            peak: 0,
-            frameDuration: 1.0 / 43.0
-        )
-
-        for _ in 0..<24 {
-            _ = envelope.process(
-                rms: 0,
-                peak: 0,
-                frameDuration: 1.0 / 43.0
-            )
+        var level = 1.0
+        // A fan switches on mid-recording, just above the gate.
+        for _ in 0..<200 {
+            level = presence.process(averageDecibels: -54, peakDecibels: -48, frameDuration: 0.05)
         }
 
-        #expect(firstSilentFrame < spokenLevel)
-        #expect(firstSilentFrame > spokenLevel * 0.75)
-        #expect(envelope.value < firstSilentFrame * 0.1)
+        #expect(level == 0)
+    }
+
+    @Test func voicePresenceRisesWithSpeechAndDropsInPauses() {
+        var presence = VoicePresenceLevel()
+        for _ in 0..<40 {
+            _ = presence.process(averageDecibels: -60, peakDecibels: -52, frameDuration: 0.05)
+        }
+
+        let quiet = presence.process(averageDecibels: -45, peakDecibels: -38, frameDuration: 0.05)
+        let spoken = presence.process(averageDecibels: -28, peakDecibels: -18, frameDuration: 0.05)
+        let pause = presence.process(averageDecibels: -60, peakDecibels: -52, frameDuration: 0.05)
+
+        #expect(quiet > 0)
+        #expect(spoken > quiet)
+        #expect(spoken <= 1)
+        #expect(pause == 0)
+    }
+
+    @Test func voicePresenceDoesNotLearnASentenceAsNoise() {
+        var presence = VoicePresenceLevel()
+        for _ in 0..<40 {
+            _ = presence.process(averageDecibels: -60, peakDecibels: -52, frameDuration: 0.05)
+        }
+        var level = 0.0
+        // Three seconds of continuous speech.
+        for _ in 0..<60 {
+            level = presence.process(averageDecibels: -30, peakDecibels: -20, frameDuration: 0.05)
+        }
+
+        #expect(level > 0.5)
     }
 
     @MainActor

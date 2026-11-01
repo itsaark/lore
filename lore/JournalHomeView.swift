@@ -1,5 +1,6 @@
 import SwiftData
 import SwiftUI
+import VoiceGlowKit
 
 enum JournalRoute: Hashable {
     case day(String)
@@ -105,21 +106,41 @@ struct JournalHomeView: View {
     }
 
     private var captureOverlay: some View {
-        ZStack {
+        // The glow rises from the bottom edge of the screen with your voice
+        // and settles back when you pause. It samples the level every frame,
+        // so speech doesn't re-render this view.
+        VoiceGlow(
+            type: .mobile,
+            levelProvider: { [speechRecognizer] in
+                speechRecognizer.isRecording ? speechRecognizer.voiceGlowLevel : 0
+            },
+            active: speechRecognizer.isAuthorized,
+            colorVariant: .mono,
+            cornerRadius: Self.displayCornerRadius,
+            options: Self.voiceGlowOptions
+        ) {
             LoreTheme.canvas
                 .opacity(0.96)
-                .ignoresSafeArea()
-
-            VoiceCaptureVisual(
-                isAvailable: speechRecognizer.isAuthorized,
-                isRecording: speechRecognizer.isRecording,
-                isProcessing: speechRecognizer.isAwaitingRemoteTranscription,
-                audioLevel: speechRecognizer.currentAudioLevel,
-                responseLevel: speechRecognizer.currentAudioResponseLevel
-            )
         }
+        .ignoresSafeArea()
         .accessibilityIdentifier("voiceCaptureOverlay")
     }
+
+    /// Close to the corner radius of current iPhone displays, so the glow
+    /// follows the screen's own curve into the corners.
+    private static let displayCornerRadius: Double = 55
+
+    private static let voiceGlowOptions: VoiceGlowOptions = {
+        var options = VoiceGlowOptions()
+        // Our level is already gated against room noise, so rise quickly
+        // with the first syllable and ease down over a natural pause.
+        options.attack = 0.16
+        options.release = 0.75
+        options.threshold = 0.01
+        // A faint breath while silent, so the screen still reads as listening.
+        options.idle = 0.14
+        return options
+    }()
 
     @ViewBuilder
     private var captureFeedback: some View {

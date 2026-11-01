@@ -58,8 +58,10 @@ class SpeechRecognitionViewModel: ObservableObject {
     @Published private(set) var dailyBiographyEntries: [DailyBiographyEntry] = []
     @Published private(set) var storyDayKeys: [UUID: String] = [:]
     @Published var isProcessingAudio = false
-    @Published var currentAudioLevel: Float = 0.0
-    @Published var currentAudioResponseLevel: Float = 0.0
+    /// 0–1 speech presence for the recording glow. Deliberately not
+    /// `@Published`: the glow samples it every frame, so publishing would
+    /// rebuild the home view 20 times a second for nothing.
+    private(set) var voiceGlowLevel: Double = 0
     @Published private(set) var transcriptionRoute: SpeechTranscriptionRoute = .deferred(reason: .networkUnknown)
     @Published private(set) var isAwaitingRemoteTranscription = false
     
@@ -74,8 +76,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var recordingStartTime: Date?
     private var currentRecordingAudioFileURL: URL?
     private var audioLevelTimer: Timer?
-    private var audioLevelBuffer: [Float] = []
-    private var audioLevelEnvelope = AudioLevelEnvelope()
+    private var voicePresence = VoicePresenceLevel()
     private var pendingSaveTask: Task<Void, Never>?
     private var recordingSaveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var transcriptionRecoveryTask: Task<Void, Never>?
@@ -140,10 +141,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         isAwaitingRemoteTranscription = false
         errorMessage = nil
         captureFeedbackMessage = nil
-        currentAudioLevel = 0.0
-        currentAudioResponseLevel = 0.0
         stopAudioLevelTimer()
-        audioLevelEnvelope.reset()
     }
 
     /// Connects the view model to SwiftData once the view receives its environment context.
@@ -992,24 +990,17 @@ class SpeechRecognitionViewModel: ObservableObject {
         print("🎤 Audio recorder started, recording in progress")
     }
 
-    /// Preserves the original, slower-smoothed signal used by CloudWaveOrb so
-    /// the animation inside the circle keeps its existing behavior.
+    /// Samples the recorder's meter for the recording glow. The glow does its
+    /// own attack/release easing, so this only has to say how far above the
+    /// room's noise the voice is.
     private func startAudioLevelTimer() {
         audioLevelTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.isRecording, let recorder = self.audioRecorder else { return }
                 recorder.updateMeters()
-                let averageDecibels = max(-80, recorder.averagePower(forChannel: 0))
-                let peakDecibels = max(-80, recorder.peakPower(forChannel: 0))
-                let legacyLevel = max(0, min(1, (averageDecibels + 80) / 80))
-                self.audioLevelBuffer.append(legacyLevel)
-                if self.audioLevelBuffer.count > 10 {
-                    self.audioLevelBuffer.removeFirst()
-                }
-                self.currentAudioLevel = self.audioLevelBuffer.reduce(0, +) / Float(self.audioLevelBuffer.count)
-                self.currentAudioResponseLevel = self.audioLevelEnvelope.process(
-                    rms: pow(10, averageDecibels / 20),
-                    peak: pow(10, peakDecibels / 20),
+                self.voiceGlowLevel = self.voicePresence.process(
+                    averageDecibels: recorder.averagePower(forChannel: 0),
+                    peakDecibels: recorder.peakPower(forChannel: 0),
                     frameDuration: 0.05
                 )
             }
@@ -1019,7 +1010,8 @@ class SpeechRecognitionViewModel: ObservableObject {
     private func stopAudioLevelTimer() {
         audioLevelTimer?.invalidate()
         audioLevelTimer = nil
-        audioLevelBuffer.removeAll()
+        voicePresence.reset()
+        voiceGlowLevel = 0
     }
     
     /// Stops recording and cleans up resources
@@ -1035,11 +1027,8 @@ class SpeechRecognitionViewModel: ObservableObject {
         
         isProcessingAudio = false
         
-        // Reset both visual meters so the next recording starts from silence.
+        // Reset the glow meter so the next recording starts from silence.
         stopAudioLevelTimer()
-        audioLevelEnvelope.reset()
-        currentAudioLevel = 0.0
-        currentAudioResponseLevel = 0.0
         
         if shouldSave {
             beginRecordingSaveBackgroundTask()
@@ -1056,8 +1045,6 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
 
         isProcessingAudio = false
-        currentAudioLevel = 0.0
-        currentAudioResponseLevel = 0.0
         
         isRecording = false
         
@@ -2164,39 +2151,68 @@ class SpeechRecognitionViewModel: ObservableObject {
 /// Converts raw microphone power into a stable visual response. A logarithmic
 /// curve preserves quiet speech, while separate attack and release times let the
 /// visual react immediately without flickering between audio buffers.
-struct AudioLevelEnvelope {
-    private(set) var value: Float = 0
+/// Turns recorder meter readings into a 0–1 "is someone speaking" level.
+///
+/// It learns the room's noise floor and measures the voice above it, so
+/// silence reads as 0 in a quiet bedroom and next to a humming fan alike and
+/// the glow settles whenever you stop talking. The floor is seeded from the
+/// moment right after the record tap, drops to quieter readings quickly, and
+/// rises quickly only for sounds close to it — a long sentence is never
+/// mistaken for noise.
+struct VoicePresenceLevel {
+    private(set) var noiseFloor: Float = Self.initialFloor
+    private var elapsed: TimeInterval = 0
+
+    /// dB above the floor a sound must reach before it counts as voice.
+    static let gateMargin: Float = 7
+    /// dB above the gate that reads as full voice.
+    static let speechRange: Float = 26
+    /// How long after the tap the room is sampled before anything shows.
+    static let calibrationDuration: TimeInterval = 0.3
+    static let initialFloor: Float = -55
+    static let floorBounds: ClosedRange<Float> = -78 ... -30
 
     mutating func process(
-        rms: Float,
-        peak: Float,
+        averageDecibels: Float,
+        peakDecibels: Float,
         frameDuration: TimeInterval
-    ) -> Float {
-        let rmsDecibels = Self.decibels(for: rms)
-        let peakDecibels = Self.decibels(for: peak) - 10
-        let speechEnergy = max(rmsDecibels, peakDecibels)
+    ) -> Double {
+        let average = min(max(averageDecibels, Self.floorBounds.lowerBound), 0)
+        let duration = min(max(frameDuration, 1.0 / 240.0), 0.25)
+        let isFirstFrame = elapsed == 0
+        elapsed += duration
 
-        // This threshold is intentionally sensitive enough for nearby whispers.
-        // The power curve lifts quiet input without pinning loud phrases at 1.0.
-        let linearLevel = min(max((speechEnergy + 62) / 50, 0), 1)
-        let target = pow(linearLevel, 0.55)
-        let timeConstant: TimeInterval = target > value ? 0.028 : 0.17
-        let duration = min(max(frameDuration, 1.0 / 240.0), 0.1)
-        let coefficient = Float(1 - exp(-duration / timeConstant))
-
-        value += (target - value) * coefficient
-        if value < 0.002, target == 0 {
-            value = 0
+        if elapsed <= Self.calibrationDuration {
+            noiseFloor = isFirstFrame ? average : min(noiseFloor, average)
+            noiseFloor = min(max(noiseFloor, Self.floorBounds.lowerBound), Self.floorBounds.upperBound)
+            return 0
         }
 
-        return value
+        // Plosives and consonants show in the peak before the average moves;
+        // weighting it in a little makes the rise feel immediate.
+        let energy = max(average, max(peakDecibels, -90) - 8)
+
+        let timeConstant: TimeInterval
+        if average < noiseFloor {
+            timeConstant = 0.4
+        } else if average < noiseFloor + Self.gateMargin + 4 {
+            timeConstant = 2.5
+        } else {
+            timeConstant = 30
+        }
+        let coefficient = Float(1 - exp(-duration / timeConstant))
+        noiseFloor += (average - noiseFloor) * coefficient
+        noiseFloor = min(max(noiseFloor, Self.floorBounds.lowerBound), Self.floorBounds.upperBound)
+
+        let excess = energy - noiseFloor - Self.gateMargin
+        guard excess > 0 else { return 0 }
+        let linear = min(excess / Self.speechRange, 1)
+        // Lift quiet speech a touch without pinning normal speech at full.
+        return Double(pow(linear, 0.8))
     }
 
     mutating func reset() {
-        value = 0
-    }
-
-    private static func decibels(for amplitude: Float) -> Float {
-        20 * log10(max(amplitude, 0.000_001))
+        noiseFloor = Self.initialFloor
+        elapsed = 0
     }
 }
