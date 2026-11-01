@@ -115,7 +115,7 @@ struct JournalHomeView: View {
                 speechRecognizer.isRecording ? speechRecognizer.voiceGlowLevel : 0
             },
             active: speechRecognizer.isAuthorized,
-            colorVariant: .mono,
+            colorVariant: .colorful,
             cornerRadius: Self.displayCornerRadius,
             options: Self.voiceGlowOptions
         ) {
@@ -139,6 +139,17 @@ struct JournalHomeView: View {
         options.threshold = 0.01
         // A faint breath while silent, so the screen still reads as listening.
         options.idle = 0.14
+        // Recallza's paywall gradient ("Original" aurora), minus its near-black
+        // first stop. Lobes are ordered centre, then pairs moving outward, so
+        // this lays the gradient left to right: blue → yellow → magenta → pink.
+        options.colors = [
+            "FFD400", // centre
+            "E1ECFE", "FA3D1D", // inner left, inner right
+            "5092C7", "FD02F5", // middle left, middle right
+            "0358F7", "FFC0FD", // outer left, outer right
+        ].compactMap { VoiceGlowColor(hex: $0) }
+        // Hold the brand colours still instead of drifting the hue.
+        options.hueRange = 0
         return options
     }()
 
