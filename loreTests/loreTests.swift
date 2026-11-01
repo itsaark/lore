@@ -27,60 +27,37 @@ struct loreTests {
         #expect(louderTime - quietTime < 0.02)
     }
 
-    @Test func voicePresenceStaysSilentOverSteadyRoomNoise() {
-        var presence = VoicePresenceLevel()
-        var level = 1.0
-        // A humming fan: loud, but steady — the floor learns it.
-        for _ in 0..<40 {
-            level = presence.process(averageDecibels: -44, peakDecibels: -37, frameDuration: 0.05)
-        }
+    @Test func analysisRingGlidesThroughLargeTapBuffers() {
+        let ring = AnalysisRing(capacity: 1 << 14)
+        ring.reset(sampleRate: 48_000)
+        // One 100 ms tap buffer: silence, then a loud second half.
+        var samples = [Float](repeating: 0, count: 4_800)
+        for index in 2_400..<4_800 { samples[index] = 0.5 }
+        samples.withUnsafeBufferPointer { ring.write($0, at: 10) }
 
-        #expect(level == 0)
-        #expect(presence.noiseFloor > -46)
+        let atArrival = ring.window(count: 1_024, now: 10)
+        let halfway = ring.window(count: 1_024, now: 10.06)
+        let afterBuffer = ring.window(count: 1_024, now: 10.5)
+
+        // At arrival the playhead sits at the buffer's start: no window yet.
+        #expect(atArrival == nil)
+        // 60 ms in, the window has moved into the loud half.
+        #expect(halfway?.samples.last == 0.5)
+        #expect(halfway?.samples.first == 0)
+        // Past the buffer's duration it holds at the newest samples.
+        #expect(afterBuffer?.samples.allSatisfy { $0 == 0.5 } == true)
     }
 
-    @Test func voicePresenceCatchesUpWhenTheRoomGetsLouder() {
-        var presence = VoicePresenceLevel()
-        for _ in 0..<20 {
-            _ = presence.process(averageDecibels: -62, peakDecibels: -55, frameDuration: 0.05)
-        }
-        var level = 1.0
-        // A fan switches on mid-recording, just above the gate.
-        for _ in 0..<200 {
-            level = presence.process(averageDecibels: -54, peakDecibels: -48, frameDuration: 0.05)
-        }
+    @Test func spectrumAnalyserPutsAVoiceToneInTheRightBand() {
+        let analyser = SpectrumAnalyser(fftSize: 1_024)
+        let rate = 48_000.0
+        let tone = (0..<1_024).map { Float(0.3 * sin(2 * .pi * 1_000 * Double($0) / rate)) }
+        var result = analyser.analyse(tone, sampleRate: rate)
+        for _ in 0..<8 { result = analyser.analyse(tone, sampleRate: rate) }
 
-        #expect(level == 0)
-    }
-
-    @Test func voicePresenceRisesWithSpeechAndDropsInPauses() {
-        var presence = VoicePresenceLevel()
-        for _ in 0..<40 {
-            _ = presence.process(averageDecibels: -60, peakDecibels: -52, frameDuration: 0.05)
-        }
-
-        let quiet = presence.process(averageDecibels: -45, peakDecibels: -38, frameDuration: 0.05)
-        let spoken = presence.process(averageDecibels: -28, peakDecibels: -18, frameDuration: 0.05)
-        let pause = presence.process(averageDecibels: -60, peakDecibels: -52, frameDuration: 0.05)
-
-        #expect(quiet > 0)
-        #expect(spoken > quiet)
-        #expect(spoken <= 1)
-        #expect(pause == 0)
-    }
-
-    @Test func voicePresenceDoesNotLearnASentenceAsNoise() {
-        var presence = VoicePresenceLevel()
-        for _ in 0..<40 {
-            _ = presence.process(averageDecibels: -60, peakDecibels: -52, frameDuration: 0.05)
-        }
-        var level = 0.0
-        // Three seconds of continuous speech.
-        for _ in 0..<60 {
-            level = presence.process(averageDecibels: -30, peakDecibels: -20, frameDuration: 0.05)
-        }
-
-        #expect(level > 0.5)
+        #expect(result.rms > 0.15)
+        #expect(result.bands.y > result.bands.x)
+        #expect(result.bands.y > result.bands.z)
     }
 
     @MainActor
@@ -90,10 +67,10 @@ struct loreTests {
 
         #expect(audioURL.pathExtension == "m4a")
         #expect(
-            SpeechRecognitionViewModel.audioRecorderSettings[AVFormatIDKey] as? AudioFormatID
+            SpeechRecognitionViewModel.recordingFileSettings[AVFormatIDKey] as? AudioFormatID
                 == kAudioFormatMPEG4AAC
         )
-        #expect(SpeechRecognitionViewModel.audioRecorderSettings[AVNumberOfChannelsKey] as? Int == 1)
+        #expect(SpeechRecognitionViewModel.recordingFileSettings[AVNumberOfChannelsKey] as? Int == 1)
     }
 
     @MainActor
@@ -135,7 +112,7 @@ struct loreTests {
 
         let audioFile = try AVAudioFile(
             forWriting: audioURL,
-            settings: SpeechRecognitionViewModel.audioRecorderSettings,
+            settings: SpeechRecognitionViewModel.recordingFileSettings,
             commonFormat: .pcmFormatFloat32,
             interleaved: false
         )
@@ -154,6 +131,43 @@ struct loreTests {
         #expect(chunk.audio.filenameExtension == "m4a")
         #expect(chunk.audio.mimeType == "audio/m4a")
         #expect(chunk.audio.bytes == sourceBytes)
+    }
+
+    @MainActor
+    @Test func captureWriterResamplesHardwareAudioIntoTheUploadFormat() async throws {
+        let audioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("lore-capture-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: audioURL) }
+        let file = try AVAudioFile(
+            forWriting: audioURL,
+            settings: SpeechRecognitionViewModel.recordingFileSettings,
+            commonFormat: .pcmFormatFloat32,
+            interleaved: false
+        )
+        let writer = RecordingWriter(file: file)
+        // What a headset might hand the tap: 48 kHz stereo, in 100 ms buffers.
+        let hardware = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 2))
+        try writer.prepare(for: hardware)
+        for chunk in 0..<20 {
+            let buffer = try #require(AVAudioPCMBuffer(pcmFormat: hardware, frameCapacity: 4_800))
+            buffer.frameLength = 4_800
+            for channel in 0..<2 {
+                let samples = try #require(buffer.floatChannelData?[channel])
+                for index in 0..<4_800 {
+                    let t = Double(chunk * 4_800 + index) / 48_000
+                    samples[index] = Float(0.2 * sin(2 * .pi * 440 * t))
+                }
+            }
+            writer.write(buffer)
+        }
+        writer.close()
+
+        let inspection = try SpeechRecognitionViewModel.inspectRecordedAudio(at: audioURL)
+        let readBack = try AVAudioFile(forReading: audioURL)
+
+        #expect(readBack.fileFormat.sampleRate == 44_100)
+        #expect(readBack.fileFormat.channelCount == 1)
+        #expect(abs(inspection.durationSeconds - 2.0) < 0.1)
     }
 
     @MainActor

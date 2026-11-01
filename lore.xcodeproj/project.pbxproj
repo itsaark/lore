@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		4C1AB0012F00000000000001 /* FluidAudio in Frameworks */ = {isa = PBXBuildFile; productRef = 4C1AB0032F00000000000001 /* FluidAudio */; };
 		4C1AB0022F00000000000001 /* Voz in Frameworks */ = {isa = PBXBuildFile; productRef = 4C1AB0042F00000000000001 /* Voz */; };
-		4C1AB0072F00000000000001 /* VoiceGlowKit in Frameworks */ = {isa = PBXBuildFile; productRef = 4C1AB0082F00000000000001 /* VoiceGlowKit */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -60,7 +59,6 @@
 			files = (
 				4C1AB0012F00000000000001 /* FluidAudio in Frameworks */,
 				4C1AB0022F00000000000001 /* Voz in Frameworks */,
-				4C1AB0072F00000000000001 /* VoiceGlowKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -123,7 +121,6 @@
 			packageProductDependencies = (
 				4C1AB0032F00000000000001 /* FluidAudio */,
 				4C1AB0042F00000000000001 /* Voz */,
-				4C1AB0082F00000000000001 /* VoiceGlowKit */,
 			);
 			productName = lore;
 			productReference = 413077852E2B1B5F00EE1780 /* lore.app */;
@@ -224,7 +221,6 @@
 			packageReferences = (
 				4C1AB0052F00000000000001 /* XCRemoteSwiftPackageReference "FluidAudio" */,
 				4C1AB0062F00000000000001 /* XCRemoteSwiftPackageReference "desert-ant-core" */,
-				4C1AB0092F00000000000001 /* XCRemoteSwiftPackageReference "Libraries" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 413077862E2B1B5F00EE1780 /* Products */;
@@ -617,14 +613,6 @@
 				minimumVersion = 4.2.3;
 			};
 		};
-		4C1AB0092F00000000000001 /* XCRemoteSwiftPackageReference "Libraries" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/Jakubantalik/Libraries.dev";
-			requirement = {
-				kind = revision;
-				revision = bad63221ebafa08d830586aa1721ecbd4ea02fcb;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -637,11 +625,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 4C1AB0062F00000000000001 /* XCRemoteSwiftPackageReference "desert-ant-core" */;
 			productName = Voz;
-		};
-		4C1AB0082F00000000000001 /* VoiceGlowKit */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 4C1AB0092F00000000000001 /* XCRemoteSwiftPackageReference "Libraries" */;
-			productName = VoiceGlowKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

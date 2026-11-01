@@ -58,10 +58,6 @@ class SpeechRecognitionViewModel: ObservableObject {
     @Published private(set) var dailyBiographyEntries: [DailyBiographyEntry] = []
     @Published private(set) var storyDayKeys: [UUID: String] = [:]
     @Published var isProcessingAudio = false
-    /// 0–1 speech presence for the recording glow. Deliberately not
-    /// `@Published`: the glow samples it every frame, so publishing would
-    /// rebuild the home view 20 times a second for nothing.
-    private(set) var voiceGlowLevel: Double = 0
     @Published private(set) var transcriptionRoute: SpeechTranscriptionRoute = .deferred(reason: .networkUnknown)
     @Published private(set) var isAwaitingRemoteTranscription = false
     
@@ -72,11 +68,9 @@ class SpeechRecognitionViewModel: ObservableObject {
     private let remoteTranscriber: any RemoteSpeechTranscribing
     private let networkConnectionProvider: any SpeechNetworkConnectionProviding
     private let localeIdentifier: String
-    private var audioRecorder: AVAudioRecorder?
+    private var captureEngine: VoiceCaptureEngine?
     private var recordingStartTime: Date?
     private var currentRecordingAudioFileURL: URL?
-    private var audioLevelTimer: Timer?
-    private var voicePresence = VoicePresenceLevel()
     private var pendingSaveTask: Task<Void, Never>?
     private var recordingSaveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var transcriptionRecoveryTask: Task<Void, Never>?
@@ -141,7 +135,6 @@ class SpeechRecognitionViewModel: ObservableObject {
         isAwaitingRemoteTranscription = false
         errorMessage = nil
         captureFeedbackMessage = nil
-        stopAudioLevelTimer()
     }
 
     /// Connects the view model to SwiftData once the view receives its environment context.
@@ -969,69 +962,47 @@ class SpeechRecognitionViewModel: ObservableObject {
         print("✅ Audio session configured")
     }
     
-    /// Starts capture directly into the backend's preferred M4A format. Using
-    /// AVAudioRecorder gives Stop a deterministic file-closing boundary and
-    /// avoids racing a newly written CAF through an immediate export session.
+    /// Starts capture directly into the backend's preferred M4A format. One
+    /// audio engine feeds the file and the recording glow; Stop closes the
+    /// file synchronously, so nothing races a half-written recording.
     private func startAudioCapture() throws {
         recordingStartTime = Date()
         let audioFileURL = try Self.makeAudioFileURL(forStoryID: UUID())
-        let recorder = try Self.prepareManagedAudioRecorder(at: audioFileURL)
-        guard recorder.record() else {
-            recorder.stop()
-            recorder.deleteRecording()
-            throw TranscriptionJobRunnerError.audioFileUnreadable
+        let file = try Self.prepareManagedRecordingFile(at: audioFileURL)
+        let engine = VoiceCaptureEngine(file: file)
+        do {
+            try engine.start()
+        } catch {
+            engine.stop()
+            try? FileManager.default.removeItem(at: audioFileURL)
+            throw error
         }
-        audioRecorder = recorder
+        captureEngine = engine
         currentRecordingAudioFileURL = audioFileURL
 
-        startAudioLevelTimer()
         isRecording = true
         isProcessingAudio = true
-        print("🎤 Audio recorder started, recording in progress")
+        print("🎤 Audio capture started, recording in progress")
     }
 
-    /// Samples the recorder's meter for the recording glow. The glow does its
-    /// own attack/release easing, so this only has to say how far above the
-    /// room's noise the voice is.
-    private func startAudioLevelTimer() {
-        // 60 Hz so the glow sees each syllable's rise and fall, not a
-        // 20 Hz staircase it has to smooth over.
-        let interval = 1.0 / 60.0
-        audioLevelTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, self.isRecording, let recorder = self.audioRecorder else { return }
-                recorder.updateMeters()
-                self.voiceGlowLevel = self.voicePresence.process(
-                    averageDecibels: recorder.averagePower(forChannel: 0),
-                    peakDecibels: recorder.peakPower(forChannel: 0),
-                    frameDuration: interval
-                )
-            }
-        }
+    /// The latest raw audio analysis for the recording glow, sampled every
+    /// frame. Nil when not recording.
+    func voiceGlowAudio() -> VoiceGlowAudio? {
+        guard isRecording else { return nil }
+        return captureEngine?.currentAudio()
     }
 
-    private func stopAudioLevelTimer() {
-        audioLevelTimer?.invalidate()
-        audioLevelTimer = nil
-        voicePresence.reset()
-        voiceGlowLevel = 0
-    }
-    
     /// Stops recording and cleans up resources
     private func stopRecording(shouldSave: Bool = true) {
         print("🛑 Stopping recording...")
         pendingSaveTask?.cancel()
         pendingSaveTask = nil
 
-        // AVAudioRecorder.stop() closes and finalizes the M4A before any job can
-        // inspect or upload it.
-        audioRecorder?.stop()
-        audioRecorder = nil
+        // Closes and finalizes the M4A before any job can inspect or upload it.
+        captureEngine?.stop()
+        captureEngine = nil
         
         isProcessingAudio = false
-        
-        // Reset the glow meter so the next recording starts from silence.
-        stopAudioLevelTimer()
         
         if shouldSave {
             beginRecordingSaveBackgroundTask()
@@ -1749,34 +1720,41 @@ class SpeechRecognitionViewModel: ObservableObject {
         return directory.appendingPathComponent("\(storyID.uuidString).m4a")
     }
 
-    static let audioRecorderSettings: [String: Any] = [
-        AVFormatIDKey: kAudioFormatMPEG4AAC,
-        AVSampleRateKey: 44_100,
-        AVNumberOfChannelsKey: 1,
-        AVEncoderBitRateKey: 64_000,
-        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-    ]
+    static var recordingFileSettings: [String: Any] { VoiceCaptureEngine.fileSettings }
 
-    /// `prepareToRecord()` is the AVAudioRecorder boundary that creates the
-    /// destination file. Protect it only after that succeeds and before audio
-    /// capture begins.
-    static func prepareManagedAudioRecorder(at audioFileURL: URL) throws -> AVAudioRecorder {
-        let recorder = try AVAudioRecorder(
-            url: audioFileURL,
-            settings: audioRecorderSettings
-        )
-        recorder.isMeteringEnabled = true
+    /// Opening the `AVAudioFile` creates the destination file. Protect it only
+    /// after that succeeds and before audio capture begins.
+    static func prepareManagedRecordingFile(at audioFileURL: URL) throws -> AVAudioFile {
+        var file: AVAudioFile?
+        var openError: Error?
         try prepareRecordingFile(
-            prepare: { recorder.prepareToRecord() },
+            prepare: {
+                do {
+                    file = try AVAudioFile(
+                        forWriting: audioFileURL,
+                        settings: recordingFileSettings,
+                        commonFormat: .pcmFormatFloat32,
+                        interleaved: false
+                    )
+                    return true
+                } catch {
+                    openError = error
+                    return false
+                }
+            },
             applyProtection: {
                 try FileManager.default.setAttributes(
                     [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                     ofItemAtPath: audioFileURL.path
                 )
             },
-            cleanup: { _ = recorder.deleteRecording() }
+            cleanup: {
+                file?.close()
+                try? FileManager.default.removeItem(at: audioFileURL)
+            }
         )
-        return recorder
+        guard let file else { throw openError ?? TranscriptionJobRunnerError.audioFileUnreadable }
+        return file
     }
 
     static func prepareRecordingFile(
@@ -2154,68 +2132,3 @@ class SpeechRecognitionViewModel: ObservableObject {
 /// Converts raw microphone power into a stable visual response. A logarithmic
 /// curve preserves quiet speech, while separate attack and release times let the
 /// visual react immediately without flickering between audio buffers.
-/// Turns recorder meter readings into a 0–1 "is someone speaking" level.
-///
-/// It learns the room's noise floor and measures the voice above it, so
-/// silence reads as 0 in a quiet bedroom and next to a humming fan alike and
-/// the glow settles whenever you stop talking. The floor is seeded from the
-/// moment right after the record tap, drops to quieter readings quickly, and
-/// rises quickly only for sounds close to it — a long sentence is never
-/// mistaken for noise.
-struct VoicePresenceLevel {
-    private(set) var noiseFloor: Float = Self.initialFloor
-    private var elapsed: TimeInterval = 0
-
-    /// dB above the floor a sound must reach before it counts as voice.
-    static let gateMargin: Float = 7
-    /// dB above the gate that reads as full voice.
-    static let speechRange: Float = 24
-    /// How long after the tap the room is sampled before anything shows.
-    static let calibrationDuration: TimeInterval = 0.3
-    static let initialFloor: Float = -55
-    static let floorBounds: ClosedRange<Float> = -78 ... -30
-
-    mutating func process(
-        averageDecibels: Float,
-        peakDecibels: Float,
-        frameDuration: TimeInterval
-    ) -> Double {
-        let average = min(max(averageDecibels, Self.floorBounds.lowerBound), 0)
-        let duration = min(max(frameDuration, 1.0 / 240.0), 0.25)
-        let isFirstFrame = elapsed == 0
-        elapsed += duration
-
-        if elapsed <= Self.calibrationDuration {
-            noiseFloor = isFirstFrame ? average : min(noiseFloor, average)
-            noiseFloor = min(max(noiseFloor, Self.floorBounds.lowerBound), Self.floorBounds.upperBound)
-            return 0
-        }
-
-        // The recorder's average reacts late; its peak tracks syllables as
-        // they happen. Leaning on the peak makes the glow move with speech.
-        let energy = max(average, max(peakDecibels, -90) - 5)
-
-        let timeConstant: TimeInterval
-        if average < noiseFloor {
-            timeConstant = 0.4
-        } else if average < noiseFloor + Self.gateMargin + 4 {
-            timeConstant = 2.5
-        } else {
-            timeConstant = 30
-        }
-        let coefficient = Float(1 - exp(-duration / timeConstant))
-        noiseFloor += (average - noiseFloor) * coefficient
-        noiseFloor = min(max(noiseFloor, Self.floorBounds.lowerBound), Self.floorBounds.upperBound)
-
-        let excess = energy - noiseFloor - Self.gateMargin
-        guard excess > 0 else { return 0 }
-        let linear = min(excess / Self.speechRange, 1)
-        // Lift quiet speech a touch without pinning normal speech at full.
-        return Double(pow(linear, 0.8))
-    }
-
-    mutating func reset() {
-        noiseFloor = Self.initialFloor
-        elapsed = 0
-    }
-}

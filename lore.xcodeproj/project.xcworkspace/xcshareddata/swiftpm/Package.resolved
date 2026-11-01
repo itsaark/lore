@@ -1,5 +1,5 @@
 {
-  "originHash" : "28a269549ec53ce8946f4b064c141d9c1b82ee4bc528773148575578e8c145cf",
+  "originHash" : "d133a1877deb7a384df6a371e85ab6e0ea63bfba6142f109c4dd33e182e74e44",
   "pins" : [
     {
       "identity" : "desert-ant-core",
@@ -17,14 +17,6 @@
       "state" : {
         "revision" : "e15287985625dbf544a343df679436789ffb03fb",
         "version" : "0.18.0"
-      }
-    },
-    {
-      "identity" : "libraries.dev",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Jakubantalik/Libraries.dev",
-      "state" : {
-        "revision" : "bad63221ebafa08d830586aa1721ecbd4ea02fcb"
       }
     },
     {

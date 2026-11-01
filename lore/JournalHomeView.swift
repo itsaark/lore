@@ -1,6 +1,5 @@
 import SwiftData
 import SwiftUI
-import VoiceGlowKit
 
 enum JournalRoute: Hashable {
     case day(String)
@@ -106,14 +105,13 @@ struct JournalHomeView: View {
     }
 
     private var captureOverlay: some View {
-        // The glow rises from the bottom edge of the screen with your voice
-        // and settles back when you pause. It samples the level every frame,
-        // so speech doesn't re-render this view.
+        // The glow rises from the bottom edge of the screen with your voice:
+        // the recorder's own audio, analysed into low, mid and high bands
+        // every frame, so each lobe moves with its part of the voice. It
+        // samples outside SwiftUI state, so speech doesn't re-render this view.
         VoiceGlow(
             type: .mobile,
-            levelProvider: { [speechRecognizer] in
-                speechRecognizer.isRecording ? speechRecognizer.voiceGlowLevel : 0
-            },
+            audio: { [speechRecognizer] in speechRecognizer.voiceGlowAudio() },
             active: speechRecognizer.isAuthorized,
             colorVariant: .colorful,
             cornerRadius: Self.displayCornerRadius,
@@ -132,15 +130,12 @@ struct JournalHomeView: View {
 
     private static let voiceGlowOptions: VoiceGlowOptions = {
         var options = VoiceGlowOptions()
-        // Our level is already gated against room noise and sampled at 60 Hz,
-        // so the glow can follow each syllable: a near-instant rise, and a
-        // fall quick enough to dip between words instead of blurring a
-        // sentence into one slow swell.
-        options.attack = 0.05
-        options.release = 0.2
-        options.threshold = 0.01
-        // A faint breath while silent, so the screen still reads as listening.
-        options.idle = 0.14
+        // Lore records in `.measurement` mode (no automatic gain, for cleaner
+        // transcription audio), which runs ~10 dB quieter than the default
+        // mode the glow is tuned for. Make up the gain, and raise the gate
+        // with it so room hiss stays below it.
+        options.sensitivity = 6
+        options.threshold = 0.04
         return options
     }()
 
