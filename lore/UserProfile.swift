@@ -8,6 +8,9 @@ final class UserProfile {
     @Attribute(.allowsCloudEncryption) var hometown: String = ""
     @Attribute(.allowsCloudEncryption) var birthYear: Int = 0
     var remoteProcessingConsentedAt: Date?
+    /// BCP-47 language codes the person speaks to Lore (e.g. "en", "es").
+    /// Empty means not asked yet; callers fall back to the device languages.
+    @Attribute(.allowsCloudEncryption) var spokenLanguageCodes: [String] = []
 
     // Retained only so existing pre-remote-only stores migrate without losing
     // their prior permission state. These are not product settings anymore.
@@ -48,6 +51,14 @@ final class UserProfile {
         remoteProcessingConsentedAt = date
         processingModeValue = "remote"
         allowsCellularRemoteProcessing = true
+        updatedAt = date
+    }
+
+    func setSpokenLanguages(_ codes: [String], at date: Date = Date()) {
+        var seen = Set<String>()
+        spokenLanguageCodes = codes
+            .map(SpokenLanguageSupport.normalizedCode)
+            .filter { !$0.isEmpty && seen.insert($0).inserted }
         updatedAt = date
     }
 

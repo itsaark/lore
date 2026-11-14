@@ -1,11 +1,15 @@
 import Foundation
 import SwiftData
 
+/// Stored by raw value in `TranscriptArtifact.sourceValue`; append cases
+/// only, never rename, so existing rows keep decoding.
 enum TranscriptSource: String, Codable, CaseIterable, Sendable {
     case appleSpeech
     case remoteProvider
     case imported
     case legacyStory
+    /// Lore's own on-device model (Fluid Speech Mini via FluidAudio).
+    case onDevice
 }
 
 enum TranscriptVersionAuthor: String, Codable, CaseIterable, Sendable {

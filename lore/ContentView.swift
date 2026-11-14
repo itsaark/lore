@@ -22,7 +22,9 @@ struct ContentView: View {
         _speechRecognizer = StateObject(
             wrappedValue: SpeechRecognitionViewModel(
                 remoteDailyEntryGenerator: remoteServices.dailyEntryGenerator,
-                remoteTranscriber: remoteServices.speechTranscriber
+                remoteTranscriber: remoteServices.speechTranscriber,
+                localTranscriber: LoreOnDeviceServices.speechTranscriber,
+                onDeviceModelStore: .shared
             )
         )
         reflectionBackend = remoteServices.reflectionBackend
@@ -41,9 +43,11 @@ struct ContentView: View {
                 modelContext: modelContext,
                 userProfile: userProfile
             )
+            LoreOnDeviceServices.startModelDownloadIfEligible(for: userProfile)
         }
         .onChange(of: userProfile.updatedAt) { _, _ in
             speechRecognizer.refreshRemoteProcessingPolicy()
+            LoreOnDeviceServices.startModelDownloadIfEligible(for: userProfile)
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }

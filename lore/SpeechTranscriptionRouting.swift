@@ -7,11 +7,24 @@ enum SpeechTranscriptionDeferralReason: String, Equatable, Sendable {
 }
 
 enum SpeechTranscriptionRoute: Equatable, Sendable {
+    /// Fluid Speech Mini on this iPhone. Needs no network and no remote
+    /// processing consent; nothing leaves the device.
+    case onDevice
     case remote
     case deferred(reason: SpeechTranscriptionDeferralReason)
 
     var usesRemoteService: Bool {
         self == .remote
+    }
+
+    /// Whether a new recording can be captured and transcribed right now.
+    var allowsCapture: Bool {
+        switch self {
+        case .onDevice, .remote:
+            return true
+        case .deferred:
+            return false
+        }
     }
 }
 
@@ -37,14 +50,42 @@ struct RemoteProcessingPreferences: Equatable, Sendable {
 struct SpeechTranscriptionRoutingInput: Equatable, Sendable {
     let preferences: RemoteProcessingPreferences
     let networkConnection: SpeechNetworkConnection
+    /// Normalized codes from `SpokenLanguageSupport.effectiveLanguageCodes`.
+    let spokenLanguageCodes: [String]
+    let isOnDeviceModelReady: Bool
+
+    init(
+        preferences: RemoteProcessingPreferences,
+        networkConnection: SpeechNetworkConnection,
+        spokenLanguageCodes: [String] = [],
+        isOnDeviceModelReady: Bool = false
+    ) {
+        self.preferences = preferences
+        self.networkConnection = networkConnection
+        self.spokenLanguageCodes = spokenLanguageCodes
+        self.isOnDeviceModelReady = isOnDeviceModelReady
+    }
 }
 
-/// Lore's MVP has one processing route. Recordings wait locally while offline,
-/// then use the authenticated request-ephemeral backend when connectivity returns.
+/// Chooses where a new recording is transcribed.
+///
+/// On device comes first: when every language the person speaks is supported
+/// and the model is installed, transcription runs locally, offline and
+/// without remote-processing consent, because no audio or text leaves the
+/// iPhone. Consent still gates every remote step (the remote fallback and the
+/// later journal entry), which enforce it themselves.
+///
+/// Otherwise recordings use the authenticated request-ephemeral backend, and
+/// wait locally while offline or before consent.
 struct SpeechTranscriptionPolicy: Equatable, Sendable {
     static let production = Self()
 
     func route(for input: SpeechTranscriptionRoutingInput) -> SpeechTranscriptionRoute {
+        if input.isOnDeviceModelReady,
+           SpokenLanguageSupport.allowsOnDeviceTranscription(for: input.spokenLanguageCodes) {
+            return .onDevice
+        }
+
         guard input.preferences.hasConsent else {
             return .deferred(reason: .remoteProcessingConsentRequired)
         }

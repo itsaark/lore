@@ -121,3 +121,29 @@ struct LoreRemoteServices {
     }
 
 }
+
+/// On-device speech services shared by the app. One transcriber instance
+/// keeps the model warm across recordings.
+@MainActor
+enum LoreOnDeviceServices {
+    static let speechTranscriber: any LocalSpeechTranscribing = FluidAudioLocalSpeechTranscriber(
+        modelDirectory: OnDeviceSpeechModelStore.installedModelDirectory(
+            in: OnDeviceSpeechModelStore.defaultRootDirectory
+        )
+    )
+
+    /// Downloads the model only for people who finished onboarding with
+    /// consent and speak only languages it supports; nobody else needs the
+    /// 253 MB. The store itself waits for Wi-Fi.
+    static func startModelDownloadIfEligible(
+        for userProfile: UserProfile,
+        store: OnDeviceSpeechModelStore? = nil
+    ) {
+        guard userProfile.hasRemoteProcessingConsent else { return }
+        let languages = SpokenLanguageSupport.effectiveLanguageCodes(
+            profileCodes: userProfile.spokenLanguageCodes
+        )
+        guard SpokenLanguageSupport.allowsOnDeviceTranscription(for: languages) else { return }
+        (store ?? .shared).startDownloadIfNeeded()
+    }
+}

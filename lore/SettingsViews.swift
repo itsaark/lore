@@ -48,8 +48,27 @@ struct SettingsHomeView: View {
                     }
                     .accessibilityIdentifier("vocabularySettingsLink")
                     .loreListRow()
+
+                    NavigationLink {
+                        SpokenLanguageSettingsView(userProfile: userProfile)
+                    } label: {
+                        SettingsNavigationLabel(
+                            title: "Languages",
+                            systemImage: "globe",
+                            detail: SpokenLanguageCatalog.summary(for: effectiveLanguageCodes)
+                        )
+                    }
+                    .accessibilityIdentifier("spokenLanguagesSettingsLink")
+                    .loreListRow()
+
+                    OnDeviceTranscriptionRows(languageCodes: effectiveLanguageCodes)
                 } header: {
                     LoreSectionHeader("Transcription")
+                } footer: {
+                    SettingsFooter(OnDeviceTranscriptionCopy.footer(
+                        languageCodes: effectiveLanguageCodes,
+                        modelName: OnDeviceSpeechModelStore.shared.modelDisplayName
+                    ))
                 }
 
                 Section {
@@ -172,6 +191,10 @@ struct SettingsHomeView: View {
                 }
             }
         }
+    }
+
+    private var effectiveLanguageCodes: [String] {
+        SpokenLanguageSupport.effectiveLanguageCodes(profileCodes: userProfile.spokenLanguageCodes)
     }
 
     private func refreshPermissionStates() {
@@ -701,6 +724,237 @@ private struct JournalStyleSettingsView: View {
     }
 }
 
+/// Copy for the on-device transcription rows, kept apart from the views so
+/// it can be tested.
+enum OnDeviceTranscriptionCopy {
+    static func statusTitle(for state: OnDeviceSpeechModelState) -> String {
+        switch state {
+        case .ready:
+            "Ready · on this iPhone"
+        case .downloading(let progress):
+            "Downloading · \(Int((min(max(progress, 0), 1) * 100).rounded()))%"
+        case .verifying:
+            "Verifying…"
+        case .waitingForWiFi:
+            "Waiting for Wi-Fi"
+        case .notDownloaded:
+            "Not downloaded"
+        case .failed:
+            "Download failed"
+        }
+    }
+
+    static func footer(languageCodes: [String], modelName: String) -> String {
+        if SpokenLanguageSupport.allowsOnDeviceTranscription(for: languageCodes) {
+            return "English notes are transcribed on this iPhone by \(modelName). It downloads once, over Wi-Fi unless you choose cellular."
+        }
+        return "On-device transcription is available for English. Your other languages use Lore’s server."
+    }
+
+    static func formattedSize(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+}
+
+/// Status and actions for the on-device speech model, inside the
+/// Transcription section.
+private struct OnDeviceTranscriptionRows: View {
+    let languageCodes: [String]
+    @ObservedObject private var modelStore = OnDeviceSpeechModelStore.shared
+    @State private var isConfirmingRemoval = false
+
+    private var usesOnDevice: Bool {
+        SpokenLanguageSupport.allowsOnDeviceTranscription(for: languageCodes)
+    }
+
+    private var sizeText: String {
+        OnDeviceTranscriptionCopy.formattedSize(modelStore.approximateDownloadBytes)
+    }
+
+    var body: some View {
+        statusRow
+            .loreListRow()
+
+        if usesOnDevice {
+            switch modelStore.state {
+            case .notDownloaded:
+                actionRow(title: "Download", detail: sizeText, systemImage: "arrow.down.circle") {
+                    modelStore.startDownloadIfNeeded(allowsCellular: false)
+                }
+                .accessibilityIdentifier("downloadOnDeviceModelButton")
+            case .waitingForWiFi:
+                actionRow(title: "Download now using cellular", detail: sizeText, systemImage: "antenna.radiowaves.left.and.right") {
+                    modelStore.startDownloadIfNeeded(allowsCellular: true)
+                }
+                .accessibilityIdentifier("downloadOnDeviceModelCellularButton")
+            case .failed:
+                actionRow(title: "Retry", detail: nil, systemImage: "arrow.clockwise") {
+                    modelStore.retryDownload(allowsCellular: false)
+                }
+                .accessibilityIdentifier("retryOnDeviceModelButton")
+            case .downloading, .verifying, .ready:
+                EmptyView()
+            }
+        }
+
+        if modelStore.state == .ready {
+            Button(role: .destructive) {
+                isConfirmingRemoval = true
+            } label: {
+                SettingsRowLabel(title: "Remove model", systemImage: "trash")
+            }
+            .foregroundStyle(LoreTheme.ink)
+            .accessibilityIdentifier("removeOnDeviceModelButton")
+            .loreListRow()
+            .confirmationDialog(
+                "Remove the on-device model?",
+                isPresented: $isConfirmingRemoval,
+                titleVisibility: .visible
+            ) {
+                Button("Remove Model", role: .destructive) {
+                    modelStore.deleteModel()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This frees about \(sizeText). Until you download it again, English notes are transcribed by Lore’s server and deleted right after.")
+            }
+        }
+    }
+
+    private var statusRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            LabeledContent {
+                Text(usesOnDevice ? OnDeviceTranscriptionCopy.statusTitle(for: modelStore.state) : "English only")
+                    .foregroundStyle(statusColor)
+                    .monospacedDigit()
+            } label: {
+                SettingsRowLabel(title: "On-device", systemImage: "iphone")
+            }
+
+            if usesOnDevice {
+                switch modelStore.state {
+                case .downloading(let progress):
+                    ProgressView(value: min(max(progress, 0), 1))
+                        .tint(LoreTheme.ink)
+                        .padding(.leading, 34)
+                case .failed(let message):
+                    Text(message)
+                        .font(LoreTheme.caption(.footnote))
+                        .foregroundStyle(LoreTheme.attention)
+                        .padding(.leading, 34)
+                default:
+                    EmptyView()
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("onDeviceModelStatus")
+    }
+
+    private var statusColor: Color {
+        guard usesOnDevice else { return LoreTheme.secondaryInk }
+        switch modelStore.state {
+        case .ready: return LoreTheme.ink
+        case .failed: return LoreTheme.attention
+        default: return LoreTheme.secondaryInk
+        }
+    }
+
+    private func actionRow(
+        title: String,
+        detail: String?,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack {
+                SettingsRowLabel(title: title, systemImage: systemImage)
+                Spacer(minLength: 8)
+                if let detail {
+                    Text(detail)
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(LoreTheme.secondaryInk)
+                }
+            }
+        }
+        .foregroundStyle(LoreTheme.ink)
+        .loreListRow()
+    }
+}
+
+/// Settings screen for changing the languages Lore listens for.
+private struct SpokenLanguageSettingsView: View {
+    let userProfile: UserProfile
+    @Environment(\.modelContext) private var modelContext
+    @State private var selection: [String]
+
+    init(userProfile: UserProfile) {
+        self.userProfile = userProfile
+        _selection = State(initialValue: SpokenLanguageSupport.effectiveLanguageCodes(
+            profileCodes: userProfile.spokenLanguageCodes
+        ))
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 20) {
+                SpokenLanguageRoutingNote(codes: selection)
+                    .frame(maxWidth: 340)
+                    .padding(.top, 4)
+
+                SpokenLanguagePicker(selection: $selection)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 14)
+            .padding(.bottom, 40)
+        }
+        .scrollDismissesKeyboard(.interactively)
+        .loreCanvas()
+        .navigationTitle("Languages")
+        .navigationBarTitleDisplayMode(.inline)
+        .loreInlineTitle("Languages")
+        .onChange(of: selection) { _, codes in
+            save(codes)
+        }
+    }
+
+    private func save(_ codes: [String]) {
+        guard !codes.isEmpty, codes != userProfile.spokenLanguageCodes else { return }
+        userProfile.setSpokenLanguages(codes)
+        try? modelContext.save()
+        if SpokenLanguageSupport.allowsOnDeviceTranscription(for: codes) {
+            // Same policy as after onboarding: fetch the model on Wi-Fi.
+            OnDeviceSpeechModelStore.shared.startDownloadIfNeeded(allowsCellular: false)
+        }
+    }
+}
+
+/// Shows the bundled third-party notices.
+private struct ThirdPartyNoticesView: View {
+    private var notices: String {
+        guard let url = Bundle.main.url(forResource: "ThirdPartyNotices", withExtension: "txt"),
+              let text = try? String(contentsOf: url, encoding: .utf8) else {
+            return "Notices are unavailable."
+        }
+        return text
+    }
+
+    var body: some View {
+        ScrollView {
+            Text(notices)
+                .font(.footnote.monospaced())
+                .foregroundStyle(LoreTheme.secondaryInk)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
+        }
+        .loreCanvas()
+        .navigationTitle("Third-Party Notices")
+        .navigationBarTitleDisplayMode(.inline)
+        .loreInlineTitle("Third-Party Notices")
+    }
+}
+
 private struct AboutLoreView: View {
     private var version: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0"
@@ -718,13 +972,31 @@ private struct AboutLoreView: View {
             }
 
             Section {
-                Text("Lore sends recordings to Groq for transcription and transcript text to Fireworks AI for journal writing. Lore does not keep this content in its server database; finished transcripts and stories sync through your private iCloud database.")
+                Text(RemoteProcessingPermissionView.processingSummary)
                     .font(LoreTheme.body)
                     .foregroundStyle(LoreTheme.secondaryInk)
                     .lineSpacing(3)
                     .loreListRow()
             } header: {
                 LoreSectionHeader("How processing works")
+            }
+
+            Section {
+                Text("On-device English transcription uses Fluid Speech Mini by FluidVoice (CC BY 4.0), built on NVIDIA Parakeet TDT 0.6B v3 and Moondream Parakeet Ultra, and runs with FluidAudio by FluidInference (Apache 2.0).")
+                    .font(LoreTheme.body)
+                    .foregroundStyle(LoreTheme.secondaryInk)
+                    .lineSpacing(3)
+                    .loreListRow()
+
+                NavigationLink {
+                    ThirdPartyNoticesView()
+                } label: {
+                    SettingsRowLabel(title: "Third-Party Notices", systemImage: "doc.text")
+                }
+                .accessibilityIdentifier("thirdPartyNoticesLink")
+                .loreListRow()
+            } header: {
+                LoreSectionHeader("Credits")
             }
         }
         .loreGroupedList()

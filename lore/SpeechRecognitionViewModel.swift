@@ -7,6 +7,7 @@
 
 import Foundation
 import AVFoundation
+import Combine
 import SwiftUI
 import SwiftData
 
@@ -34,6 +35,16 @@ enum TranscriptionJobRunnerError: Error, LocalizedError, Equatable {
         case .jobCancelled:
             return "This transcription job was cancelled."
         }
+    }
+}
+
+/// On-device transcription failed and the remote fallback was not allowed
+/// (offline, or no consent). Retryable; the audio is kept.
+struct OnDeviceTranscriptionFailure: Error, LocalizedError {
+    let underlying: Error
+
+    var errorDescription: String? {
+        "Lore couldn't transcribe this recording on your iPhone yet. It's saved and will be tried again."
     }
 }
 
@@ -66,12 +77,19 @@ class SpeechRecognitionViewModel: ObservableObject {
     private let transcriptionPolicy: SpeechTranscriptionPolicy
     private let remoteDailyEntryGenerator: any DailyEntryGenerationService
     private let remoteTranscriber: any RemoteSpeechTranscribing
+    private let localTranscriber: (any LocalSpeechTranscribing)?
+    private let onDeviceModelStore: OnDeviceSpeechModelStore?
+    private var onDeviceModelStateObservation: AnyCancellable?
     private let networkConnectionProvider: any SpeechNetworkConnectionProviding
     private let localeIdentifier: String
     private var captureEngine: VoiceCaptureEngine?
     private var recordingStartTime: Date?
     private var currentRecordingAudioFileURL: URL?
     private var pendingSaveTask: Task<Void, Never>?
+    /// The route chosen when the in-flight capture began transcribing.
+    private var activeCaptureRoute: SpeechTranscriptionRoute?
+    /// Set once an on-device attempt falls back to uploading audio.
+    private var activeCaptureIsUploading = false
     private var recordingSaveBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var transcriptionRecoveryTask: Task<Void, Never>?
     private var dailyEntryRecoveryTask: Task<Void, Never>?
@@ -95,6 +113,8 @@ class SpeechRecognitionViewModel: ObservableObject {
             backend: UnconfiguredLoreBackendProcessingClient()
         ),
         remoteTranscriber: any RemoteSpeechTranscribing = UnavailableRemoteSpeechTranscriber(),
+        localTranscriber: (any LocalSpeechTranscribing)? = nil,
+        onDeviceModelStore: OnDeviceSpeechModelStore? = nil,
         networkConnectionProvider: (any SpeechNetworkConnectionProviding)? = nil,
         localeIdentifier: String = Locale.current.identifier,
         requestsMicrophonePermissionOnInit: Bool = true
@@ -103,6 +123,8 @@ class SpeechRecognitionViewModel: ObservableObject {
         self.transcriptionPolicy = transcriptionPolicy
         self.remoteDailyEntryGenerator = remoteDailyEntryGenerator
         self.remoteTranscriber = remoteTranscriber
+        self.localTranscriber = localTranscriber
+        self.onDeviceModelStore = onDeviceModelStore
         self.networkConnectionProvider = networkConnectionProvider ?? SystemSpeechNetworkMonitor()
         self.localeIdentifier = localeIdentifier
 
@@ -110,6 +132,22 @@ class SpeechRecognitionViewModel: ObservableObject {
             guard let self, self.userProfile != nil else { return }
             self.refreshRemoteProcessingPolicy()
         }
+
+        // A model that finishes downloading drains recordings that were
+        // waiting for the network; a deleted model releases its memory.
+        onDeviceModelStateObservation = onDeviceModelStore?.$state
+            .removeDuplicates()
+            .dropFirst()
+            // `@Published` emits before the property changes; read it after.
+            .receive(on: RunLoop.main)
+            .sink { [weak self] state in
+                guard let self else { return }
+                if !state.isReady, let localTranscriber = self.localTranscriber {
+                    Task { await localTranscriber.unload() }
+                }
+                guard self.userProfile != nil else { return }
+                self.refreshRemoteProcessingPolicy()
+            }
 
         if requestsMicrophonePermissionOnInit {
             Task {
@@ -214,7 +252,12 @@ class SpeechRecognitionViewModel: ObservableObject {
         transcriptionRoute = resolvedCaptureRoute()
         refreshAuthorizationState()
 
+        // Revoking consent stops an upload in flight. On-device work that
+        // has not fallen back to remote keeps running; nothing leaves the
+        // iPhone, and the fallback re-checks consent before it uploads.
+        let captureMayUpload = activeCaptureRoute != .onDevice || activeCaptureIsUploading
         if isAwaitingRemoteTranscription,
+           captureMayUpload,
            remoteWorkAvailability(requiresAudioUpload: true) == .waitingForConsent {
             pendingSaveTask?.cancel()
         }
@@ -252,9 +295,14 @@ class SpeechRecognitionViewModel: ObservableObject {
                     .map(\.id)
             )
 
+            // On device, waiting jobs run now: no network or consent needed.
+            let transcribesOnDevice = resolvedCaptureRoute() == .onDevice
             for job in jobs {
                 if job.state != .succeeded {
-                    switch remoteWorkAvailability(requiresAudioUpload: true) {
+                    let availability: RemoteWorkAvailability = transcribesOnDevice
+                        ? .permitted
+                        : remoteWorkAvailability(requiresAudioUpload: true)
+                    switch availability {
                     case .permitted:
                         if job.state == .waitingForConsent || job.state == .waitingForNetwork {
                             job.state = .queued
@@ -299,6 +347,10 @@ class SpeechRecognitionViewModel: ObservableObject {
                     let story = try await Self.runTranscriptionJob(
                         jobID: job.id,
                         remoteTranscriber: remoteTranscriber,
+                        localTranscriber: transcribesOnDevice ? localTranscriber : nil,
+                        remoteFallbackPermitted: { [weak self] in
+                            self?.remoteWorkAvailability(requiresAudioUpload: true) == .permitted
+                        },
                         localeIdentifier: localeIdentifier,
                         modelContext: modelContext,
                         now: now
@@ -877,7 +929,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
 
     private func refreshAuthorizationState() {
-        isAuthorized = microphonePermissionGranted && transcriptionRoute.usesRemoteService
+        isAuthorized = microphonePermissionGranted && transcriptionRoute.allowsCapture
     }
 
     private func resolvedCaptureRoute() -> SpeechTranscriptionRoute {
@@ -888,7 +940,12 @@ class SpeechRecognitionViewModel: ObservableObject {
         return transcriptionPolicy.route(
             for: SpeechTranscriptionRoutingInput(
                 preferences: RemoteProcessingPreferences(userProfile: userProfile),
-                networkConnection: networkConnectionProvider.currentConnection
+                networkConnection: networkConnectionProvider.currentConnection,
+                spokenLanguageCodes: SpokenLanguageSupport.effectiveLanguageCodes(
+                    profileCodes: userProfile.spokenLanguageCodes
+                ),
+                isOnDeviceModelReady: localTranscriber != nil
+                    && onDeviceModelStore?.state.isReady == true
             )
         )
     }
@@ -946,6 +1003,10 @@ class SpeechRecognitionViewModel: ObservableObject {
             try setupAudioSession()
             try startAudioCapture()
             print("✅ Recording started successfully")
+            if resolvedRoute == .onDevice, let localTranscriber {
+                // Hide the cold model load behind the recording.
+                Task.detached(priority: .utility) { await localTranscriber.prepare() }
+            }
         } catch {
             discardCurrentAudioFile()
             recordingStartTime = nil
@@ -1070,11 +1131,30 @@ class SpeechRecognitionViewModel: ObservableObject {
         loadStories()
         Task { await enrichCaptureMetadata(for: story, captureDate: startTime) }
 
+        // Re-resolve: the model or the network may have changed while recording.
+        let route = resolvedCaptureRoute()
+        transcriptionRoute = route
+        refreshAuthorizationState()
+        activeCaptureRoute = route
+        activeCaptureIsUploading = false
         isAwaitingRemoteTranscription = true
+        defer {
+            activeCaptureRoute = nil
+            activeCaptureIsUploading = false
+        }
         do {
             let transcribedStory = try await Self.runTranscriptionJob(
                 jobID: job.id,
                 remoteTranscriber: remoteTranscriber,
+                localTranscriber: route == .onDevice ? localTranscriber : nil,
+                remoteFallbackPermitted: { [weak self] in
+                    guard let self,
+                          self.remoteWorkAvailability(requiresAudioUpload: true) == .permitted else {
+                        return false
+                    }
+                    self.activeCaptureIsUploading = true
+                    return true
+                },
                 localeIdentifier: localeIdentifier,
                 modelContext: modelContext
             )
@@ -1269,10 +1349,17 @@ class SpeechRecognitionViewModel: ObservableObject {
 
     /// Runs one durable transcription attempt. The `running` transition is saved before
     /// the network call, and the transcript artifact/version are saved before audio deletion.
+    ///
+    /// With a `localTranscriber`, the attempt runs on device first. If that fails or
+    /// returns unusable text, the same attempt falls back to `remoteTranscriber` when
+    /// `remoteFallbackPermitted` (checked at that moment, so it sees current consent
+    /// and network); otherwise the attempt fails retryably and the audio is kept.
     @discardableResult
     static func runTranscriptionJob(
         jobID: UUID,
         remoteTranscriber: any RemoteSpeechTranscribing,
+        localTranscriber: (any LocalSpeechTranscribing)? = nil,
+        remoteFallbackPermitted: @MainActor () -> Bool = { true },
         localeIdentifier: String,
         modelContext: ModelContext,
         now: Date = Date(),
@@ -1344,17 +1431,44 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
 
         do {
-            let response = try await remoteTranscriber.transcribe(
-                audioFileURL: audioFileURL,
-                localeIdentifier: localeIdentifier
-            )
+            let output: TranscriptionOutput
+            if let localTranscriber {
+                do {
+                    let local = try await localTranscriber.transcribe(audioFileURL: audioFileURL)
+                    try Task.checkCancellation()
+                    guard LocalTranscriptQuality.isUsable(local.transcript) else {
+                        throw LocalSpeechTranscriptionError.unusableTranscript
+                    }
+                    output = TranscriptionOutput(local)
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    print("On-device transcription failed for job \(job.id): \(error)")
+                    guard remoteFallbackPermitted() else {
+                        throw OnDeviceTranscriptionFailure(underlying: error)
+                    }
+                    // Renew the lease durably before any bytes leave the iPhone.
+                    job.leaseExpiresAt = Date().addingTimeInterval(max(1, leaseDuration))
+                    try modelContext.save()
+                    let response = try await remoteTranscriber.transcribe(
+                        audioFileURL: audioFileURL,
+                        localeIdentifier: localeIdentifier
+                    )
+                    output = TranscriptionOutput(response, localeIdentifier: localeIdentifier)
+                }
+            } else {
+                let response = try await remoteTranscriber.transcribe(
+                    audioFileURL: audioFileURL,
+                    localeIdentifier: localeIdentifier
+                )
+                output = TranscriptionOutput(response, localeIdentifier: localeIdentifier)
+            }
             try Task.checkCancellation()
-            let committedStory = try commitRemoteTranscription(
-                response,
+            let committedStory = try commitTranscription(
+                output,
                 for: story,
                 audioAsset: audioAsset,
                 job: job,
-                localeIdentifier: localeIdentifier,
                 modelContext: modelContext,
                 at: Date()
             )
@@ -1396,6 +1510,40 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
     }
 
+    /// Normalized result of one transcription pass, local or remote.
+    struct TranscriptionOutput: Equatable {
+        let transcript: String
+        let source: TranscriptSource
+        let providerId: String
+        let modelId: String
+        let requestID: String?
+        let languageCode: String
+        let segments: [TranscriptSourceSegment]
+        let provenance: [RemoteProcessingProvenance]
+
+        init(_ local: LocalSpeechTranscription) {
+            transcript = local.transcript
+            source = .onDevice
+            providerId = local.providerId
+            modelId = local.modelId
+            requestID = nil
+            languageCode = local.languageCode
+            segments = local.segments
+            provenance = []
+        }
+
+        init(_ remote: RemoteSpeechTranscription, localeIdentifier: String) {
+            transcript = remote.transcript
+            source = .remoteProvider
+            providerId = remote.provider
+            modelId = remote.model
+            requestID = remote.requestID
+            languageCode = localeIdentifier
+            segments = remote.segments
+            provenance = remote.provenance
+        }
+    }
+
     /// Idempotently installs the immutable provider output. Replaying the same job
     /// returns the already committed artifact and never appends duplicate versions.
     @discardableResult
@@ -1408,8 +1556,35 @@ class SpeechRecognitionViewModel: ObservableObject {
         modelContext: ModelContext,
         at date: Date = Date()
     ) throws -> Story {
-        let cleanedTranscript = response.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        try commitTranscription(
+            TranscriptionOutput(response, localeIdentifier: localeIdentifier),
+            for: story,
+            audioAsset: audioAsset,
+            job: job,
+            modelContext: modelContext,
+            at: date
+        )
+    }
+
+    /// Idempotently installs one transcription pass. The artifact keeps the model's
+    /// verbatim output as the factual record (revision 1). When the person's
+    /// vocabulary replacements change it, a system-authored `automaticCorrection`
+    /// (revision 2) carries the corrected text that everything downstream reads,
+    /// exactly like a user correction would. Replays never append versions.
+    @discardableResult
+    static func commitTranscription(
+        _ output: TranscriptionOutput,
+        for story: Story,
+        audioAsset: AudioAsset,
+        job: ProcessingJob,
+        modelContext: ModelContext,
+        at date: Date = Date()
+    ) throws -> Story {
+        let cleanedTranscript = output.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanedTranscript.isEmpty else {
+            if output.source == .onDevice {
+                throw LocalSpeechTranscriptionError.unusableTranscript
+            }
             throw RemoteSpeechTranscriptionError.emptyTranscript
         }
         guard job.state != .cancelled else {
@@ -1424,14 +1599,14 @@ class SpeechRecognitionViewModel: ObservableObject {
             artifact = TranscriptArtifact(
                 storyId: story.id,
                 audioAssetId: audioAsset.id,
-                rawText: response.transcript,
-                source: .remoteProvider,
-                languageCode: localeIdentifier,
-                providerId: response.provider,
-                providerModelId: response.model,
-                providerRequestId: response.requestID,
-                sourceSegmentsJSON: encodeRemoteAuditJSON(response.segments),
-                providerProvenanceJSON: encodeRemoteAuditJSON(response.provenance),
+                rawText: output.transcript,
+                source: output.source,
+                languageCode: output.languageCode,
+                providerId: output.providerId,
+                providerModelId: output.modelId,
+                providerRequestId: output.requestID,
+                sourceSegmentsJSON: encodeRemoteAuditJSON(output.segments),
+                providerProvenanceJSON: encodeRemoteAuditJSON(output.provenance),
                 capturedAt: story.date,
                 transcribedAt: date,
                 audioDuration: story.duration,
@@ -1441,21 +1616,44 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
 
         let versions = try modelContext.fetch(FetchDescriptor<TranscriptVersion>())
-        if !versions.contains(where: { $0.transcriptArtifactId == artifact.id }) {
-            modelContext.insert(
-                TranscriptVersion(
+        var artifactVersions = versions
+            .filter { $0.transcriptArtifactId == artifact.id }
+            .sorted { $0.revision < $1.revision }
+        if artifactVersions.isEmpty {
+            let sourceVersion = TranscriptVersion(
+                transcriptArtifactId: artifact.id,
+                storyId: story.id,
+                revision: 1,
+                text: artifact.rawText,
+                kind: .sourceSnapshot,
+                author: .source,
+                createdAt: date
+            )
+            modelContext.insert(sourceVersion)
+            artifactVersions.append(sourceVersion)
+
+            let corrector = TranscriptVocabularyCorrector(
+                entries: try modelContext.fetch(FetchDescriptor<VocabularyEntry>())
+            )
+            let corrected = corrector.apply(to: artifact.rawText)
+            if corrected != artifact.rawText {
+                let correction = TranscriptVersion(
                     transcriptArtifactId: artifact.id,
                     storyId: story.id,
-                    revision: 1,
-                    text: artifact.rawText,
-                    kind: .sourceSnapshot,
-                    author: .source,
+                    supersedesVersionId: sourceVersion.id,
+                    revision: 2,
+                    text: corrected,
+                    kind: .automaticCorrection,
+                    author: .system,
+                    editSummary: "Applied vocabulary replacements",
                     createdAt: date
                 )
-            )
+                modelContext.insert(correction)
+                artifactVersions.append(correction)
+            }
         }
 
-        story.text = artifact.rawText
+        story.text = artifactVersions.last?.text ?? artifact.rawText
         story.processingStatus = "awaitingModel"
         story.updatedAt = date
         job.providerId = artifact.providerId
@@ -1501,6 +1699,15 @@ class SpeechRecognitionViewModel: ObservableObject {
 
     private static func transcriptionErrorCode(_ error: Error) -> String {
         switch error {
+        case let failure as OnDeviceTranscriptionFailure:
+            switch failure.underlying {
+            case LocalSpeechTranscriptionError.unusableTranscript:
+                return "on_device_transcript_unusable"
+            case LocalSpeechTranscriptionError.modelNotInstalled:
+                return "on_device_model_missing"
+            default:
+                return "on_device_transcription_failed"
+            }
         case RemoteSpeechTranscriptionError.notConfigured:
             return "remote_not_configured"
         case RemoteSpeechTranscriptionError.audioFileMissing,

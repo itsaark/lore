@@ -8,14 +8,34 @@ struct OnboardingView: View {
         case name
         case hometown
         case birthYear
+        case languages
     }
 
     @State private var name = ""
     @State private var hometown = ""
     @State private var birthYear = ""
+    @State private var spokenLanguageCodes = SpokenLanguageCatalog.defaultSelection()
     @State private var isShowingProcessingPermission = false
     @State private var step: Step = .welcome
     @FocusState private var isFieldFocused: Bool
+
+    init(onComplete: @escaping (UserProfile) -> Void) {
+        self.onComplete = onComplete
+    }
+
+#if DEBUG
+    /// Opens on the language question, for previews and screenshots.
+    init(previewingLanguagesWith codes: [String]? = nil, onComplete: @escaping (UserProfile) -> Void = { _ in }) {
+        self.onComplete = onComplete
+        _name = State(initialValue: "Aark")
+        _hometown = State(initialValue: "Hyderabad")
+        _birthYear = State(initialValue: "1994")
+        _step = State(initialValue: .languages)
+        if let codes {
+            _spokenLanguageCodes = State(initialValue: codes)
+        }
+    }
+#endif
 
     var body: some View {
         NavigationView {
@@ -32,7 +52,7 @@ struct OnboardingView: View {
                             removal: .move(edge: .leading).combined(with: .opacity)
                         ))
                         .padding(.horizontal, 28)
-                        .padding(.top, 72)
+                        .padding(.top, step == .languages ? 28 : 72)
                         .padding(.bottom, 32)
                         .frame(maxWidth: .infinity)
                 }
@@ -40,6 +60,12 @@ struct OnboardingView: View {
                 .scrollBounceBehavior(.basedOnSize)
 
                 VStack(spacing: 22) {
+                    if step == .languages {
+                        SpokenLanguageRoutingNote(codes: spokenLanguageCodes)
+                            .frame(maxWidth: 340)
+                            .transition(.opacity)
+                    }
+
                     OnboardingPageDots(count: Step.allCases.count, current: step.rawValue)
 
                     primaryButton
@@ -146,12 +172,22 @@ struct OnboardingView: View {
                     }
                 }
             }
+
+        case .languages:
+            VStack(spacing: 32) {
+                OnboardingHeadline(
+                    title: "Which languages\nwill you speak?",
+                    detail: "Choose every language you’ll use with Lore. You can change this later in Settings."
+                )
+
+                SpokenLanguagePicker(selection: $spokenLanguageCodes)
+            }
         }
     }
 
     @ViewBuilder
     private var primaryButton: some View {
-        if step == .birthYear {
+        if step == .languages {
             Button {
                 isFieldFocused = false
                 isShowingProcessingPermission = true
@@ -165,7 +201,7 @@ struct OnboardingView: View {
                 Button("Not Now", role: .cancel) {}
                 Button("Allow and Continue", action: completeOnboarding)
             } message: {
-                Text("Lore sends Notes recordings to Groq for transcription, Reflect audio to Soniox for live transcription and speech, and finalized transcript text to Fireworks AI for guided questions and journal writing. Lore does not keep this content in its server database; finished transcripts and stories sync through your private iCloud database.")
+                Text(RemoteProcessingPermissionView.processingSummary)
             }
         } else {
             Button(action: advanceIfPossible) {
@@ -181,7 +217,8 @@ struct OnboardingView: View {
         case .welcome: true
         case .name: !trimmedName.isEmpty
         case .hometown: !trimmedHometown.isEmpty
-        case .birthYear: canComplete
+        case .birthYear: isBirthYearValid
+        case .languages: canComplete
         }
     }
 
@@ -189,6 +226,9 @@ struct OnboardingView: View {
         guard canAdvance else { return }
 
         if let next = Step(rawValue: step.rawValue + 1) {
+            if next == .languages {
+                isFieldFocused = false
+            }
             step = next
         } else {
             isFieldFocused = false
@@ -232,6 +272,7 @@ struct OnboardingView: View {
         !trimmedName.isEmpty
             && !trimmedHometown.isEmpty
             && isBirthYearValid
+            && !spokenLanguageCodes.isEmpty
     }
 
     private var validationMessage: String? {
@@ -247,20 +288,24 @@ struct OnboardingView: View {
             return
         }
 
-        onComplete(
-            UserProfile(
-                name: trimmedName,
-                hometown: trimmedHometown,
-                birthYear: parsedBirthYear,
-                remoteProcessingConsentedAt: Date()
-            )
+        let profile = UserProfile(
+            name: trimmedName,
+            hometown: trimmedHometown,
+            birthYear: parsedBirthYear,
+            remoteProcessingConsentedAt: Date()
         )
+        profile.setSpokenLanguages(spokenLanguageCodes)
+        onComplete(profile)
     }
 
 }
 
 struct RemoteProcessingPermissionView: View {
     let onAllow: () -> Void
+
+    /// What leaves the iPhone, said plainly. Shared with the onboarding alert
+    /// so the two never drift apart.
+    static let processingSummary = "English notes are transcribed on your iPhone once its speech model has downloaded. Other languages, any English note the iPhone can’t transcribe, and the transcripts Lore writes your journal from are processed by Lore’s server and deleted right after. Reflect conversations stream live to Soniox for speech. Your journal syncs through your private iCloud."
 
     var body: some View {
         VStack(spacing: 0) {
@@ -274,7 +319,7 @@ struct RemoteProcessingPermissionView: View {
 
                 OnboardingHeadline(
                     title: "Turn voice\ninto story",
-                    detail: "Lore sends Notes recordings to Groq for transcription, Reflect audio to Soniox for live transcription and speech, and finalized transcript text to Fireworks for guided questions and journal writing. Lore does not keep this content on its servers; finished stories sync through your private iCloud database."
+                    detail: Self.processingSummary
                 )
             }
 
@@ -388,4 +433,8 @@ private struct ProfileField: View {
 
 #Preview {
     OnboardingView { _ in }
+}
+
+#Preview("Languages") {
+    OnboardingView(previewingLanguagesWith: ["en", "hi"])
 }
