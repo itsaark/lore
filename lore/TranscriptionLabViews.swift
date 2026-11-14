@@ -14,6 +14,7 @@ struct TranscriptionLabView: View {
                 modelsSection
                 enginesSection
                 clipsSection
+                appAttestSection
                 attribution
             }
             .padding(.horizontal, 20)
@@ -69,6 +70,32 @@ struct TranscriptionLabView: View {
         }
     }
 
+    private var appAttestSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            LoreSectionHeader("Remote access")
+                .padding(.leading, 4)
+            TranscriptionLabCardList(["reset"], id: \.self) { _ in
+                Button {
+                    Task { await lab.resetAppAttestBackoff() }
+                } label: {
+                    Text("Reset App Attest backoff")
+                        .font(.body)
+                        .foregroundStyle(LoreTheme.ink)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 14)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(lab.isBusy)
+            }
+            TranscriptionLabFootnote(
+                lab.appAttestResetStatus
+                    ?? "After the server refuses this phone's App Attest key, Lore waits 24 hours before enrolling again. Reset after a backend fix. Keeps the key and every clip."
+            )
+        }
+    }
+
     private var enginesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             LoreSectionHeader("Include in Run all")
@@ -86,6 +113,10 @@ struct TranscriptionLabView: View {
                             .foregroundStyle(LoreTheme.ink)
                         if let reason = lab.unavailableReasons[engine.id] {
                             Text(reason)
+                                .font(.caption)
+                                .foregroundStyle(LoreTheme.tertiaryInk)
+                        } else if engine.uploadsAudio {
+                            Text("Off each time you open the Lab. Sends the clip's audio to Lore's backend and Groq.")
                                 .font(.caption)
                                 .foregroundStyle(LoreTheme.tertiaryInk)
                         } else if engine.supportsVocabulary {

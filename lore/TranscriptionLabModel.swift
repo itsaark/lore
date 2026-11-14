@@ -58,7 +58,28 @@ final class TranscriptionLabModel: ObservableObject {
             AppleSpeechLabEngine(),
             GroqRemoteLabEngine(),
         ]
-        enabledEngineIDs = Set(engines.map(\.id))
+        // On-device engines start on. An engine that uploads the clip starts
+        // off in every Lab session (this model lives only as long as the Lab
+        // screen) and is never persisted as on, so benchmark audio leaves the
+        // phone only when the founder deliberately switches it on.
+        enabledEngineIDs = Set(engines.filter { !$0.uploadsAudio }.map(\.id))
+    }
+
+    // MARK: - App Attest
+
+    @Published private(set) var appAttestResetStatus: String?
+
+    /// Clears the persisted 24 h server-refusal backoff and this launch's
+    /// rotation allowance, so the next remote request may enroll again after a
+    /// backend fix. It does not delete the App Attest key or any clip.
+    func resetAppAttestBackoff() async {
+        do {
+            try await LoreKeychainAppAttestKeyStore().clearLastServerRejectionRotation()
+            LoreAppAttestRotationBudget.currentLaunch.reset()
+            appAttestResetStatus = "App Attest backoff cleared."
+        } catch {
+            appAttestResetStatus = "Could not clear the backoff: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Lifecycle
@@ -137,7 +158,7 @@ final class TranscriptionLabModel: ObservableObject {
         }
         let clipID = TranscriptionLabClipStore.makeClipID(label: draftLabel)
         do {
-            try FileManager.default.createDirectory(at: store.folderURL(for: clipID), withIntermediateDirectories: true)
+            try store.createClipFolder(clipID)
             try recorder.start(writingTo: store.audioURL(for: clipID))
             recordingClipID = clipID
             UIApplication.shared.isIdleTimerDisabled = true

@@ -318,6 +318,9 @@ enum TranscriptionLabDownloader {
 protocol TranscriptionLabEngine: AnyObject {
     var id: String { get }
     var displayName: String { get }
+    /// True when running the engine sends the clip off the device. Such an
+    /// engine is never on by default; it must be switched on in each session.
+    var uploadsAudio: Bool { get }
     var engineName: String { get }
     var modelName: String { get }
     var modelVersion: String { get }
@@ -336,6 +339,8 @@ protocol TranscriptionLabEngine: AnyObject {
 }
 
 extension TranscriptionLabEngine {
+    var uploadsAudio: Bool { false }
+
     func variants(names: [String]) -> [TranscriptionLabVariantDescriptor] {
         var variants = [
             TranscriptionLabVariantDescriptor(
@@ -658,7 +663,8 @@ final class AppleSpeechLabEngine: TranscriptionLabEngine, @unchecked Sendable {
 /// The production remote transcriber, used unchanged as a cloud baseline.
 final class GroqRemoteLabEngine: TranscriptionLabEngine, @unchecked Sendable {
     let id = "remote.groq-whisper"
-    let displayName = "Groq Whisper (remote)"
+    let displayName = "Groq (uploads this clip to Lore's server)"
+    let uploadsAudio = true
     let engineName = "Lore backend"
     let modelName = "whisper-large-v3-turbo via Groq"
     let modelVersion = "production backend"

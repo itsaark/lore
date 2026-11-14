@@ -336,8 +336,42 @@ struct TranscriptionLabClipStore {
             .appendingPathComponent("TranscriptionLab", isDirectory: true)
     }
 
+    /// Creates the lab root if needed and keeps it, and every clip folder
+    /// already in it, out of iCloud and Finder device backups. Benchmark audio
+    /// must not leave the phone. Existing folders are only flagged, never
+    /// moved or rewritten.
     func ensureRoot() throws {
         try FileManager.default.createDirectory(at: rootURL, withIntermediateDirectories: true)
+        try Self.excludeFromBackup(rootURL)
+        let children = (try? FileManager.default.contentsOfDirectory(
+            at: rootURL,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        )) ?? []
+        for child in children where (try? child.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+            try? Self.excludeFromBackup(child)
+        }
+    }
+
+    func createClipFolder(_ clipID: String) throws {
+        try ensureRoot()
+        let folder = folderURL(for: clipID)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try Self.excludeFromBackup(folder)
+    }
+
+    func isExcludedFromBackup(_ url: URL) -> Bool {
+        // URL caches resource values per instance; read the file's current flag.
+        var fresh = url
+        fresh.removeAllCachedResourceValues()
+        return (try? fresh.resourceValues(forKeys: [.isExcludedFromBackupKey]))?.isExcludedFromBackup == true
+    }
+
+    static func excludeFromBackup(_ url: URL) throws {
+        var mutableURL = url
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        try mutableURL.setResourceValues(values)
     }
 
     func folderURL(for clipID: String) -> URL {
@@ -381,6 +415,7 @@ struct TranscriptionLabClipStore {
     func save(_ record: TranscriptionLabClipRecord) throws {
         let folder = folderURL(for: record.id)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try? Self.excludeFromBackup(folder)
         let data = try Self.encoder.encode(record)
         try data.write(to: folder.appendingPathComponent(Self.resultsFileName), options: .atomic)
     }
