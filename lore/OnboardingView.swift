@@ -435,6 +435,8 @@ private struct ProfileField: View {
     OnboardingView { _ in }
 }
 
+#if DEBUG
 #Preview("Languages") {
     OnboardingView(previewingLanguagesWith: ["en", "hi"])
 }
+#endif
