@@ -295,48 +295,282 @@ struct LoreAppAttestAuthenticationTests {
 
     @Test func genericAssertionRejectionFailsClosedWithoutRotatingKey() async throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        let challenge = makeChallenge(
+        let harness = assertionHarness(now: now, assertionErrors: [
+            .rejected(code: "unauthorized", retryable: false, retryAfterSeconds: nil)
+        ])
+
+        await #expect(throws: LoreAppAttestError.rejected(
+            code: "unauthorized",
+            retryable: false,
+            retryAfterSeconds: nil
+        )) {
+            _ = try await harness.authorizer.authorizationHeaderValue()
+        }
+        #expect(await harness.keyStore.keyId == "diagnostic-key")
+        #expect(await harness.keyStore.deleteCount == 0)
+        #expect(await harness.service.generatedKeyCount == 0)
+        #expect(await harness.api.assertionSubmissions.count == 1)
+    }
+
+    @Test func repeatedAssertionInvalidRotatesPersistedKeyOnce() async throws {
+        // A key the server permanently refuses (for example an enrollment
+        // whose stored iOS 27 extension state no longer matches) must not
+        // lock the installation out of remote processing.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let harness = assertionHarness(now: now, assertionErrors: [
+            .rejected(code: "assertion_invalid", retryable: false, retryAfterSeconds: nil)
+        ])
+
+        let header = try await harness.authorizer.authorizationHeaderValue()
+
+        #expect(header == "Bearer attested-session-token-with-at-least-forty-characters")
+        #expect(await harness.api.assertionSubmissions.count == 2)
+        #expect(await harness.service.generatedKeyCount == 1)
+        #expect(await harness.api.attestationSubmissions.count == 1)
+        #expect(await harness.keyStore.keyId == "rotated-key")
+        #expect(await harness.keyStore.deleteCount == 1)
+        #expect(await harness.keyStore.lastServerRejectionRotation == now)
+    }
+
+    @Test func serverRejectionRotationHappensAtMostOncePerLaunch() async throws {
+        // Two authorizers share one launch budget, as ContentView's and the
+        // Transcription Lab's do; a persistently refused replacement must not
+        // start a second attestation in the same launch.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let budget = LoreAppAttestRotationBudget()
+        let rejection = LoreAppAttestError.rejected(
+            code: "assertion_invalid",
+            retryable: false,
+            retryAfterSeconds: nil
+        )
+        let first = assertionHarness(now: now, assertionErrors: [rejection], budget: budget)
+        _ = try await first.authorizer.authorizationHeaderValue()
+
+        // Same launch, a later day (so only the launch budget can stop it).
+        let later = now.addingTimeInterval(3 * LoreAppAttestSessionAuthorizer.serverRejectionRotationBackoff)
+        let second = assertionHarness(now: later, assertionErrors: [rejection], budget: budget)
+        await #expect(throws: rejection) {
+            _ = try await second.authorizer.authorizationHeaderValue()
+        }
+        #expect(await second.service.generatedKeyCount == 0)
+        #expect(await second.keyStore.deleteCount == 0)
+        #expect(await second.keyStore.keyId == "diagnostic-key")
+    }
+
+    @Test func refusedReplacementKeyBacksOffForADayAcrossLaunches() async throws {
+        let rotatedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let rejection = LoreAppAttestError.rejected(
+            code: "assertion_invalid",
+            retryable: false,
+            retryAfterSeconds: nil
+        )
+        let backoff = LoreAppAttestSessionAuthorizer.serverRejectionRotationBackoff
+
+        // New launch (fresh budget) inside the window: fail closed, keep key.
+        let inside = assertionHarness(
+            now: rotatedAt.addingTimeInterval(backoff - 60),
+            assertionErrors: [rejection],
+            lastRotation: rotatedAt
+        )
+        await #expect(throws: rejection) {
+            _ = try await inside.authorizer.authorizationHeaderValue()
+        }
+        #expect(await inside.service.generatedKeyCount == 0)
+        #expect(await inside.keyStore.deleteCount == 0)
+        #expect(await inside.keyStore.lastServerRejectionRotation == rotatedAt)
+
+        // After the window a new launch may try one more replacement.
+        let afterNow = rotatedAt.addingTimeInterval(backoff + 60)
+        let after = assertionHarness(now: afterNow, assertionErrors: [rejection], lastRotation: rotatedAt)
+        _ = try await after.authorizer.authorizationHeaderValue()
+        #expect(await after.service.generatedKeyCount == 1)
+        #expect(await after.keyStore.lastServerRejectionRotation == afterNow)
+    }
+
+    @Test func refusedReplacementAttestationStartsBackoffInsteadOfAKeyLoop() async throws {
+        // If the server also refuses the replacement's attestation (a policy
+        // bug such as an unaccepted launch category), later requests and
+        // launches must not keep generating and attesting new keys.
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let refusal = LoreAppAttestError.rejected(
+            code: "attestation_invalid",
+            retryable: false,
+            retryAfterSeconds: nil
+        )
+        let first = assertionHarness(now: now, assertionErrors: [
+            .rejected(code: "assertion_invalid", retryable: false, retryAfterSeconds: nil)
+        ])
+        await first.api.setAttestationError(refusal)
+        await #expect(throws: refusal) {
+            _ = try await first.authorizer.authorizationHeaderValue()
+        }
+        #expect(await first.service.generatedKeyCount == 1)
+        #expect(await first.keyStore.lastServerRejectionRotation == now)
+
+        // Next launch, an hour later, with no persisted key left.
+        let backoff = LoreAppAttestError.rejected(
+            code: "app_attest_backoff",
+            retryable: true,
+            retryAfterSeconds: nil
+        )
+        let next = assertionHarness(
+            now: now.addingTimeInterval(3_600),
+            assertionErrors: [],
+            lastRotation: now,
+            persistedKeyId: nil
+        )
+        await #expect(throws: backoff) {
+            _ = try await next.authorizer.authorizationHeaderValue()
+        }
+        #expect(await next.service.generatedKeyCount == 0)
+        #expect(await next.api.challengeRequests.isEmpty)
+
+        // After the window, enrollment is attempted again.
+        let recovered = assertionHarness(
+            now: now.addingTimeInterval(LoreAppAttestSessionAuthorizer.serverRejectionRotationBackoff + 1),
+            assertionErrors: [],
+            lastRotation: now,
+            persistedKeyId: nil
+        )
+        _ = try await recovered.authorizer.authorizationHeaderValue()
+        #expect(await recovered.service.generatedKeyCount == 1)
+    }
+
+    @Test func transportServerAndNonExplicitFailuresNeverRotateTheKey() async throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let failures: [LoreAppAttestError] = [
+            .unavailable,
+            .rateLimited(retryAfterSeconds: 30),
+            .rejected(code: "assertion_invalid", retryable: true, retryAfterSeconds: nil),
+            .rejected(code: "auth_rejected", retryable: false, retryAfterSeconds: nil),
+            .rejected(code: "challenge_expired", retryable: false, retryAfterSeconds: nil)
+        ]
+        for failure in failures {
+            let harness = assertionHarness(now: now, assertionErrors: [failure])
+            await #expect(throws: failure) {
+                _ = try await harness.authorizer.authorizationHeaderValue()
+            }
+            #expect(await harness.service.generatedKeyCount == 0)
+            #expect(await harness.keyStore.deleteCount == 0)
+            #expect(await harness.keyStore.keyId == "diagnostic-key")
+            #expect(await harness.keyStore.lastServerRejectionRotation == nil)
+        }
+    }
+
+    @Test func authHTTPAPIMapsServerErrorsAndNon401AssertionVerdictsAwayFromRotation() async throws {
+        let future = "2099-08-03T12:00:00Z"
+        let challengeValue = LoreAppAttestHTTPAPIClient.base64URLEncode(Data(repeating: 4, count: 32))
+        let challenge = LoreAppAttestChallenge(
+            schemaVersion: "1.0",
+            challengeId: "a80cfcac-4911-4e99-a1ea-228f3924f673",
+            challenge: challengeValue,
+            purpose: .assertion,
+            expiresAt: ISO8601DateFormatter().date(from: future)!
+        )
+        let cases: [(Int, LoreAppAttestError)] = [
+            (401, .rejected(code: "assertion_invalid", retryable: false, retryAfterSeconds: nil)),
+            (500, .unavailable),
+            (503, .unavailable),
+            (403, .rejected(code: "auth_rejected", retryable: false, retryAfterSeconds: nil))
+        ]
+        for (status, expected) in cases {
+            let transport = LoreBackendHTTPTransport { request, _ in
+                (
+                    Data("""
+                    {"schema_version":"1.0","error":{"code":"assertion_invalid","message":"x","retryable":false}}
+                    """.utf8),
+                    HTTPURLResponse(
+                        url: request.url!,
+                        statusCode: status,
+                        httpVersion: nil,
+                        headerFields: ["Content-Type": "application/json"]
+                    )!
+                )
+            }
+            let api = try LoreAppAttestHTTPAPIClient(
+                baseURL: URL(string: "https://lore.example/")!,
+                transport: transport
+            )
+            await #expect(throws: expected) {
+                _ = try await api.submitAssertion(
+                    challenge: challenge,
+                    keyId: "key-1",
+                    assertion: Data("assertion".utf8),
+                    clientData: Data("client".utf8)
+                )
+            }
+        }
+    }
+
+    @Test func counterRaceRetriesAssertionWithoutRotatingKey() async throws {
+        for raceCode in ["counter_replayed", "assertion_invalid"] {
+            let now = Date(timeIntervalSince1970: 1_800_000_000)
+            let harness = assertionHarness(now: now, assertionErrors: [
+                .rejected(code: raceCode, retryable: false, retryAfterSeconds: nil)
+            ], thenSucceed: true)
+
+            let header = try await harness.authorizer.authorizationHeaderValue()
+
+            #expect(header == "Bearer asserted-session-token-with-at-least-forty-characters")
+            #expect(await harness.api.assertionSubmissions.count == 2)
+            #expect(await harness.service.assertionHashes.count == 2)
+            #expect(await harness.service.generatedKeyCount == 0)
+            #expect(await harness.keyStore.keyId == "diagnostic-key")
+        }
+    }
+
+    private func assertionHarness(
+        now: Date,
+        assertionErrors: [LoreAppAttestError],
+        thenSucceed: Bool = false,
+        lastRotation: Date? = nil,
+        budget: LoreAppAttestRotationBudget = LoreAppAttestRotationBudget(),
+        persistedKeyId: String? = "diagnostic-key"
+    ) -> (
+        authorizer: LoreAppAttestSessionAuthorizer,
+        service: FakeAppAttestService,
+        keyStore: FakeAppAttestKeyStore,
+        api: FakeAppAttestAPI
+    ) {
+        let attestation = makeChallenge(
+            id: "rotation-attestation",
+            bytes: Data(repeating: 0x32, count: 32),
+            purpose: .attestation,
+            expiresAt: now.addingTimeInterval(300)
+        )
+        let assertion = makeChallenge(
             id: "rejected-assertion",
             bytes: Data(repeating: 0x31, count: 32),
             purpose: .assertion,
             expiresAt: now.addingTimeInterval(300)
         )
-        let service = FakeAppAttestService(generatedKeyId: "unused")
-        let keyStore = FakeAppAttestKeyStore(keyId: "diagnostic-key")
+        let service = FakeAppAttestService(generatedKeyId: "rotated-key")
+        let keyStore = FakeAppAttestKeyStore(
+            keyId: persistedKeyId,
+            lastServerRejectionRotation: lastRotation
+        )
         let api = FakeAppAttestAPI(
-            attestationChallenge: challenge,
-            assertionChallenge: challenge,
+            attestationChallenge: attestation,
+            assertionChallenge: assertion,
             attestationSession: makeSession(
-                token: "unused-session-token-with-at-least-forty-characters",
+                token: "attested-session-token-with-at-least-forty-characters",
                 expiresAt: now.addingTimeInterval(600)
             ),
             assertionSession: makeSession(
-                token: "unused-session-token-with-at-least-forty-characters",
+                token: "asserted-session-token-with-at-least-forty-characters",
                 expiresAt: now.addingTimeInterval(600)
             ),
-            assertionError: .rejected(
-                code: "assertion_invalid",
-                retryable: false,
-                retryAfterSeconds: nil
-            )
+            assertionErrors: assertionErrors,
+            succeedAfterErrors: thenSucceed
         )
         let authorizer = LoreAppAttestSessionAuthorizer(
             service: service,
             keyStore: keyStore,
             api: api,
-            now: { now }
+            now: { now },
+            rotationBudget: budget
         )
-
-        await #expect(throws: LoreAppAttestError.rejected(
-            code: "assertion_invalid",
-            retryable: false,
-            retryAfterSeconds: nil
-        )) {
-            _ = try await authorizer.authorizationHeaderValue()
-        }
-        #expect(await keyStore.keyId == "diagnostic-key")
-        #expect(await keyStore.deleteCount == 0)
-        #expect(await service.generatedKeyCount == 0)
+        return (authorizer, service, keyStore, api)
     }
 
     @Test func unsupportedDeviceFailsClosedBeforeNetwork() async throws {
@@ -646,10 +880,15 @@ private actor FakeAppAttestKeyStore: LoreAppAttestKeyStoring {
     private(set) var keyId: String?
     private(set) var pendingEnrollment: LoreAppAttestPendingEnrollment?
     private(set) var deleteCount = 0
+    private(set) var lastServerRejectionRotation: Date?
 
-    init(keyId: String? = nil) {
+    init(keyId: String? = nil, lastServerRejectionRotation: Date? = nil) {
         self.keyId = keyId
+        self.lastServerRejectionRotation = lastServerRejectionRotation
     }
+
+    func loadLastServerRejectionRotation() -> Date? { lastServerRejectionRotation }
+    func saveLastServerRejectionRotation(_ date: Date) { lastServerRejectionRotation = date }
 
     func loadKeyId() -> String? { keyId }
     func saveKeyId(_ keyId: String) { self.keyId = keyId }
@@ -676,7 +915,10 @@ private actor FakeAppAttestAPI: LoreAppAttestAPIClient {
     let assertionChallenge: LoreAppAttestChallenge
     let attestationSession: LoreAppAttestSession
     let assertionSession: LoreAppAttestSession
-    let assertionError: LoreAppAttestError?
+    /// Thrown in order, one per assertion submission; the last one repeats.
+    private var assertionErrors: [LoreAppAttestError]
+    private let succeedAfterErrors: Bool
+    private var attestationError: LoreAppAttestError?
     private(set) var challengeRequests: [(LoreAppAttestChallengePurpose, String?)] = []
     private(set) var attestationSubmissions: [(String, String, Data)] = []
     private(set) var assertionSubmissions: [AssertionSubmission] = []
@@ -686,13 +928,16 @@ private actor FakeAppAttestAPI: LoreAppAttestAPIClient {
         assertionChallenge: LoreAppAttestChallenge,
         attestationSession: LoreAppAttestSession,
         assertionSession: LoreAppAttestSession,
-        assertionError: LoreAppAttestError? = nil
+        assertionError: LoreAppAttestError? = nil,
+        assertionErrors: [LoreAppAttestError]? = nil,
+        succeedAfterErrors: Bool = false
     ) {
+        self.succeedAfterErrors = succeedAfterErrors
         self.attestationChallenge = attestationChallenge
         self.assertionChallenge = assertionChallenge
         self.attestationSession = attestationSession
         self.assertionSession = assertionSession
-        self.assertionError = assertionError
+        self.assertionErrors = assertionErrors ?? assertionError.map { [$0] } ?? []
     }
 
     func challenge(
@@ -707,10 +952,13 @@ private actor FakeAppAttestAPI: LoreAppAttestAPIClient {
         challenge: LoreAppAttestChallenge,
         keyId: String,
         attestationObject: Data
-    ) -> LoreAppAttestSession {
+    ) throws -> LoreAppAttestSession {
         attestationSubmissions.append((challenge.challengeId, keyId, attestationObject))
+        if let attestationError { throw attestationError }
         return attestationSession
     }
+
+    func setAttestationError(_ error: LoreAppAttestError?) { attestationError = error }
 
     func submitAssertion(
         challenge: LoreAppAttestChallenge,
@@ -724,7 +972,10 @@ private actor FakeAppAttestAPI: LoreAppAttestAPIClient {
             assertion: assertion,
             clientData: clientData
         ))
-        if let assertionError { throw assertionError }
+        if let next = assertionErrors.first {
+            if assertionErrors.count > 1 || succeedAfterErrors { assertionErrors.removeFirst() }
+            throw next
+        }
         return assertionSession
     }
 }
@@ -755,3 +1006,36 @@ private actor RotatingTestAuthorizer: LoreBackendAuthorizing {
         invalidationCount += 1
     }
 }
+
+#if !targetEnvironment(simulator)
+import DeviceCheck
+
+/// Opt-in on-device probe: `TEST_RUNNER_LORE_APP_ATTEST_PROBE=1 xcodebuild test ...`.
+/// It uses a throwaway App Attest key, random client-data hashes, and never
+/// contacts Lore's backend or touches the installation's persisted key. The
+/// printed objects carry no user content and the key is never registered, so
+/// they are safe fixtures for checking the backend parser against real iOS bytes.
+@Suite struct LoreAppAttestDeviceProbe {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["LORE_APP_ATTEST_PROBE"] == "1"))
+    func dumpRealAttestationAndAssertionShapes() async throws {
+        let service = DCAppAttestService.shared
+        try #require(service.isSupported)
+        let keyId = try await service.generateKey()
+        let attestationHash = Data(SHA256.hash(data: Data(UUID().uuidString.utf8)))
+        let attestation = try await service.attestKey(keyId, clientDataHash: attestationHash)
+        print("LORE_PROBE os=\(ProcessInfo.processInfo.operatingSystemVersionString)")
+        print("LORE_PROBE keyId=\(keyId)")
+        print("LORE_PROBE attestationHash=\(attestationHash.base64EncodedString())")
+        print("LORE_PROBE attestation=\(attestation.base64EncodedString())")
+        for index in 1...2 {
+            let clientData = Data("probe-\(index)-\(UUID().uuidString)".utf8)
+            let assertion = try await service.generateAssertion(
+                keyId,
+                clientDataHash: Data(SHA256.hash(data: clientData))
+            )
+            print("LORE_PROBE clientData\(index)=\(clientData.base64EncodedString())")
+            print("LORE_PROBE assertion\(index)=\(assertion.base64EncodedString())")
+        }
+    }
+}
+#endif

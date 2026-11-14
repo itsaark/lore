@@ -147,8 +147,12 @@ export function loadAppAttestRuntimeConfig(
     // this Apple account. Simulator requests still cannot produce an attestation.
     allowedAttestationEnvironments: new Set(["development", "production"]),
     environment: "production",
-    // Apple validation categories: 1 = Development, 2 = TestFlight, 4 = App Store.
-    allowedValidationCategories: new Set([1, 2, 4]),
+    // Apple launch validation categories (iOS 27+ `apple_validation_category_01`,
+    // DeviceCheck "Validating apps that connect to your server"): 2 = TestFlight,
+    // 3 = development code-signing identity (Xcode device builds), 4 = App Store.
+    // 1 is an operating-system executable, never a third-party app. Category 3
+    // is additionally bound to development-environment keys in the auth flow.
+    allowedValidationCategories: new Set([2, 3, 4]),
     sessionSigningSecret: parsed.data.LORE_SESSION_SIGNING_SECRET,
     stateHmacSecret: parsed.data.LORE_AUTH_STATE_HMAC_SECRET,
     receiptEncryptionKey: Buffer.from(parsed.data.LORE_AUTH_RECEIPT_ENCRYPTION_KEY, "base64"),

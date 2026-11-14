@@ -20,7 +20,7 @@ The iOS app will:
 The backend will:
 
 1. Atomically issue and consume short-lived challenges.
-2. Validate Apple's complete attestation chain, nonce, key identifier, RP ID, zero counter, and AAGUID/environment. On iOS 27 and later, also validate the launch category and bundle-version extensions; older supported systems legitimately omit those newer fields.
+2. Validate Apple's complete attestation chain, nonce, key identifier, RP ID, zero counter, and AAGUID/environment. On iOS 27 and later, also validate the launch category and bundle-version extensions; older supported systems legitimately omit those newer fields. Allowed categories are 2 (TestFlight), 3 (development-signed, accepted only for development-environment keys) and 4 (App Store); 1 (operating-system executable) is rejected. The category must match the one recorded at enrollment, and a key can't drop its extensions after enrolling with them. The bundle version is format-checked but not pinned to the enrollment value, because App Attest keys survive app updates.
 3. Store the verified public key and monotonically increasing assertion counter in a durable, content-free security store.
 4. Bind assertion client data to the challenge, purpose, key, and session request before atomically advancing the counter.
 5. Issue short-lived HMAC-signed session tokens scoped to Lore's `request_ephemeral` processing routes.
@@ -73,7 +73,7 @@ The production store contains only:
 
 - HMAC-pseudonymized key/installation identifiers
 - verified public keys and encrypted Apple receipts
-- attestation environment, optional iOS 27+ validation category and bundle version, status, and assertion counter
+- attestation environment, optional iOS 27+ validation category (pinned) and last-seen bundle version (informational, not pinned), status, and assertion counter
 - challenge hashes, purposes, expiries, and consumption state
 - content-free rate-limit buckets and idempotency/lease metadata
 - session revocation/version metadata if later required

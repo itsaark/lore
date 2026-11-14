@@ -4,7 +4,10 @@ import { handleChallenge } from "../api/v1/auth/challenges.js";
 import { handleSession } from "../api/v1/auth/sessions.js";
 import { handleDailyEntry } from "../api/v1/daily-entries.js";
 import type { AppAttestRuntimeConfig } from "../src/config.js";
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import cbor from "cbor";
 import {
+  NodeAppAttestVerifier,
   parseAssertionAuthenticatorExtensions,
   parseAttestationAuthenticatorExtensions,
   type AppAttestCryptographicVerifier,
@@ -61,12 +64,13 @@ describe("App Attest installation sessions", () => {
       config: {
         ...testConfig(),
         allowedAttestationEnvironments: new Set(["development", "production"]),
-        allowedValidationCategories: new Set([1, 2, 4])
+        allowedValidationCategories: new Set([2, 3, 4])
       }
     });
     harness.verifier.attestationEnvironment = "development";
-    harness.verifier.attestationExtensions = { validationCategory: 1, bundleVersion: "1" };
-    harness.verifier.assertionExtensions = { validationCategory: 1, bundleVersion: "1" };
+    // Apple: category 3 = "An executable signed by a development code signing identity".
+    harness.verifier.attestationExtensions = { validationCategory: 3, bundleVersion: "1" };
+    harness.verifier.assertionExtensions = { validationCategory: 3, bundleVersion: "1" };
 
     const challenge = await harness.flow.issueChallenge({
       purpose: "attestation",
@@ -114,7 +118,6 @@ describe("App Attest installation sessions", () => {
   it.each([
     ["extension downgrade", null, null],
     ["validation category mismatch", 5, "1"],
-    ["bundle version mismatch", 4, "2"],
     ["partial extension state", 4, null]
   ])("rejects %s after an extension-bearing enrollment", async (_label, category, version) => {
     const harness = makeHarness({
@@ -125,6 +128,47 @@ describe("App Attest installation sessions", () => {
     harness.verifier.assertionExtensions = { validationCategory: category, bundleVersion: version };
     await expect(harness.flow.createSession(sessionRequest(await assertionChallenge(harness))))
       .rejects.toMatchObject({ code: "assertion_invalid", status: 401 });
+  });
+
+  it("accepts a renewal after an app update changes the bundle version", async () => {
+    const harness = makeHarness();
+    await register(harness);
+    harness.verifier.nextCounter = 1;
+    harness.verifier.assertionExtensions = { validationCategory: 4, bundleVersion: "2" };
+    await expect(harness.flow.createSession(sessionRequest(await assertionChallenge(harness))))
+      .resolves.toMatchObject({ token_type: "Bearer" });
+  });
+
+  it("renews an iOS 26 development enrollment from an iOS 27 development-signed build", async () => {
+    // The founder's failure: key attested before iOS 27 (no extensions); after
+    // the OS update every assertion carries category 3, which used to be refused.
+    const harness = makeHarness({ config: { ...testConfig(), allowedValidationCategories: new Set([2, 3, 4]) } });
+    harness.verifier.attestationEnvironment = "development";
+    harness.verifier.attestationExtensions = null;
+    await register(harness);
+    harness.verifier.nextCounter = 1;
+    harness.verifier.assertionExtensions = { validationCategory: 3, bundleVersion: "1" };
+    await expect(harness.flow.createSession(sessionRequest(await assertionChallenge(harness))))
+      .resolves.toMatchObject({ token_type: "Bearer" });
+  });
+
+  it("binds development-signed launches to development keys", async () => {
+    const config = { ...testConfig(), allowedValidationCategories: new Set([2, 3, 4]) };
+    const enrolling = makeHarness({ config });
+    enrolling.verifier.attestationEnvironment = "production";
+    enrolling.verifier.attestationExtensions = { validationCategory: 3, bundleVersion: "1" };
+    const challenge = await enrolling.flow.issueChallenge({ purpose: "attestation", keyId: null, rateLimitIdentity: "network" });
+    await expect(enrolling.flow.attest(attestationRequest(challenge)))
+      .rejects.toMatchObject({ code: "attestation_invalid", status: 401 });
+
+    const renewing = makeHarness({ config });
+    renewing.verifier.attestationExtensions = null;
+    await register(renewing);
+    renewing.verifier.nextCounter = 1;
+    renewing.verifier.assertionExtensions = { validationCategory: 3, bundleVersion: "1" };
+    await expect(renewing.flow.createSession(sessionRequest(await assertionChallenge(renewing))))
+      .rejects.toMatchObject({ code: "assertion_invalid", status: 401 });
+    expect(renewing.rejections.at(-1)?.reason).toBe("development_category_production_key");
   });
 
   it("atomically prevents challenge replay", async () => {
@@ -189,6 +233,47 @@ describe("App Attest installation sessions", () => {
     const rejected = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
     expect(rejected?.reason).toMatchObject({ code: "counter_replayed", status: 409 });
     expect((await harness.store.getKey(harness.flow.keyReference(keyId)))?.counter).toBe(1);
+  });
+
+  it("reports a verifier-detected stale counter as a retryable race, not a dead key", async () => {
+    const harness = makeHarness();
+    await register(harness);
+    harness.verifier.enforceCounter = true;
+    harness.verifier.nextCounter = 2;
+    await harness.flow.createSession(sessionRequest(await assertionChallenge(harness)));
+
+    // A second authorizer's assertion signed earlier (counter 1) arrives late.
+    harness.verifier.nextCounter = 1;
+    await expect(harness.flow.createSession(sessionRequest(await assertionChallenge(harness))))
+      .rejects.toMatchObject({ code: "counter_replayed", status: 409 });
+    expect(harness.rejections).toEqual([
+      { route: "auth_session", code: "counter_replayed", reason: "counter_not_increased" }
+    ]);
+  });
+
+  it("logs a fixed, content-free reason for each assertion rejection", async () => {
+    const harness = makeHarness();
+    await register(harness);
+    harness.verifier.nextCounter = 1;
+
+    harness.verifier.assertionFailure = "invalid assertion signature";
+    await expect(harness.flow.createSession(sessionRequest(await assertionChallenge(harness))))
+      .rejects.toMatchObject({ code: "assertion_invalid", status: 401 });
+
+    harness.verifier.assertionFailure = "some unexpected library message with data 0xdeadbeef";
+    await expect(harness.flow.createSession(sessionRequest(await assertionChallenge(harness))))
+      .rejects.toMatchObject({ code: "assertion_invalid", status: 401 });
+
+    harness.verifier.assertionFailure = null;
+    harness.verifier.assertionExtensions = null;
+    await expect(harness.flow.createSession(sessionRequest(await assertionChallenge(harness))))
+      .rejects.toMatchObject({ code: "assertion_invalid", status: 401 });
+
+    expect(harness.rejections.map((entry) => entry.reason)).toEqual([
+      "signature_invalid",
+      "verifier_exception",
+      "assertion_extensions_absent"
+    ]);
   });
 
   it("returns a key-rotation-specific error for an unknown server key", async () => {
@@ -333,6 +418,56 @@ describe("App Attest authenticator extension compatibility", () => {
   });
 });
 
+describe("NodeAppAttestVerifier with iOS 27-shaped assertions", () => {
+  const config = { ...testConfig(), allowedValidationCategories: new Set([2, 3, 4]) };
+
+  function signedAssertion(flags: number, extensions: Buffer | null, counter = 1) {
+    const { privateKey, publicKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const header = Buffer.alloc(37);
+    createHash("sha256").update(`${config.teamIdentifier}.${config.bundleIdentifier}`).digest().copy(header, 0);
+    header[32] = flags;
+    header.writeUInt32BE(counter, 33);
+    const authenticatorData = extensions ? Buffer.concat([header, extensions]) : header;
+    const clientData = Buffer.from('{"action":"create_session"}');
+    const nonce = createHash("sha256")
+      .update(Buffer.concat([authenticatorData, createHash("sha256").update(clientData).digest()]))
+      .digest();
+    const signature = sign("sha256", nonce, privateKey);
+    return {
+      assertion: cbor.encode({ signature, authenticatorData }),
+      clientData,
+      publicKeyPem: publicKey.export({ type: "spki", format: "pem" }).toString()
+    };
+  }
+
+  function extensionsMap(categoryBytes: Buffer): Buffer {
+    return cbor.encode(new Map<string, unknown>([
+      ["apple_validation_category_01", categoryBytes],
+      ["apple_bundle_version_01", "1"]
+    ]));
+  }
+
+  it("accepts AT+ED flags with a development category encoded as little-endian UInt32", async () => {
+    // Apple's documented sample encodes the category as bytes 01 00 00 00; a
+    // development-signed Xcode build launches with category 3.
+    const input = signedAssertion(0xc0, extensionsMap(Buffer.from([3, 0, 0, 0])));
+    await expect(new NodeAppAttestVerifier().verifyAssertion({ ...input, previousCounter: 0, config }))
+      .resolves.toEqual({ counter: 1, validationCategory: 3, bundleVersion: "1" });
+  });
+
+  it("rejects category 1, which Apple reserves for operating-system executables", async () => {
+    const input = signedAssertion(0x80, extensionsMap(Buffer.from([1, 0, 0, 0])));
+    await expect(new NodeAppAttestVerifier().verifyAssertion({ ...input, previousCounter: 0, config }))
+      .rejects.toThrow("validation category not allowed");
+  });
+
+  it("still verifies the legacy 37-byte assertion", async () => {
+    const input = signedAssertion(0x00, null, 5);
+    await expect(new NodeAppAttestVerifier().verifyAssertion({ ...input, previousCounter: 4, config }))
+      .resolves.toEqual({ counter: 5, validationCategory: null, bundleVersion: null });
+  });
+});
+
 function attestationAuthenticatorData(hasExtensions: boolean): Buffer {
   const headerAndCredential = Buffer.alloc(87);
   headerAndCredential[32] = hasExtensions ? 0xc0 : 0x40;
@@ -362,6 +497,8 @@ function encodedUnexpectedMap(): Buffer {
 class FakeVerifier implements AppAttestCryptographicVerifier {
   attestationCalls = 0;
   nextCounter = 1;
+  enforceCounter = false;
+  assertionFailure: string | null = null;
   failAttestation = false;
   attestationEnvironment: "development" | "production" = "production";
   attestationExtensions: { validationCategory: number | null; bundleVersion: string | null } | null = {
@@ -390,6 +527,11 @@ class FakeVerifier implements AppAttestCryptographicVerifier {
   }
 
   async verifyAssertion(input: Parameters<AppAttestCryptographicVerifier["verifyAssertion"]>[0]): Promise<VerifiedAssertion> {
+    if (this.assertionFailure) throw new Error(this.assertionFailure);
+    if (this.enforceCounter && (this.nextCounter === 0 || this.nextCounter <= input.previousCounter)) {
+      // Mirrors NodeAppAttestVerifier, which rejects a stale counter before the store sees it.
+      throw new Error("counter did not increase");
+    }
     return {
       counter: this.nextCounter,
       validationCategory: this.assertionExtensions?.validationCategory ?? null,
@@ -407,15 +549,17 @@ function makeHarness(overrides: {
   const verifier = new FakeVerifier();
   const config = overrides.config ?? testConfig();
   let id = 0;
+  const rejections: Array<{ route: string; code: string; reason: string }> = [];
   const flow = new AppAttestFlow({
     config,
     store,
     verifier,
+    logRejection: (route, code, reason) => { rejections.push({ route, code, reason }); },
     now: overrides.now ?? (() => baseTime),
     randomChallenge: () => Buffer.alloc(32, ++id),
     randomId: () => `00000000-0000-4000-8000-${String(++id).padStart(12, "0")}`
   });
-  return { flow, store, verifier, config };
+  return { flow, store, verifier, config, rejections };
 }
 
 class FailingOnceRegistrationStore extends MemoryAuthStateStore {

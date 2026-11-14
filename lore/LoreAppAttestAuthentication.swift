@@ -127,6 +127,9 @@ protocol LoreAppAttestKeyStoring: Sendable {
     func loadPendingEnrollment() async throws -> LoreAppAttestPendingEnrollment?
     func savePendingEnrollment(_ enrollment: LoreAppAttestPendingEnrollment) async throws
     func deletePendingEnrollment() async throws
+    /// When this installation last replaced a key the server refused.
+    func loadLastServerRejectionRotation() async throws -> Date?
+    func saveLastServerRejectionRotation(_ date: Date) async throws
 }
 
 struct LoreAppAttestPendingEnrollment: Codable, Equatable, Sendable {
@@ -139,6 +142,7 @@ actor LoreKeychainAppAttestKeyStore: LoreAppAttestKeyStoring {
     private let service: String
     private let keyIdAccount = "app-attest-key-id"
     private let pendingEnrollmentAccount = "app-attest-pending-enrollment"
+    private let rotationAccount = "app-attest-last-server-rejection-rotation"
 
     init(service: String = "cascadianpines.lore.app-attest") {
         self.service = service
@@ -190,6 +194,28 @@ actor LoreKeychainAppAttestKeyStore: LoreAppAttestKeyStoring {
     func deletePendingEnrollment() throws {
         try deleteData(account: pendingEnrollmentAccount)
     }
+
+    func loadLastServerRejectionRotation() throws -> Date? {
+        guard let data = try loadData(account: rotationAccount) else { return nil }
+        guard data.count == MemoryLayout<Double>.size else {
+            throw LoreAppAttestError.keyStorageFailed
+        }
+        let seconds = data.withUnsafeBytes { $0.loadUnaligned(as: Double.self) }
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    func saveLastServerRejectionRotation(_ date: Date) throws {
+        var seconds = date.timeIntervalSince1970
+        try saveData(Data(bytes: &seconds, count: MemoryLayout<Double>.size), account: rotationAccount)
+    }
+
+#if DEBUG
+    /// Developer safety valve: forget the server-refusal backoff. Leaves the
+    /// installation's key and any pending enrollment untouched.
+    func clearLastServerRejectionRotation() throws {
+        try deleteData(account: rotationAccount)
+    }
+#endif
 
     private func loadData(account: String) throws -> Data? {
         var query = baseQuery(account: account)
@@ -411,11 +437,21 @@ struct LoreAppAttestHTTPAPIClient: LoreAppAttestAPIClient, Sendable {
                 if response.statusCode == 429 {
                     throw LoreAppAttestError.rateLimited(retryAfterSeconds: retryAfter)
                 }
+                if response.statusCode >= 500 {
+                    // Server or edge failure: never evidence about this key.
+                    throw LoreAppAttestError.unavailable
+                }
                 if error?.error.code == "app_attest_key_unknown" {
                     throw LoreAppAttestError.invalidKey
                 }
+                var code = error?.error.code ?? "auth_rejected"
+                if code == "assertion_invalid", response.statusCode != 401 {
+                    // Only the backend's explicit 401 verdict may trigger key
+                    // rotation; anything else (a proxy, a mis-routed body) is not.
+                    code = "auth_rejected"
+                }
                 throw LoreAppAttestError.rejected(
-                    code: error?.error.code ?? "auth_rejected",
+                    code: code,
                     retryable: error?.error.retryable ?? false,
                     retryAfterSeconds: retryAfter
                 )
@@ -551,7 +587,39 @@ struct LoreAppAttestHTTPAPIClient: LoreAppAttestAPIClient, Sendable {
     }
 }
 
+/// Process-wide allowance for replacing a server-refused key. Several
+/// authorizers can share one keychain key, so the limit cannot live in any
+/// single authorizer instance.
+final class LoreAppAttestRotationBudget: @unchecked Sendable {
+    static let currentLaunch = LoreAppAttestRotationBudget()
+
+    private let lock = NSLock()
+    private var spent = false
+
+    /// Returns true exactly once per instance (per app launch for `currentLaunch`).
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if spent { return false }
+        spent = true
+        return true
+    }
+
+#if DEBUG
+    func reset() {
+        lock.lock()
+        spent = false
+        lock.unlock()
+    }
+#endif
+}
+
 actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
+    /// After a server-refused key is replaced, a refusal of the replacement
+    /// within this window is treated as a server-side bug rather than a stale
+    /// key, and the installation fails closed instead of attesting again.
+    static let serverRejectionRotationBackoff: TimeInterval = 24 * 60 * 60
+
     private static let schemaVersion = "1.0"
 
     private let service: any LoreAppAttestServicing
@@ -559,6 +627,7 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
     private let api: any LoreAppAttestAPIClient
     private let renewalLeeway: TimeInterval
     private let now: @Sendable () -> Date
+    private let rotationBudget: LoreAppAttestRotationBudget
 
     private var session: LoreAppAttestSession?
     private var renewalTask: Task<LoreAppAttestSession, Error>?
@@ -568,13 +637,15 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
         keyStore: any LoreAppAttestKeyStoring = LoreKeychainAppAttestKeyStore(),
         api: any LoreAppAttestAPIClient,
         renewalLeeway: TimeInterval = 60,
-        now: @escaping @Sendable () -> Date = { Date() }
+        now: @escaping @Sendable () -> Date = { Date() },
+        rotationBudget: LoreAppAttestRotationBudget = .currentLaunch
     ) {
         self.service = service
         self.keyStore = keyStore
         self.api = api
         self.renewalLeeway = max(0, renewalLeeway)
         self.now = now
+        self.rotationBudget = rotationBudget
     }
 
     func authorizationHeaderValue() async throws -> String {
@@ -612,9 +683,28 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
     private func establishSession() async throws -> LoreAppAttestSession {
         if let keyId = try await keyStore.loadKeyId() {
             do {
-                let session = try await establishAssertionSession(keyId: keyId)
+                let session = try await establishAssertionSessionRetryingCounterRace(keyId: keyId)
                 try await keyStore.deletePendingEnrollment()
                 return session
+            } catch let error as LoreAppAttestError where Self.serverRejectedPersistedKey(error) {
+                // The server holds per-key state (public key, counter, and on
+                // iOS 27+ the enrolled validation category and bundle version).
+                // When it deterministically refuses this key's assertions, no
+                // later assertion from the same key can succeed, so the device
+                // would be locked out of remote processing for good. A fresh
+                // attestation proves integrity from scratch, so replacing the
+                // key once is no weaker than a first install. The rotation is
+                // bounded so a server-side bug cannot drive an attestation
+                // loop: at most once per launch, and never again within the
+                // backoff window after a previous replacement.
+                guard try await mayRotateServerRejectedKey() else {
+                    print("App Attest server rejected the persisted identity; rotation is backing off")
+                    throw error
+                }
+                print("App Attest server rejected the persisted identity; enrolling a replacement key")
+                try await keyStore.deleteKeyId()
+                try await keyStore.deletePendingEnrollment()
+                return try await establishAttestedSession(bypassServerRefusalBackoff: true)
             } catch let error as LoreAppAttestError
                 where error == .invalidKey || error == .invalidInput {
                 // Keychain can survive an app reinstall while the App Attest
@@ -633,8 +723,19 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
     }
 
     private func establishAttestedSession(
-        allowFreshKeyRecovery: Bool = true
+        allowFreshKeyRecovery: Bool = true,
+        bypassServerRefusalBackoff: Bool = false
     ) async throws -> LoreAppAttestSession {
+        if !bypassServerRefusalBackoff, try await isInServerRefusalBackoff() {
+            // A recent server refusal (of a rotated key, or of an attestation)
+            // means a fresh key would very likely be refused too. Fail closed
+            // without spending an attestation, which Apple counts per device.
+            throw LoreAppAttestError.rejected(
+                code: "app_attest_backoff",
+                retryable: true,
+                retryAfterSeconds: nil
+            )
+        }
         var enrollment = try await keyStore.loadPendingEnrollment()
         if (enrollment?.challenge.expiresAt ?? .distantPast) <= now() {
             try await keyStore.deletePendingEnrollment()
@@ -686,7 +787,10 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
                 try await keyStore.deletePendingEnrollment()
                 guard allowFreshKeyRecovery else { throw error }
                 print("App Attest pending identity is unusable; enrolling one replacement key")
-                return try await establishAttestedSession(allowFreshKeyRecovery: false)
+                return try await establishAttestedSession(
+                    allowFreshKeyRecovery: false,
+                    bypassServerRefusalBackoff: bypassServerRefusalBackoff
+                )
             } catch {
                 // Apple recommends discarding the key identifier for every
                 // attestation error other than server-unavailable.
@@ -697,15 +801,73 @@ actor LoreAppAttestSessionAuthorizer: LoreBackendAuthorizing {
             try await keyStore.savePendingEnrollment(enrollment)
         }
 
-        let newSession = try await api.submitAttestation(
-            challenge: enrollment.challenge,
-            keyId: enrollment.keyId,
-            attestationObject: attestation
-        )
+        let newSession: LoreAppAttestSession
+        do {
+            newSession = try await api.submitAttestation(
+                challenge: enrollment.challenge,
+                keyId: enrollment.keyId,
+                attestationObject: attestation
+            )
+        } catch let error as LoreAppAttestError {
+            if case .rejected("attestation_invalid", false, _) = error {
+                // An explicit server verdict on a genuine attestation is a
+                // server-side policy problem; start the backoff so later
+                // requests and launches do not keep generating keys.
+                try? await keyStore.saveLastServerRejectionRotation(now())
+            }
+            throw error
+        }
         try validate(newSession)
         try await keyStore.saveKeyId(enrollment.keyId)
         try await keyStore.deletePendingEnrollment()
         return newSession
+    }
+
+    private func isInServerRefusalBackoff() async throws -> Bool {
+        guard let last = try await keyStore.loadLastServerRejectionRotation() else { return false }
+        let elapsed = now().timeIntervalSince(last)
+        // A record from the future (clock change) cannot extend the lockout.
+        return elapsed >= 0 && elapsed < Self.serverRejectionRotationBackoff
+    }
+
+    private func mayRotateServerRejectedKey() async throws -> Bool {
+        if try await isInServerRefusalBackoff() {
+            return false
+        }
+        guard rotationBudget.claim() else { return false }
+        // Persist before attesting so an interrupted enrollment still counts.
+        try await keyStore.saveLastServerRejectionRotation(now())
+        return true
+    }
+
+    static func serverRejectedPersistedKey(_ error: LoreAppAttestError) -> Bool {
+        if case let .rejected(code, retryable, _) = error {
+            return code == "assertion_invalid" && !retryable
+        }
+        return false
+    }
+
+    private static func mayBeCounterRace(_ error: LoreAppAttestError) -> Bool {
+        if case let .rejected(code, _, _) = error {
+            return code == "counter_replayed" || serverRejectedPersistedKey(error)
+        }
+        return false
+    }
+
+    private func establishAssertionSessionRetryingCounterRace(
+        keyId: String
+    ) async throws -> LoreAppAttestSession {
+        do {
+            return try await establishAssertionSession(keyId: keyId)
+        } catch let error as LoreAppAttestError where Self.mayBeCounterRace(error) {
+            // Another authorizer sharing this key can advance the server's
+            // counter between our assertion and its submission. The backend
+            // reports that as counter_replayed, or as assertion_invalid when
+            // its verifier sees the stale counter first. One fresh challenge
+            // and assertion carries a higher counter; only a repeat rejection
+            // is treated as a key the server will never accept again.
+            return try await establishAssertionSession(keyId: keyId)
+        }
     }
 
     private func establishAssertionSession(keyId: String) async throws -> LoreAppAttestSession {

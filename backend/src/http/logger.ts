@@ -5,6 +5,8 @@ const SafeLogEventSchema = z.object({
   request_id: z.string().regex(/^[A-Za-z0-9_.:-]{1,200}$/),
   route: z.enum([
     "health",
+    "auth_attestation",
+    "auth_session",
     "transcription",
     "daily_entry",
     "reflection_credentials",
@@ -14,6 +16,8 @@ const SafeLogEventSchema = z.object({
   status: z.number().int().min(100).max(599).optional(),
   duration_ms: z.number().int().min(0).optional(),
   error_code: z.string().regex(/^[a-z0-9_]{1,80}$/).optional(),
+  // A fixed, content-free diagnostic slug (never a key, token, or payload value).
+  reason: z.string().regex(/^[a-z0-9_]{1,80}$/).optional(),
   provider: z.enum(["fireworks", "groq", "soniox", "deepgram", "google", "openai", "self_hosted"]).optional(),
   model_alias: z.enum([
     "transcription-fallback-v1",

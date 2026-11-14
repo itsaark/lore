@@ -39,7 +39,7 @@ describe("minimal production configuration", () => {
     expect(config.teamIdentifier).toBe(APP_ATTEST_TEAM_IDENTIFIER);
     expect(config.bundleIdentifier).toBe(APP_ATTEST_BUNDLE_IDENTIFIER);
     expect(config.allowedAttestationEnvironments).toEqual(new Set(["development", "production"]));
-    expect(config.allowedValidationCategories).toEqual(new Set([1, 2, 4]));
+    expect(config.allowedValidationCategories).toEqual(new Set([2, 3, 4]));
     expect(config.challengeTtlSeconds).toBe(300);
     expect(config.sessionTtlSeconds).toBe(600);
     expect(config.processingLeaseTtlSeconds).toBe(90);
