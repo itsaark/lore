@@ -61,7 +61,7 @@ The Journal section:
   - existing notes chosen from the journal.
 
   The set should cover mundane days, emotional days, childhood memories told today, uncertain dates, and several people. The target is 30 to 50 inputs.
-- **Candidates:** a writer is a (model, prompt version) pair, such as DeepSeek V4 Flash with `grounded-journal-v1`, the same model with v2, or Claude Opus 5.5 with v2. See "Writer candidates" below. Server candidates go through Lore's API as usual. The backend accepts a DEBUG-only candidate override only from development App Attest sessions.
+- **Candidates:** a writer is a (model, prompt version) pair, such as DeepSeek V4 Flash with `grounded-journal-v1`, the same model with v2, or GLM 5.3 with v2. See "Writer candidates" below. Server candidates go through Lore's API as usual. The backend accepts a DEBUG-only candidate override only from development App Attest sessions.
 - **Blind comparison:** outputs are shown as A, B, C in a shuffled order. The model name is revealed only after scoring.
 - **Founder scoring:**
   - faithfulness from 1 to 5;
@@ -137,20 +137,28 @@ iPhone: stores the entry in SwiftData and private CloudKit; the server holds not
 
 This is the current contract with three additions: context items, an optional checker pass, and a stronger writer.
 
-### Writer candidates
+### Writer candidates (decided 2026-11-14: cheap open models on Fireworks only)
 
-| Candidate | Provider | Notes |
-| --- | --- | --- |
-| DeepSeek V4 Flash (current) | Fireworks | Baseline. Fast and cheap. |
-| Claude Sonnet 5.5 (`claude-sonnet-5-5`) | Anthropic API | Strong narrative prose, structured outputs, $2 / $10 per million input and output tokens. Roughly $0.01–0.02 per daily entry. |
-| Claude Opus 5.5 (`claude-opus-5-5`) | Anthropic API | Highest quality for the voice and for chapters. $4 / $20 per million tokens, roughly $0.03 per daily entry. At one entry a day that is about $1 per user per month, well inside a $10 subscription. |
-| The strongest large open model Fireworks hosts | Fireworks | Keeps a single provider. Pick one during step 0 based on what's available then. |
+The founder's constraint is no expensive models. Writing stays on open-weight models served by **Fireworks**, which already passes Lore's provider gates. Fireworks' pricing page states "zero data retention by default" on serverless. No new provider is needed.
 
-Adding Anthropic makes it a new provider, so it must pass the same gates as Groq and Fireworks in `inference-strategy.md`:
+Prices are Fireworks Standard serverless, per million tokens, from its pricing page on 2026-11-14. Writing quality is EQ-Bench Creative Writing v3 Elo as reported by third-party trackers (llmlearner.com, Oct 2026). Those trackers disagree with each other, so treat the scores as indicative only. They measure fiction-style writing, **not faithfulness**.
 
-- confirm a zero-data-retention arrangement for the organization and the chosen models (note that Claude Fable 5.2 is *not* available under zero data retention, so it is out);
-- update the onboarding disclosure to name the provider; and
-- audit the logs for content.
+| Candidate | Input / output price | Writing Elo (rank of 117) | Est. cost per daily entry* | Role |
+| --- | --- | --- | --- | --- |
+| DeepSeek V4 Flash (current) | about $0.22 / $1.20 (reported) | 1559 (#50) | about $0.002 | Baseline |
+| **GLM 5.3** | $1.40 / $4.40 | **2077 (#6)**. The top open model on this board after Kimi K3, and above several closed models | about $0.01 | **Main candidate for the biographer voice**, for daily entries and chapters |
+| DeepSeek V4.1 Flash | $0.30 / $1.20 | 1540 (#53) | about $0.003 | Cheap fallback |
+| GLM 5.3 Flash | $0.15 / $0.50 | not listed | about $0.001 | Cheapest option; Lab to check its quality |
+| MiniMax M3 | $0.30 / $1.20 | not listed (M2.5 was 1362) | about $0.003 | Optional |
+| *Excluded:* Kimi K3 | $3.00 / $15.00 | 2084 (#5) | about $0.03 | Barely better than GLM 5.3 at about three times the cost |
+
+\*The estimate assumes about 3k input and 1.5k output tokens per entry. At one entry a day, GLM 5.3 costs about **$0.30 per user per month**.
+
+Caveats to check in the Lab:
+
+- High writing scores don't guarantee the model follows Lore's grounding rules. Letta's production-memory evaluation found GLM-5.2 weaker on memory hygiene and adherence, so faithfulness must be scored before switching.
+- Fireworks keeps a bounded prompt or KV cache in volatile memory. Lore already sets `prompt_cache_isolation_key` per request. This is unchanged from today's accepted behaviour; see `inference-strategy.md`.
+- Re-confirm the zero-data-retention setting for any newly chosen model, as for the current one.
 
 ### On-device writing (later)
 
