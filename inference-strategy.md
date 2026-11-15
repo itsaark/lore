@@ -1,16 +1,17 @@
 # Lore Inference Strategy
 
-Last updated: 2026-08-04
+Last updated: 2026-11-15
 
 ## Decision
 
-Lore currently uses one remote inference pipeline for every supported iPhone:
+Lore uses one remote inference pipeline for voice notes captured in the primary iPhone app or the companion Apple Watch app:
 
-- Groq `whisper-large-v3-turbo` for speech-to-text;
-- Fireworks `accounts/fireworks/models/deepseek-v4-flash` for grounded daily-entry writing;
+- on-device Fluid Speech Mini (FluidAudio) for English speech-to-text once its model is downloaded, with Groq `whisper-large-v3-turbo` as the fallback and for every other language;
+- Fireworks `accounts/fireworks/models/glm-5p3` (GLM 5.3) for grounded daily-entry writing, with `accounts/fireworks/models/gpt-oss-120b` as an automatic fallback;
+- Fireworks `accounts/fireworks/models/gpt-oss-120b` for Reflect's live questions, where latency matters most;
 - Lore's Vercel API as the only credential, validation, privacy, and provider boundary.
 
-Hardware generation does not influence routing. Wi-Fi and cellular are both eligible. When the network or authorization is unavailable, work is deferred as a durable job.
+The Watch does not call the pipeline directly; it transfers a protected recording to the paired iPhone, which becomes the processing coordinator. Capture device and hardware generation do not influence routing. Wi-Fi and cellular are both eligible after iPhone import. When Watch transfer, network access, or authorization is unavailable, work remains deferred in a durable, retryable state.
 
 ## Why this is the MVP
 
@@ -20,7 +21,7 @@ One pipeline makes transcription quality, latency, cost, privacy review, support
 
 ### Provider contract
 
-The app submits one bounded recorded file to `POST /v1/transcriptions`. The Lore API validates authentication, MIME type, byte size, duration metadata, locale, vocabulary, idempotency, and processing purpose before calling Groq's synchronous Audio Transcriptions endpoint.
+The iPhone app submits one bounded recorded file to `POST /v1/transcriptions`, whether the file was captured locally or durably imported from the paired Apple Watch. The Lore API validates authentication, MIME type, byte size, duration metadata, locale, vocabulary, idempotency, and processing purpose before calling Groq's synchronous Audio Transcriptions endpoint.
 
 The provider request uses:
 
@@ -35,7 +36,7 @@ The Lore API converts the provider response into a versioned provider-neutral re
 
 ### Audio lifecycle
 
-The iPhone writes the recording to protected app storage before upload. It retains that file through transient failures. After the transcript artifact, version, provenance, and successful job state are committed atomically, the app deletes the recording. This ordering is required even when the upstream request succeeded.
+The capture device writes the recording to protected app storage first. For an Apple Watch capture, the Watch retains its file until the iPhone acknowledges that it has durably imported the recording and created the corresponding Story/job. The iPhone then retains its processing copy through transient failures. After the transcript artifact, version, provenance, and successful job state are committed atomically, the iPhone deletes that copy. These two acknowledgement boundaries are required even when transfer or the upstream request appears to have succeeded.
 
 The backend does not use Groq Files, Batch, or stored objects. Production use requires Groq ZDR to be verified for the selected organization, endpoint, and model.
 
@@ -45,6 +46,13 @@ The app submits a bounded source package to `POST /v1/daily-entries` only after 
 
 Fireworks Chat Completions uses strict JSON Schema output. The Lore API re-validates the full response, including source and fact references, before returning it. iOS persists the complete artifact and provenance rather than extracting only prose.
 
+### Writer and prompt (2026-11-15)
+
+- **Prompt:** `grounded-journal-v2`, the biographer voice described in `narrative-voice-plan.md`. It keeps every v1 faithfulness rule and adds craft rules: open on something concrete, use the telling detail, quote the person's own words, and understate. Scene detail may come only from what the person said. The backend still answers `grounded-journal-v1` requests from older builds with the v1 prompt.
+- **Writer:** GLM 5.3 ($1.40 / $4.40 per million input / output tokens on Fireworks serverless, about $0.01 per entry). At the time of the switch it was the best-scoring cheap open model on EQ-Bench Creative Writing v3, ranked by third-party trackers. The founder chose it on benchmark before Model Lab scores existed, because there were no users yet. The founder's policy is to stay on cheap open models.
+- **Fallback:** if GLM errors, returns an unusable answer, or takes longer than 30 seconds, the request is retried once on GPT-OSS 120B with the same prompt. Rate limits, cancellation, and credential failures are not retried. Provenance records whichever model wrote the entry.
+- **Evaluation:** writers and prompts are compared only in the DEBUG Model Lab (Settings → Developer → Model Lab → Compare journal writers). The Lab calls `POST /v1/lab/daily-entries`, which admits only development App Attest keys.
+
 The prompt must:
 
 - preserve the user's facts and uncertainty;
@@ -52,7 +60,8 @@ The prompt must:
 - create a concise journal entry rather than advice or analysis;
 - follow the requested perspective and style;
 - return only the declared structured schema; and
-- reference only source and fact IDs present in the request.
+- reference only source and fact IDs present in the request; and
+- in v2, write in a narrative biographer's voice without adding any detail the person didn't say.
 
 ## Privacy and retention
 
@@ -93,7 +102,8 @@ The iOS app should not require a release solely because the backend swaps the ex
 
 ## Acceptance criteria
 
-- Every connected, consented physical device selects the remote route.
+- Every connected, consented iPhone uses the remote route for both iPhone-originated and Watch-originated captures.
+- Apple Watch captures are duplicate-safe and remain recoverable until durable iPhone import is acknowledged.
 - Offline devices create or retain recoverable work without data loss.
 - Provider credentials never appear in the app bundle or repository.
 - A transcription response is not enough to delete audio; the local commit must succeed first.
