@@ -10,6 +10,7 @@ struct TranscriptionLabView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 28) {
+                journalSection
                 TranscriptionLabRecordSection(lab: lab, recorder: lab.recorder)
                 modelsSection
                 enginesSection
@@ -23,9 +24,9 @@ struct TranscriptionLabView: View {
         }
         .loreCanvas()
         .scrollDismissesKeyboard(.interactively)
-        .navigationTitle("Transcription Lab")
+        .navigationTitle("Model Lab")
         .navigationBarTitleDisplayMode(.inline)
-        .labInlineTitle("Transcription Lab")
+        .labInlineTitle("Model Lab")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -44,12 +45,49 @@ struct TranscriptionLabView: View {
         .task { await lab.onAppear() }
         .onDisappear { lab.onDisappear() }
         .alert(
-            "Transcription Lab",
+            "Model Lab",
             isPresented: Binding(get: { lab.errorMessage != nil }, set: { if !$0 { lab.errorMessage = nil } })
         ) {
             Button("OK", role: .cancel) {}
         } message: {
             Text(lab.errorMessage ?? "")
+        }
+    }
+
+    /// Journal writers are compared on their own screen; transcription
+    /// engines stay below, so every model evaluation lives in this one Lab.
+    private var journalSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            LoreSectionHeader("Journal writing")
+                .padding(.leading, 4)
+            NavigationLink {
+                LabJournalHomeView()
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "text.book.closed")
+                        .frame(width: 22)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Compare journal writers")
+                            .foregroundStyle(LoreTheme.ink)
+                        Text("Blind A/B/C scoring on your own notes")
+                            .font(.caption)
+                            .foregroundStyle(LoreTheme.tertiaryInk)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(LoreTheme.tertiaryInk)
+                }
+                .padding(.vertical, 14)
+                .padding(.horizontal, 16)
+                .background(
+                    RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous)
+                        .fill(LoreTheme.surface)
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("modelLabJournalLink")
         }
     }
 

@@ -70,6 +70,10 @@ struct LoreRemoteServices {
     let dailyEntryGenerator: any DailyEntryGenerationService
     let speechTranscriber: any RemoteSpeechTranscribing
     let reflectionBackend: any LoreReflectionBackendClient
+    #if DEBUG
+    /// Model Lab only; nil in the Simulator and when unconfigured.
+    var labBackend: LoreBackendHTTPClient? = nil
+    #endif
 
     @MainActor
     static func configuredForCurrentBuild(
@@ -100,11 +104,15 @@ struct LoreRemoteServices {
                 transport: transport,
                 productionAuthorizer: authorizer
             )
-            return Self(
+            var services = Self(
                 dailyEntryGenerator: RemoteDailyEntryGenerationService(backend: backend),
                 speechTranscriber: LoreBackendRemoteSpeechTranscriber(backend: backend),
                 reflectionBackend: backend
             )
+            #if DEBUG
+            services.labBackend = backend
+            #endif
+            return services
         } catch {
             return unconfigured
         }

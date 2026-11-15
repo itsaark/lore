@@ -175,7 +175,7 @@ struct SettingsHomeView: View {
                         TranscriptionLabView()
                     } label: {
                         SettingsNavigationLabel(
-                            title: "Transcription Lab",
+                            title: "Model Lab",
                             systemImage: "waveform.badge.magnifyingglass",
                             badge: "DEBUG"
                         )

@@ -175,6 +175,28 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         return result
     }
 
+    #if DEBUG
+    /// Model Lab only. The backend admits this route solely for development
+    /// App Attest keys, so it can't run from TestFlight or App Store builds.
+    func generateLabDailyEntry(
+        _ request: LabDailyEntryRequest
+    ) async throws -> LabDailyEntryResponse {
+        try Task.checkCancellation()
+        let result: LabDailyEntryResponse = try await postJSON(
+            request,
+            path: "v1/lab/daily-entries",
+            idempotencyKey: "lab-daily-entry:\(request.base.jobId.uuidString.lowercased())",
+            maximumBodyBytes: Self.maximumDailyEntryBodyBytes
+        )
+        guard result.base.jobId == request.base.jobId,
+              result.base.promptVersion == request.base.promptVersion,
+              result.labModel == request.labModel else {
+            throw LoreBackendProcessingError.invalidResponse(requestId: result.base.requestId)
+        }
+        return result
+    }
+    #endif
+
     func createReflectionSessionCredentials(
         _ request: ReflectionSessionCredentialsRequest
     ) async throws -> ReflectionSessionCredentialsResponse {

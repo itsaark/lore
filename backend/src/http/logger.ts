@@ -9,6 +9,7 @@ const SafeLogEventSchema = z.object({
     "auth_session",
     "transcription",
     "daily_entry",
+    "lab_daily_entry",
     "reflection_credentials",
     "reflection_guide",
     "reflection_finalize"
@@ -25,7 +26,8 @@ const SafeLogEventSchema = z.object({
     "reflection-stt-v1",
     "reflection-voice-v1",
     "reflection-guide-v1",
-    "reflection-entry-v1"
+    "reflection-entry-v1",
+    "daily-entry-lab"
   ]).optional()
 }).strict();
 

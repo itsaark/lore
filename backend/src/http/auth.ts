@@ -13,6 +13,8 @@ export type ProcessingAuthorizationDependencies = {
 export type ProcessingAuthorization = {
   kind: "session";
   claims: SessionClaims;
+  /** App Attest environment of the key behind this session. */
+  attestationEnvironment: "development" | "production";
   config: AppAttestRuntimeConfig;
   store: AuthStateStore;
 };
@@ -42,7 +44,7 @@ export async function requireProcessingAuthorization(
   }
   const allowed = await store.incrementRateLimit(`processing:${claims.sub}`, dependencies.now ?? new Date(), 60, 120);
   if (!allowed) throw new LoreApiError("rate_limited", 429, true, undefined, 60);
-  return { kind: "session", claims, config, store };
+  return { kind: "session", claims, attestationEnvironment: key.environment, config, store };
 }
 
 function bearerToken(request: Request): string | null {

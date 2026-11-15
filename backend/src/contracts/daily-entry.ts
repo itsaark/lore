@@ -91,3 +91,38 @@ export const DailyEntryGenerationResponseSchema = z.object({
 
 export type DailyEntryGenerationRequest = z.infer<typeof DailyEntryGenerationRequestSchema>;
 export type DailyEntryGenerationResponse = z.infer<typeof DailyEntryGenerationResponseSchema>;
+
+// MARK: - Model Lab (development builds only)
+
+/** Prompt versions the DEBUG Model Lab may compare. Production stays on v1. */
+export const DAILY_ENTRY_LAB_PROMPT_VERSIONS = ["grounded-journal-v1", "grounded-journal-v2"] as const;
+export const DailyEntryLabPromptVersionSchema = z.enum(DAILY_ENTRY_LAB_PROMPT_VERSIONS);
+export type DailyEntryLabPromptVersion = z.infer<typeof DailyEntryLabPromptVersionSchema>;
+
+export const DAILY_ENTRY_LAB_MODEL_ALIASES = [
+  "gpt-oss-120b",
+  "deepseek-v4-flash",
+  "deepseek-v4p1-flash",
+  "glm-5p3",
+  "glm-5p3-flash",
+  "minimax-m3"
+] as const;
+export const DailyEntryLabModelAliasSchema = z.enum(DAILY_ENTRY_LAB_MODEL_ALIASES);
+export type DailyEntryLabModelAlias = z.infer<typeof DailyEntryLabModelAliasSchema>;
+
+export const DailyEntryLabRequestSchema = DailyEntryGenerationRequestSchema.extend({
+  prompt_version: DailyEntryLabPromptVersionSchema,
+  lab_model: DailyEntryLabModelAliasSchema
+}).strict();
+
+export const DailyEntryLabResponseSchema = DailyEntryGenerationResponseSchema.extend({
+  prompt_version: DailyEntryLabPromptVersionSchema,
+  lab_model: DailyEntryLabModelAliasSchema,
+  usage: z.object({
+    prompt_tokens: z.number().int().min(0).nullable(),
+    completion_tokens: z.number().int().min(0).nullable()
+  }).strict()
+}).strict();
+
+export type DailyEntryLabRequest = z.infer<typeof DailyEntryLabRequestSchema>;
+export type DailyEntryLabResponse = z.infer<typeof DailyEntryLabResponseSchema>;

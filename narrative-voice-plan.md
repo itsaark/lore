@@ -145,7 +145,8 @@ Prices are Fireworks Standard serverless, per million tokens, from its pricing p
 
 | Candidate | Input / output price | Writing Elo (rank of 117) | Est. cost per daily entry* | Role |
 | --- | --- | --- | --- | --- |
-| DeepSeek V4 Flash (current) | about $0.22 / $1.20 (reported) | 1559 (#50) | about $0.002 | Baseline |
+| GPT-OSS 120B (**production today**, since 2026-08-05) | $0.15 / $0.60 | 956 (#100) | about $0.001 | Baseline |
+| DeepSeek V4 Flash | about $0.22 / $1.20 (reported) | 1559 (#50) | about $0.002 | Earlier production model |
 | **GLM 5.3** | $1.40 / $4.40 | **2077 (#6)**. The top open model on this board after Kimi K3, and above several closed models | about $0.01 | **Main candidate for the biographer voice**, for daily entries and chapters |
 | DeepSeek V4.1 Flash | $0.30 / $1.20 | 1540 (#53) | about $0.003 | Cheap fallback |
 | GLM 5.3 Flash | $0.15 / $0.50 | not listed | about $0.001 | Cheapest option; Lab to check its quality |
@@ -174,8 +175,8 @@ Reading: *TrueBrief: Faithful Summarization through Small Language Models* (arXi
 
 | Step | Prompt version | Status | Result |
 | --- | --- | --- | --- |
-| 0. Evaluation set | — | not started | |
-| 1. Biographer voice | `grounded-journal-v2` | not started | |
+| 0. Evaluation set | — | built: Model Lab → Journal writing (2026-11-14) | waiting for the founder's scores |
+| 1. Biographer voice | `grounded-journal-v2` | prompt written; Lab-only, production still on v1 | |
 | 2. On-device context | `grounded-journal-v3` | not started | |
 | 3. Public digest | `grounded-journal-v4` | not started | |
 | 4. Editorial pipeline | chapter prompts v1 | not started | |
