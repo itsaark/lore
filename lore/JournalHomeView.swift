@@ -1104,6 +1104,7 @@ private struct DayHeroCard: View {
         .frame(maxWidth: .infinity)
         .frame(height: 320)
         .clipShape(shape)
+        .contentShape(shape)
         .overlay(shape.strokeBorder(Color.white.opacity(0.1)))
         .shadow(color: .black.opacity(0.45), radius: 16, y: 8)
         .animation(.easeInOut(duration: 0.3), value: day.dayKey)

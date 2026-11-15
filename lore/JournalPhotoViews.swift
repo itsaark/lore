@@ -72,6 +72,10 @@ struct DayPhotoImage: View {
                 }
             }
             .clipped()
+            // `clipped()` hides the overflow of a `.fill` image but leaves it
+            // hit-testable; without this, a tall photo in the Day hero card
+            // swallows taps on the Month/Week/Day picker above it.
+            .contentShape(Rectangle())
             .animation(.easeOut(duration: 0.2), value: image)
             .task(id: cacheKey) { await load() }
     }
