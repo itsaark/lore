@@ -3,7 +3,6 @@ import SwiftUI
 
 enum JournalRoute: Hashable {
     case day(String)
-    case transcripts
 }
 
 /// The calendar-first home: this week's photos and days, earlier weeks or
@@ -48,7 +47,6 @@ struct JournalHomeView: View {
                         dailyEntries: speechRecognizer.dailyBiographyEntries,
                         storyDayKeys: speechRecognizer.storyDayKeys,
                         today: today,
-                        hasTranscripts: !speechRecognizer.stories.isEmpty,
                         openSettings: { showsSettings = true }
                     )
                     .equatable()
@@ -78,8 +76,6 @@ struct JournalHomeView: View {
                 switch route {
                 case let .day(dayKey):
                     DayJournalView(dayKey: dayKey, speechRecognizer: speechRecognizer)
-                case .transcripts:
-                    TranscriptArchiveView(speechRecognizer: speechRecognizer)
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: isCapturing)
@@ -87,7 +83,7 @@ struct JournalHomeView: View {
             .animation(.easeInOut(duration: 0.22), value: speechRecognizer.captureFeedbackMessage)
         }
         .sheet(isPresented: $showsSettings) {
-            SettingsHomeView(userProfile: userProfile)
+            SettingsHomeView(userProfile: userProfile, speechRecognizer: speechRecognizer)
                 .presentationDragIndicator(.visible)
         }
         .fullScreenCover(isPresented: $showsReflection) {
@@ -227,7 +223,6 @@ private struct JournalCalendarContent: View, Equatable {
     let dailyEntries: [DailyBiographyEntry]
     let storyDayKeys: [UUID: String]
     let today: Date
-    let hasTranscripts: Bool
     let openSettings: () -> Void
 
     @Query private var photos: [DayPhoto]
@@ -237,7 +232,6 @@ private struct JournalCalendarContent: View, Equatable {
             && lhs.dailyEntries == rhs.dailyEntries
             && lhs.storyDayKeys == rhs.storyDayKeys
             && lhs.today == rhs.today
-            && lhs.hasTranscripts == rhs.hasTranscripts
     }
 
     private let journalCalendar = JournalCalendar()
@@ -259,7 +253,6 @@ private struct JournalCalendarContent: View, Equatable {
                 content: content,
                 photos: photosByDay
             ),
-            hasTranscripts: hasTranscripts,
             openSettings: openSettings
         )
     }
@@ -269,7 +262,6 @@ private struct JournalCalendarContent: View, Equatable {
 /// pinch re-renders only the visible rows, not the day index.
 private struct ZoomableJournal: View {
     let model: JournalCalendarModel
-    let hasTranscripts: Bool
     let openSettings: () -> Void
 
     static let densityKey = "journalDensity"
@@ -283,9 +275,8 @@ private struct ZoomableJournal: View {
     @State private var anchorDayKey: String?
     @State private var heroDayKey: String?
 
-    init(model: JournalCalendarModel, hasTranscripts: Bool, openSettings: @escaping () -> Void) {
+    init(model: JournalCalendarModel, openSettings: @escaping () -> Void) {
         self.model = model
-        self.hasTranscripts = hasTranscripts
         self.openSettings = openSettings
         let stored = UserDefaults.standard.object(forKey: Self.densityKey) as? Int
         let density = stored.flatMap(JournalDensity.init(rawValue:)) ?? .week
@@ -298,7 +289,7 @@ private struct ZoomableJournal: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                JournalHeader(model: model, layout: layout, hasTranscripts: hasTranscripts, openSettings: openSettings)
+                JournalHeader(model: model, layout: layout, openSettings: openSettings)
                     .padding(.top, 8)
                     .id(JournalScrollID.top)
 
@@ -663,7 +654,6 @@ private struct DayTileState {
 private struct JournalHeader: View {
     let model: JournalCalendarModel
     let layout: JournalLayout
-    let hasTranscripts: Bool
     let openSettings: () -> Void
 
     @ScaledMetric(relativeTo: .largeTitle) private var titleSize: CGFloat = 44
@@ -709,21 +699,11 @@ private struct JournalHeader: View {
 
             Spacer(minLength: 8)
 
-            HStack(spacing: 10) {
-                if hasTranscripts {
-                    NavigationLink(value: JournalRoute.transcripts) {
-                        CircleIcon(systemImage: "quote.bubble")
-                    }
-                    .accessibilityLabel("Source transcripts")
-                    .accessibilityIdentifier("sourceTranscriptsButton")
-                }
-
-                Button(action: openSettings) {
-                    CircleIcon(systemImage: "gearshape")
-                }
-                .accessibilityLabel("Settings")
-                .accessibilityIdentifier("settingsButton")
+            Button(action: openSettings) {
+                CircleIcon(systemImage: "gearshape")
             }
+            .accessibilityLabel("Settings")
+            .accessibilityIdentifier("settingsButton")
             .padding(.top, 8)
         }
     }

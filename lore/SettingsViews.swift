@@ -6,6 +6,7 @@ import UIKit
 
 struct SettingsHomeView: View {
     let userProfile: UserProfile
+    @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
     @EnvironmentObject private var cloudArchiveStatus: CloudArchiveStatusMonitor
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
@@ -37,6 +38,18 @@ struct SettingsHomeView: View {
                 }
 
                 Section {
+                    NavigationLink {
+                        TranscriptArchiveView(speechRecognizer: speechRecognizer)
+                    } label: {
+                        SettingsNavigationLabel(
+                            title: "Raw Transcripts",
+                            systemImage: "quote.bubble",
+                            detail: speechRecognizer.stories.isEmpty ? nil : "\(speechRecognizer.stories.count)"
+                        )
+                    }
+                    .accessibilityIdentifier("rawTranscriptsSettingsLink")
+                    .loreListRow()
+
                     NavigationLink {
                         VocabularyView()
                     } label: {
@@ -1007,7 +1020,10 @@ private struct AboutLoreView: View {
 }
 
 #Preview("Settings") {
-    SettingsHomeView(userProfile: UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994))
+    SettingsHomeView(
+        userProfile: UserProfile(name: "Aark", hometown: "Hyderabad", birthYear: 1994),
+        speechRecognizer: SpeechRecognitionViewModel()
+    )
     .modelContainer(LoreModelContainer.preview)
     .environmentObject(CloudArchiveStatusMonitor(startsImmediately: false))
 }
