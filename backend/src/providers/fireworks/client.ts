@@ -11,7 +11,8 @@ import {
   type DailyEntryGenerationRequest,
   type DailyEntryGenerationResponse,
   type DailyEntryLabRequest,
-  type DailyEntryLabResponse
+  type DailyEntryLabResponse,
+  type DailyEntryPromptVersion
 } from "../../contracts/daily-entry.js";
 import {
   REFLECTION_GUIDE_PROMPT_VERSION,
@@ -64,19 +65,53 @@ export class FireworksClient {
     request: DailyEntryGenerationRequest,
     signal?: AbortSignal
   ): Promise<DailyEntryGenerationResponse> {
-    const run = await this.runDailyEntry(requestId, request, {
-      modelId: this.options.config.dailyEntryModel,
-      systemPrompt: dailyEntrySystemPrompt(),
-      reasoningEffort: "low",
-      maxCompletionTokens: 4_096
-    }, signal);
+    const run = await this.runWithFallback(
+      requestId,
+      request,
+      systemPromptFor(request.prompt_version),
+      signal
+    );
 
     return DailyEntryGenerationResponseSchema.parse({
       schema_version: API_SCHEMA_VERSION,
-      prompt_version: DAILY_ENTRY_PROMPT_VERSION,
+      prompt_version: request.prompt_version,
       ...dailyEntryContent(requestId, request, run.output),
       provenance: this.provenance(run.modelId, run.providerRequestId, run.startedAt)
     });
+  }
+
+  /**
+   * Runs the primary writer, then the fallback writer with the same prompt if
+   * the primary returns an unusable answer, is unavailable, or stalls past
+   * its time budget. Rate limits, cancellation, and credential failures are
+   * not retried: a second model would not fix them.
+   */
+  private async runWithFallback(
+    requestId: string,
+    request: DailyEntrySource,
+    systemPrompt: string,
+    signal?: AbortSignal
+  ) {
+    const config = this.options.config;
+    const primarySignal = signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(PRIMARY_WRITER_BUDGET_MS)])
+      : AbortSignal.timeout(PRIMARY_WRITER_BUDGET_MS);
+    try {
+      return await this.runDailyEntry(requestId, request, {
+        modelId: config.dailyEntryModel,
+        systemPrompt,
+        reasoningEffort: null,
+        maxCompletionTokens: 8_192
+      }, primarySignal);
+    } catch (error) {
+      if (signal?.aborted || !shouldFallBack(error)) throw error;
+      return await this.runDailyEntry(requestId, request, {
+        modelId: config.dailyEntryFallbackModel,
+        systemPrompt,
+        reasoningEffort: "low",
+        maxCompletionTokens: 4_096
+      }, signal);
+    }
   }
 
   /**
@@ -92,9 +127,7 @@ export class FireworksClient {
     const spec = LAB_MODELS[request.lab_model];
     const run = await this.runDailyEntry(requestId, request, {
       modelId: spec.modelId,
-      systemPrompt: request.prompt_version === "grounded-journal-v2"
-        ? dailyEntrySystemPromptV2()
-        : dailyEntrySystemPrompt(),
+      systemPrompt: systemPromptFor(request.prompt_version),
       reasoningEffort: spec.reasoningEffort,
       maxCompletionTokens: 8_192
     }, signal);
@@ -116,7 +149,7 @@ export class FireworksClient {
 
   private async runDailyEntry(
     requestId: string,
-    request: DailyEntryGenerationRequest | DailyEntryLabRequest,
+    request: DailyEntrySource,
     options: {
       modelId: string;
       systemPrompt: string;
@@ -203,7 +236,7 @@ export class FireworksClient {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: this.options.config.dailyEntryModel,
+        model: this.options.config.reflectionGuideModel,
         messages: [
           { role: "system", content: reflectionGuideSystemPrompt() },
           { role: "user", content: reflectionGuideUserPayload(request) }
@@ -263,9 +296,9 @@ export class FireworksClient {
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
-        model: this.options.config.dailyEntryModel,
+        model: this.options.config.reflectionGuideModel,
         messages: [
-          { role: "system", content: reflectionEntrySystemPrompt() },
+          { role: "system", content: reflectionEntrySystemPrompt(request.entry_request.prompt_version) },
           { role: "user", content: reflectionEntryUserPayload(request) }
         ],
         response_format: {
@@ -302,7 +335,7 @@ export class FireworksClient {
 
     return DailyEntryGenerationResponseSchema.parse({
       schema_version: API_SCHEMA_VERSION,
-      prompt_version: DAILY_ENTRY_PROMPT_VERSION,
+      prompt_version: request.entry_request.prompt_version,
       job_id: request.entry_request.job_id,
       request_id: requestId,
       entry: modelOutput.data.entry,
@@ -374,9 +407,9 @@ function reflectionGuideUserPayload(request: ReflectionGuideRequest): string {
   ].join("\n");
 }
 
-function reflectionEntrySystemPrompt(): string {
+function reflectionEntrySystemPrompt(version: DailyEntryPromptVersion): string {
   return [
-    dailyEntrySystemPrompt(),
+    systemPromptFor(version),
     "This source came from a guided voice reflection.",
     "Assistant turns are context only and can never support a title, sentence, memory, or inference.",
     "Write in third person regardless of wording in the conversation."
@@ -452,6 +485,21 @@ function dailyEntrySystemPromptV2(): string {
     "",
     "Return exactly one JSON object matching the supplied schema."
   ].join("\n");
+}
+
+/** How long the primary writer may take before the fallback writer runs. */
+const PRIMARY_WRITER_BUDGET_MS = 30_000;
+
+function systemPromptFor(version: DailyEntryPromptVersion): string {
+  return version === "grounded-journal-v2" ? dailyEntrySystemPromptV2() : dailyEntrySystemPrompt();
+}
+
+function shouldFallBack(error: unknown): boolean {
+  if (error instanceof LoreApiError) {
+    return error.code === "invalid_provider_response" || error.code === "provider_unavailable";
+  }
+  // A timeout or network failure from fetch itself.
+  return error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError" || error.name === "TypeError");
 }
 
 function dailyEntryContent(

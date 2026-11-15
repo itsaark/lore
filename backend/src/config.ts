@@ -4,7 +4,7 @@ import { LoreApiError } from "./http/errors.js";
 // This identifier describes the provider/model policy implemented by this
 // release. It belongs in source control so provenance cannot drift because of
 // a mistyped deployment setting.
-export const PROVIDER_POLICY_VERSION = "direct-fireworks-groq-2026-08-05-v4";
+export const PROVIDER_POLICY_VERSION = "direct-fireworks-groq-2026-11-15-v5";
 export const APP_ATTEST_TEAM_IDENTIFIER = "6PP52WCRHS";
 export const APP_ATTEST_BUNDLE_IDENTIFIER = "cascadianpines.lore";
 
@@ -39,7 +39,12 @@ export type FireworksRuntimeConfig = {
   apiKey: string;
   policyVersion: string;
   baseUrl: string;
+  /** Journal writer: the best-scoring cheap open model on Fireworks. */
   dailyEntryModel: string;
+  /** Used for a journal entry only when the primary writer fails or stalls. */
+  dailyEntryFallbackModel: string;
+  /** Reflect's live questions stay on a fast model; latency matters more there. */
+  reflectionGuideModel: string;
 };
 
 export type GroqRuntimeConfig = {
@@ -92,7 +97,9 @@ export function loadFireworksRuntimeConfig(
     apiKey: parsed.data.FIREWORKS_API_KEY,
     policyVersion: PROVIDER_POLICY_VERSION,
     baseUrl: "https://api.fireworks.ai/inference/v1",
-    dailyEntryModel: "accounts/fireworks/models/gpt-oss-120b"
+    dailyEntryModel: "accounts/fireworks/models/glm-5p3",
+    dailyEntryFallbackModel: "accounts/fireworks/models/gpt-oss-120b",
+    reflectionGuideModel: "accounts/fireworks/models/gpt-oss-120b"
   };
 }
 

@@ -7,14 +7,18 @@ import {
 } from "./common.js";
 import { TranscriptSourceSegmentSchema } from "./transcription.js";
 
-export const DAILY_ENTRY_PROMPT_VERSION = "grounded-journal-v1" as const;
+/** The version new clients send. v1 stays accepted for older builds and in-flight jobs. */
+export const DAILY_ENTRY_PROMPT_VERSION = "grounded-journal-v2" as const;
+export const DAILY_ENTRY_PROMPT_VERSIONS = ["grounded-journal-v1", "grounded-journal-v2"] as const;
+export const DailyEntryPromptVersionSchema = z.enum(DAILY_ENTRY_PROMPT_VERSIONS);
+export type DailyEntryPromptVersion = z.infer<typeof DailyEntryPromptVersionSchema>;
 
 const JournalPerspectiveSchema = z.enum(["first_person", "third_person"]);
 const JournalTenseSchema = z.enum(["past", "present"]);
 
 export const DailyEntryGenerationRequestSchema = z.object({
   schema_version: z.literal(API_SCHEMA_VERSION),
-  prompt_version: z.literal(DAILY_ENTRY_PROMPT_VERSION),
+  prompt_version: DailyEntryPromptVersionSchema,
   job_id: UuidSchema,
   note_id: UuidSchema,
   transcript_artifact_id: UuidSchema,
@@ -66,7 +70,7 @@ const JournalMemoryCandidateSchema = z.object({
 
 export const DailyEntryGenerationResponseSchema = z.object({
   schema_version: z.literal(API_SCHEMA_VERSION),
-  prompt_version: z.literal(DAILY_ENTRY_PROMPT_VERSION),
+  prompt_version: DailyEntryPromptVersionSchema,
   job_id: UuidSchema,
   request_id: z.string().min(1).max(200),
   entry: GroundedJournalEntrySchema,
@@ -95,8 +99,8 @@ export type DailyEntryGenerationResponse = z.infer<typeof DailyEntryGenerationRe
 // MARK: - Model Lab (development builds only)
 
 /** Prompt versions the DEBUG Model Lab may compare. Production stays on v1. */
-export const DAILY_ENTRY_LAB_PROMPT_VERSIONS = ["grounded-journal-v1", "grounded-journal-v2"] as const;
-export const DailyEntryLabPromptVersionSchema = z.enum(DAILY_ENTRY_LAB_PROMPT_VERSIONS);
+export const DAILY_ENTRY_LAB_PROMPT_VERSIONS = DAILY_ENTRY_PROMPT_VERSIONS;
+export const DailyEntryLabPromptVersionSchema = DailyEntryPromptVersionSchema;
 export type DailyEntryLabPromptVersion = z.infer<typeof DailyEntryLabPromptVersionSchema>;
 
 export const DAILY_ENTRY_LAB_MODEL_ALIASES = [

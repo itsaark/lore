@@ -9,7 +9,9 @@ const config: FireworksRuntimeConfig = {
   apiKey: "test-key-never-use-live",
   policyVersion: "test-policy-v1",
   baseUrl: "https://api.fireworks.test/inference/v1",
-  dailyEntryModel: "accounts/fireworks/models/gpt-oss-120b"
+  dailyEntryModel: "accounts/fireworks/models/gpt-oss-120b",
+  dailyEntryFallbackModel: "accounts/fireworks/models/fallback-writer",
+  reflectionGuideModel: "accounts/fireworks/models/gpt-oss-120b"
 };
 
 const dailyRequest: DailyEntryGenerationRequest = {
@@ -40,6 +42,67 @@ const dailyRequest: DailyEntryGenerationRequest = {
   accepted_prior_facts: [],
   retention_policy: { mode: "request_ephemeral", maximum_retention_seconds: 0 }
 };
+
+describe("FireworksClient writer fallback", () => {
+  const v2Request: DailyEntryGenerationRequest = { ...dailyRequest, prompt_version: "grounded-journal-v2" };
+
+  it("writes with the primary model and the v2 biographer prompt", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.model).toBe("accounts/fireworks/models/gpt-oss-120b");
+      expect(body).not.toHaveProperty("reasoning_effort");
+      expect(body.messages[0].content).toContain("private biographer");
+      return Response.json(validCompletion());
+    });
+    const client = new FireworksClient({ config, fetch: fetchMock });
+
+    const response = await client.generateDailyEntry("req_v2", v2Request);
+
+    expect(response.prompt_version).toBe("grounded-journal-v2");
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to the second writer, same prompt, when the primary is unavailable", async () => {
+    const models: string[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      models.push(body.model);
+      expect(body.messages[0].content).toContain("private biographer");
+      if (models.length === 1) return new Response("model not found", { status: 404 });
+      return Response.json({ ...validCompletion(), model: "accounts/fireworks/models/fallback-writer" });
+    });
+    const client = new FireworksClient({ config, fetch: fetchMock });
+
+    const response = await client.generateDailyEntry("req_fallback", v2Request);
+
+    expect(models).toEqual([
+      "accounts/fireworks/models/gpt-oss-120b",
+      "accounts/fireworks/models/fallback-writer"
+    ]);
+    expect(response.provenance.model_id).toBe("accounts/fireworks/models/fallback-writer");
+  });
+
+  it("does not fall back on a rate limit", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response("slow down", { status: 429 }));
+    const client = new FireworksClient({ config, fetch: fetchMock });
+
+    await expect(client.generateDailyEntry("req_rate", v2Request)).rejects.toMatchObject({ code: "provider_rate_limited" });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("keeps answering v1 requests from older builds with the v1 prompt", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.messages[0].content).toContain("private biographical journal writer");
+      return Response.json(validCompletion());
+    });
+    const client = new FireworksClient({ config, fetch: fetchMock });
+
+    const response = await client.generateDailyEntry("req_v1", dailyRequest);
+
+    expect(response.prompt_version).toBe("grounded-journal-v1");
+  });
+});
 
 describe("FireworksClient", () => {
   it("builds a strict provider schema with required fields on every object", () => {

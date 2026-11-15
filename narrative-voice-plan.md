@@ -176,7 +176,7 @@ Reading: *TrueBrief: Faithful Summarization through Small Language Models* (arXi
 | Step | Prompt version | Status | Result |
 | --- | --- | --- | --- |
 | 0. Evaluation set | — | built: Model Lab → Journal writing (2026-11-14) | waiting for the founder's scores |
-| 1. Biographer voice | `grounded-journal-v2` | prompt written; Lab-only, production still on v1 | |
+| 1. Biographer voice | `grounded-journal-v2` | **in production 2026-11-15**: GLM 5.3 writer, GPT-OSS 120B fallback (same prompt). Founder chose to ship on benchmark before Lab scores, since there are no users yet | confirm in the Lab |
 | 2. On-device context | `grounded-journal-v3` | not started | |
 | 3. Public digest | `grounded-journal-v4` | not started | |
 | 4. Editorial pipeline | chapter prompts v1 | not started | |

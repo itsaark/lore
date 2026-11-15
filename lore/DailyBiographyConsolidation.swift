@@ -579,7 +579,7 @@ enum DailyBiographyJobRunner {
                 + response.entry.sentences.flatMap(\.sourceReferences)
         )
         guard response.schemaVersion == DailyEntryGenerationResponse.currentSchemaVersion,
-              response.promptVersion == DailyEntryGenerationRequest.currentPromptVersion,
+              response.promptVersion == request.promptVersion,
               response.jobId == request.jobId,
               !response.entry.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !response.entry.titleSourceReferences.isEmpty,

@@ -355,7 +355,7 @@ enum DailyEntryResultPersister {
 
         guard
             request.schemaVersion == DailyEntryGenerationRequest.currentSchemaVersion,
-            request.promptVersion == DailyEntryGenerationRequest.currentPromptVersion,
+            DailyEntryGenerationRequest.supportedPromptVersions.contains(request.promptVersion),
             request.retentionPolicy.mode == .zeroDataRetention,
             request.retentionPolicy.maximumRetentionSeconds == 0,
             response.schemaVersion == DailyEntryGenerationResponse.currentSchemaVersion,

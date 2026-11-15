@@ -347,7 +347,7 @@ struct LoreBackendHTTPClientTests {
         Data("""
         {
           "schema_version":"1.0",
-          "prompt_version":"grounded-journal-v1",
+          "prompt_version":"grounded-journal-v2",
           "job_id":"\(jobId.uuidString.lowercased())",
           "request_id":"req_backend_daily",
           "entry":{"title":"Synthetic day","title_source_references":["s1"],"perspective":"third_person","sentences":[{"text":"Maya recorded a synthetic note.","source_references":["s1"],"fact_references":[],"preserves_uncertainty":false}]},

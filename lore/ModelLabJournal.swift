@@ -55,9 +55,9 @@ struct LabJournalCandidate: Identifiable, Hashable, Sendable {
     var displayName: String { "\(modelName) · \(promptLabel)" }
 
     static let all: [LabJournalCandidate] = [
-        .init(modelAlias: "gpt-oss-120b", promptVersion: "grounded-journal-v1", modelName: "GPT-OSS 120B (production today)", pricePerMillion: "$0.15 / $0.60"),
-        .init(modelAlias: "gpt-oss-120b", promptVersion: "grounded-journal-v2", modelName: "GPT-OSS 120B", pricePerMillion: "$0.15 / $0.60"),
-        .init(modelAlias: "glm-5p3", promptVersion: "grounded-journal-v2", modelName: "GLM 5.3", pricePerMillion: "$1.40 / $4.40"),
+        .init(modelAlias: "glm-5p3", promptVersion: "grounded-journal-v2", modelName: "GLM 5.3 (production)", pricePerMillion: "$1.40 / $4.40"),
+        .init(modelAlias: "gpt-oss-120b", promptVersion: "grounded-journal-v2", modelName: "GPT-OSS 120B (production fallback)", pricePerMillion: "$0.15 / $0.60"),
+        .init(modelAlias: "gpt-oss-120b", promptVersion: "grounded-journal-v1", modelName: "GPT-OSS 120B (old production)", pricePerMillion: "$0.15 / $0.60"),
         .init(modelAlias: "glm-5p3-flash", promptVersion: "grounded-journal-v2", modelName: "GLM 5.3 Flash", pricePerMillion: "$0.15 / $0.50"),
         .init(modelAlias: "deepseek-v4p1-flash", promptVersion: "grounded-journal-v2", modelName: "DeepSeek V4.1 Flash", pricePerMillion: "$0.30 / $1.20"),
         .init(modelAlias: "deepseek-v4-flash", promptVersion: "grounded-journal-v2", modelName: "DeepSeek V4 Flash", pricePerMillion: "$0.22 / $1.20"),
@@ -484,9 +484,10 @@ final class LabJournalModel: ObservableObject {
                 capturedLocalDate: formatter.string(from: input.capturedDate),
                 languageCode: "en-US",
                 subject: JournalSubject(displayName: subject, pronouns: []),
+                // v1 keeps its original settings so it reproduces the old production voice.
                 renderConfiguration: isV2
                     ? JournalRenderConfiguration(tone: "narrative_restrained", targetWords: 200)
-                    : JournalRenderConfiguration(),
+                    : JournalRenderConfiguration(tone: "warm_restrained", targetWords: 130),
                 sourceSegments: segments
             ),
             labModel: candidate.modelAlias

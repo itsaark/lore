@@ -491,7 +491,7 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
     private func validate(_ request: DailyEntryGenerationRequest) throws {
         guard
             request.schemaVersion == DailyEntryGenerationRequest.currentSchemaVersion,
-            request.promptVersion == DailyEntryGenerationRequest.currentPromptVersion,
+            DailyEntryGenerationRequest.supportedPromptVersions.contains(request.promptVersion),
             request.sourceSegments.isEmpty == false,
             request.retentionPolicy.mode == .zeroDataRetention,
             request.retentionPolicy.maximumRetentionSeconds == 0
@@ -660,7 +660,7 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         }
         guard
             response.schemaVersion == DailyEntryGenerationResponse.currentSchemaVersion,
-            response.promptVersion == DailyEntryGenerationRequest.currentPromptVersion,
+            response.promptVersion == request.promptVersion,
             response.jobId == request.jobId,
             response.requestId.isEmpty == false,
             response.entry.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,

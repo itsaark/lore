@@ -181,7 +181,9 @@ describe("durable processing leases", () => {
 
   it("releases the lease in finally when the provider fails", async () => {
     const harness = await authenticatedHarness();
+    // The primary writer and its fallback both fail on the first request.
     const provider = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("temporarily unavailable", { status: 503 }))
       .mockResolvedValueOnce(new Response("temporarily unavailable", { status: 503 }))
       .mockResolvedValueOnce(fireworksResponse());
     const dependencies = {
@@ -195,7 +197,7 @@ describe("durable processing leases", () => {
 
     expect(failed.status).toBe(503);
     expect(retried.status).toBe(200);
-    expect(provider).toHaveBeenCalledTimes(2);
+    expect(provider).toHaveBeenCalledTimes(3);
   });
 });
 

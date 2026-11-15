@@ -210,8 +210,8 @@ struct JournalRenderConfiguration: Codable, Equatable, Sendable {
     init(
         perspective: JournalPerspective = .thirdPerson,
         tense: JournalTense = .past,
-        tone: String = "warm_restrained",
-        targetWords: Int = 130
+        tone: String = "narrative_restrained",
+        targetWords: Int = 200
     ) {
         self.perspective = perspective
         self.tense = tense
@@ -229,7 +229,10 @@ struct JournalPriorFact: Codable, Equatable, Identifiable, Sendable {
 
 struct DailyEntryGenerationRequest: Codable, Equatable, Sendable {
     static let currentSchemaVersion = "1.0"
-    static let currentPromptVersion = "grounded-journal-v1"
+    /// v2 is the biographer voice. v1 stays valid so results and jobs created
+    /// by earlier builds still install.
+    static let currentPromptVersion = "grounded-journal-v2"
+    static let supportedPromptVersions: Set<String> = ["grounded-journal-v1", "grounded-journal-v2"]
 
     var schemaVersion: String
     var promptVersion: String

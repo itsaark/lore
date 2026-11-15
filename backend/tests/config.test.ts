@@ -25,7 +25,9 @@ describe("minimal production configuration", () => {
   it("loads each provider from only its API key", () => {
     const fireworks = loadFireworksRuntimeConfig({ FIREWORKS_API_KEY: "fireworks-test" });
     expect(fireworks.apiKey).toBe("fireworks-test");
-    expect(fireworks.dailyEntryModel).toBe("accounts/fireworks/models/gpt-oss-120b");
+    expect(fireworks.dailyEntryModel).toBe("accounts/fireworks/models/glm-5p3");
+    expect(fireworks.dailyEntryFallbackModel).toBe("accounts/fireworks/models/gpt-oss-120b");
+    expect(fireworks.reflectionGuideModel).toBe("accounts/fireworks/models/gpt-oss-120b");
     expect(loadGroqRuntimeConfig({ GROQ_API_KEY: "groq-test" }).apiKey)
       .toBe("groq-test");
     const soniox = loadSonioxRuntimeConfig({ SONIOX_API_KEY: "soniox-test" });
