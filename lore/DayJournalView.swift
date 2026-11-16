@@ -2,16 +2,19 @@ import PhotosUI
 import SwiftData
 import SwiftUI
 
-/// The journal page for one day: its photo, the written entry, and the voice
-/// notes it was built from. Empty days still accept a photo.
+/// The journal page for one day: its photos, the written entry, and the voice
+/// notes it was built from. Empty days still accept photos.
 struct DayJournalView: View {
     let dayKey: String
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
 
     @Environment(\.modelContext) private var modelContext
     @Query private var photos: [DayPhoto]
-    @State private var pickerItem: PhotosPickerItem?
-    @State private var showsPicker = false
+    @State private var addItems: [PhotosPickerItem] = []
+    @State private var showsAddPicker = false
+    @State private var replaceItem: PhotosPickerItem?
+    @State private var replacingPhotoID: UUID?
+    @State private var selectedPhotoID: UUID?
     @State private var showsViewer = false
     @State private var isSavingPhoto = false
     @State private var photoError: String?
@@ -22,13 +25,20 @@ struct DayJournalView: View {
     init(dayKey: String, speechRecognizer: SpeechRecognitionViewModel) {
         self.dayKey = dayKey
         self.speechRecognizer = speechRecognizer
-        _photos = Query(
-            filter: #Predicate<DayPhoto> { $0.dayKey == dayKey },
-            sort: [SortDescriptor(\.updatedAt, order: .reverse)]
-        )
+        _photos = Query(filter: #Predicate<DayPhoto> { $0.dayKey == dayKey })
     }
 
-    private var photo: DayPhoto? { photos.first }
+    private var orderedPhotos: [DayPhoto] { photos.inDayOrder() }
+
+    /// The photo on screen in the pager; the cover until the reader swipes.
+    private var currentPhoto: DayPhoto? {
+        let ordered = orderedPhotos
+        return ordered.first { $0.id == selectedPhotoID } ?? ordered.first
+    }
+
+    private var remainingPhotoSlots: Int {
+        max(DayPhotoStore.maximumPhotosPerDay - photos.count, 0)
+    }
 
     private var content: JournalDayContent? {
         JournalDayContent.index(
@@ -88,10 +98,10 @@ struct DayJournalView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(LoreTheme.canvas, for: .navigationBar)
         .toolbar {
-            if photo != nil {
+            if let currentPhoto {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        photoMenuItems
+                        photoMenuItems(for: currentPhoto)
                     } label: {
                         Image(systemName: "ellipsis")
                             .font(.body.weight(.semibold))
@@ -102,15 +112,19 @@ struct DayJournalView: View {
                 }
             }
         }
-        .photosPicker(isPresented: $showsPicker, selection: $pickerItem, matching: .images)
-        .onChange(of: pickerItem) { _, item in
-            guard let item else { return }
-            Task { await savePhoto(from: item) }
+        .photosPicker(
+            isPresented: $showsAddPicker,
+            selection: $addItems,
+            maxSelectionCount: max(remainingPhotoSlots, 1),
+            selectionBehavior: .ordered,
+            matching: .images
+        )
+        .onChange(of: addItems) { _, items in
+            guard !items.isEmpty else { return }
+            Task { await addPhotos(from: items) }
         }
         .fullScreenCover(isPresented: $showsViewer) {
-            if let photo {
-                DayPhotoViewer(photo: photo)
-            }
+            DayPhotoViewer(photos: orderedPhotos, startingAt: currentPhoto?.id)
         }
         .alert(
             "Photo not saved",
@@ -128,60 +142,155 @@ struct DayJournalView: View {
 
     @ViewBuilder
     private var photoSection: some View {
-        if let photo {
-            SettlingPhotoCard(photo: photo) {
-                showsViewer = true
-            }
-            .contextMenu { photoMenuItems }
-            .overlay {
-                if isSavingPhoto { savingIndicator }
-            }
-        } else {
-            Button {
-                showsPicker = true
-            } label: {
-                VStack(spacing: 10) {
-                    if isSavingPhoto {
-                        ProgressView()
-                            .tint(LoreTheme.ink)
-                    } else {
-                        Image(systemName: "photo.badge.plus")
-                            .font(.system(size: 26, weight: .regular))
-                            .foregroundStyle(LoreTheme.secondaryInk)
+        let ordered = orderedPhotos
+        Group {
+            if ordered.isEmpty {
+                addPhotoPlaceholder
+            } else {
+                VStack(alignment: .leading, spacing: 14) {
+                    Group {
+                        if ordered.count == 1, let only = ordered.first {
+                            SettlingPhotoCard(photo: only) { showsViewer = true }
+                                .contextMenu { photoMenuItems(for: only) }
+                        } else {
+                            DayPhotoPager(photos: ordered, selection: $selectedPhotoID) { showsViewer = true } menu: { photo in
+                                photoMenuItems(for: photo)
+                            }
+                        }
                     }
-                    Text("Add a photo for this day")
-                        .font(LoreTheme.caption(.body))
+                    .overlay {
+                        if isSavingPhoto { savingIndicator }
+                    }
+
+                    photoControls(for: ordered)
+                }
+            }
+        }
+        .photosPicker(isPresented: Binding(
+            get: { replacingPhotoID != nil && replaceItem == nil },
+            set: { if !$0, replaceItem == nil { replacingPhotoID = nil } }
+        ), selection: $replaceItem, matching: .images)
+        .onChange(of: replaceItem) { _, item in
+            guard let item, let photoID = replacingPhotoID else { return }
+            Task { await replacePhoto(photoID, from: item) }
+        }
+    }
+
+    private var addPhotoPlaceholder: some View {
+        Button {
+            showsAddPicker = true
+        } label: {
+            VStack(spacing: 10) {
+                if isSavingPhoto {
+                    ProgressView()
+                        .tint(LoreTheme.ink)
+                } else {
+                    Image(systemName: "photo.badge.plus")
+                        .font(.system(size: 26, weight: .regular))
                         .foregroundStyle(LoreTheme.secondaryInk)
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 210)
-                .background(
-                    RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous)
-                        .fill(LoreTheme.surface)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous)
-                        .strokeBorder(LoreTheme.hairline, style: StrokeStyle(lineWidth: 1, dash: [6, 5]))
-                )
-                .contentShape(RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous))
+                Text("Add photos for this day")
+                    .font(LoreTheme.caption(.body))
+                    .foregroundStyle(LoreTheme.secondaryInk)
+                Text("Up to \(DayPhotoStore.maximumPhotosPerDay)")
+                    .font(LoreTheme.label.weight(.regular))
+                    .foregroundStyle(LoreTheme.tertiaryInk)
             }
-            .buttonStyle(.plain)
-            .disabled(isSavingPhoto)
-            .accessibilityIdentifier("addDayPhotoButton")
+            .frame(maxWidth: .infinity)
+            .frame(height: 210)
+            .background(
+                RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous)
+                    .fill(LoreTheme.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous)
+                    .strokeBorder(LoreTheme.hairline, style: StrokeStyle(lineWidth: 1, dash: [6, 5]))
+            )
+            .contentShape(RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(isSavingPhoto)
+        .accessibilityIdentifier("addDayPhotoButton")
+    }
+
+    /// Page dots for several photos, and a compact add button while the day
+    /// has room for more.
+    private func photoControls(for ordered: [DayPhoto]) -> some View {
+        HStack(spacing: 12) {
+            if ordered.count > 1 {
+                let current = currentPhoto?.id
+                HStack(spacing: 6) {
+                    ForEach(ordered) { photo in
+                        Circle()
+                            .fill(photo.id == current ? LoreTheme.ink : LoreTheme.tertiaryInk.opacity(0.5))
+                            .frame(width: 6, height: 6)
+                    }
+                }
+                .animation(.snappy, value: current)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Photo \((ordered.firstIndex { $0.id == current } ?? 0) + 1) of \(ordered.count)")
+            }
+
+            Spacer(minLength: 0)
+
+            if remainingPhotoSlots > 0 {
+                Button {
+                    showsAddPicker = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus")
+                            .font(.caption.weight(.bold))
+                        Text("Add photo")
+                        Text("\(ordered.count)/\(DayPhotoStore.maximumPhotosPerDay)")
+                            .foregroundStyle(LoreTheme.tertiaryInk)
+                            .monospacedDigit()
+                    }
+                    .font(LoreTheme.label)
+                    .foregroundStyle(LoreTheme.secondaryInk)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Capsule().fill(LoreTheme.surface))
+                    .overlay(Capsule().strokeBorder(LoreTheme.hairline))
+                    .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(isSavingPhoto)
+                .accessibilityLabel("Add photo, \(ordered.count) of \(DayPhotoStore.maximumPhotosPerDay)")
+                .accessibilityIdentifier("addMoreDayPhotosButton")
+            }
         }
     }
 
     @ViewBuilder
-    private var photoMenuItems: some View {
+    private func photoMenuItems(for photo: DayPhoto) -> some View {
+        if remainingPhotoSlots > 0 {
+            Button {
+                showsAddPicker = true
+            } label: {
+                Label("Add Photos", systemImage: "plus")
+            }
+            .accessibilityIdentifier("addDayPhotosMenuButton")
+        }
+
+        if photos.count > 1, orderedPhotos.first?.id != photo.id {
+            Button {
+                makeCover(photo)
+            } label: {
+                Label("Make Cover", systemImage: "rectangle.stack")
+            }
+            .accessibilityIdentifier("makeCoverDayPhotoButton")
+        }
+
         Button {
-            showsPicker = true
+            replaceItem = nil
+            replacingPhotoID = photo.id
         } label: {
             Label("Replace Photo", systemImage: "photo.on.rectangle")
         }
         .accessibilityIdentifier("replaceDayPhotoButton")
 
         Button(role: .destructive) {
-            removePhoto()
+            removePhoto(photo)
         } label: {
             Label("Remove Photo", systemImage: "trash")
         }
@@ -195,30 +304,80 @@ struct DayJournalView: View {
             .background(Circle().fill(.black.opacity(0.5)))
     }
 
-    private func savePhoto(from item: PhotosPickerItem) async {
+    private func addPhotos(from items: [PhotosPickerItem]) async {
         isSavingPhoto = true
         defer {
             isSavingPhoto = false
-            pickerItem = nil
+            addItems = []
         }
+        var encoded: [DayPhotoEncoder.Output] = []
+        var failures = 0
+        for item in items {
+            guard let data = try? await item.loadTransferable(type: Data.self),
+                  let output = await DayPhotoStore.encodeInBackground(data) else {
+                failures += 1
+                continue
+            }
+            encoded.append(output)
+        }
+        do {
+            let added = try DayPhotoStore.addPhotos(encoded, for: dayKey, in: modelContext)
+            if let first = added.first {
+                selectedPhotoID = first.id
+                savedPhotoCount += 1
+            }
+        } catch {
+            photoError = error.localizedDescription
+            return
+        }
+        if failures > 0 {
+            photoError = failures == 1
+                ? "One photo couldn't be loaded from your library."
+                : "\(failures) photos couldn't be loaded from your library."
+        }
+    }
+
+    private func replacePhoto(_ photoID: UUID, from item: PhotosPickerItem) async {
+        isSavingPhoto = true
+        defer {
+            isSavingPhoto = false
+            replaceItem = nil
+            replacingPhotoID = nil
+        }
+        guard let photo = photos.first(where: { $0.id == photoID }) else { return }
         do {
             guard let data = try await item.loadTransferable(type: Data.self) else {
                 photoError = "The photo couldn't be loaded from your library."
                 return
             }
-            guard try await DayPhotoStore.setPhoto(decodingInBackground: data, for: dayKey, in: modelContext) != nil else {
+            guard let encoded = await DayPhotoStore.encodeInBackground(data) else {
                 photoError = "That file isn't an image Lore can read."
                 return
             }
+            try DayPhotoStore.replace(photo, with: encoded, in: modelContext)
             savedPhotoCount += 1
         } catch {
             photoError = error.localizedDescription
         }
     }
 
-    private func removePhoto() {
+    private func makeCover(_ photo: DayPhoto) {
         do {
-            try DayPhotoStore.removePhoto(for: dayKey, in: modelContext)
+            try DayPhotoStore.makeCover(photo, in: modelContext)
+            selectedPhotoID = photo.id
+        } catch {
+            photoError = error.localizedDescription
+        }
+    }
+
+    private func removePhoto(_ photo: DayPhoto) {
+        let ordered = orderedPhotos
+        if let index = ordered.firstIndex(where: { $0.id == photo.id }) {
+            let neighbor = ordered.indices.contains(index + 1) ? ordered[index + 1] : (index > 0 ? ordered[index - 1] : nil)
+            selectedPhotoID = neighbor?.id
+        }
+        do {
+            try DayPhotoStore.remove(photo, in: modelContext)
         } catch {
             photoError = error.localizedDescription
         }
@@ -346,6 +505,59 @@ private struct SettlingPhotoCard: View {
         withAnimation(.spring(response: 0.7, dampingFraction: 0.62).delay(0.08)) {
             isSettled = true
         }
+    }
+}
+
+/// Several photos as a sideways pager of equal cards; the first wears a
+/// small "Cover" tag because it is the one the calendar shows.
+private struct DayPhotoPager<Menu: View>: View {
+    let photos: [DayPhoto]
+    @Binding var selection: UUID?
+    let open: () -> Void
+    @ViewBuilder let menu: (DayPhoto) -> Menu
+
+    private var shape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous)
+    }
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            LazyHStack(spacing: 12) {
+                ForEach(Array(photos.enumerated()), id: \.element.id) { index, photo in
+                    Button(action: open) {
+                        DayPhotoImage(photo: photo, variant: .full)
+                            .aspectRatio(4.0 / 5.0, contentMode: .fit)
+                            .clipShape(shape)
+                            .contentShape(shape)
+                            .overlay(alignment: .topLeading) {
+                                if index == 0 {
+                                    Text("Cover")
+                                        .font(LoreTheme.label)
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 10)
+                                        .padding(.vertical, 5)
+                                        .background(Capsule().fill(.black.opacity(0.45)))
+                                        .padding(12)
+                                        .accessibilityHidden(true)
+                                }
+                            }
+                            .overlay { shape.strokeBorder(Color.white.opacity(0.1)) }
+                            .shadow(color: .black.opacity(0.55), radius: 18, y: 10)
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu { menu(photo) }
+                    .containerRelativeFrame(.horizontal)
+                    .accessibilityLabel(index == 0 ? "Cover photo, \(index + 1) of \(photos.count)" : "Photo \(index + 1) of \(photos.count)")
+                    .accessibilityHint("Opens the photo full screen")
+                    .accessibilityIdentifier("dayPhotoCard_\(index)")
+                }
+            }
+            .scrollTargetLayout()
+        }
+        .scrollTargetBehavior(.viewAligned)
+        .scrollPosition(id: $selection)
+        .scrollIndicators(.hidden)
+        .scrollClipDisabled()
     }
 }
 

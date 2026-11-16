@@ -23,7 +23,7 @@ final class DayPhotoImageCache: @unchecked Sendable {
     }
 
     static func key(for photo: DayPhoto, variant: DayPhotoImage.Variant) -> String {
-        "\(photo.dayKey)|\(photo.updatedAt.timeIntervalSinceReferenceDate)|\(variant.rawValue)"
+        "\(photo.id.uuidString)|\(photo.updatedAt.timeIntervalSinceReferenceDate)|\(variant.rawValue)"
     }
 
     static func decode(_ data: Data) async -> UIImage? {
@@ -202,17 +202,28 @@ private struct PhotoCardButtonStyle: ButtonStyle {
     }
 }
 
-/// Full-screen black photo viewer with pinch-to-zoom and swipe-down dismissal.
+/// Full-screen black viewer for a day's photos: swipe sideways between them,
+/// pinch or double-tap to zoom, swipe down to dismiss.
 struct DayPhotoViewer: View {
     @Environment(\.dismiss) private var dismiss
-    let photo: DayPhoto
+    let photos: [DayPhoto]
 
+    @State private var selection: UUID
     @State private var zoom: CGFloat = 1
     @State private var committedZoom: CGFloat = 1
-    @State private var dragOffset: CGSize = .zero
+    @State private var dragOffset: CGFloat = 0
+
+    init(photos: [DayPhoto], startingAt photoID: UUID? = nil) {
+        self.photos = photos
+        _selection = State(initialValue: photoID ?? photos.first?.id ?? UUID())
+    }
+
+    private var index: Int {
+        photos.firstIndex(where: { $0.id == selection }) ?? 0
+    }
 
     private var dismissProgress: CGFloat {
-        min(abs(dragOffset.height) / 300, 1)
+        min(abs(dragOffset) / 300, 1)
     }
 
     var body: some View {
@@ -221,36 +232,66 @@ struct DayPhotoViewer: View {
                 .opacity(1 - dismissProgress * 0.6)
                 .ignoresSafeArea()
 
-            DayPhotoImage(photo: photo, variant: .full, contentMode: .fit)
-                .scaleEffect(zoom * (1 - dismissProgress * 0.15))
-                .offset(dragOffset)
-                .ignoresSafeArea()
-                .gesture(magnification)
-                .simultaneousGesture(dismissDrag)
-                .onTapGesture(count: 2) {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                        zoom = zoom > 1 ? 1 : 2.2
-                        committedZoom = zoom
-                    }
+            // Gestures live on the pager rather than inside its pages, where a
+            // drag recognizer would swallow the sideways swipe.
+            TabView(selection: $selection) {
+                ForEach(photos) { photo in
+                    let isCurrent = photo.id == selection
+                    DayPhotoImage(photo: photo, variant: .full, contentMode: .fit)
+                        .scaleEffect(isCurrent ? zoom * (1 - dismissProgress * 0.15) : 1)
+                        .offset(y: isCurrent ? dragOffset : 0)
+                        .onTapGesture(count: 2) {
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                                zoom = zoom > 1 ? 1 : 2.2
+                                committedZoom = zoom
+                            }
+                        }
+                        .accessibilityLabel("Photo")
+                        .accessibilityAddTraits(.isImage)
+                        .tag(photo.id)
                 }
-                .accessibilityLabel("Photo")
-                .accessibilityAddTraits(.isImage)
-        }
-        .overlay(alignment: .topTrailing) {
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 40, height: 40)
-                    .background(Circle().fill(Color.white.opacity(0.16)))
             }
-            .padding(.trailing, 18)
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .scrollDisabled(zoom > 1)
+            .simultaneousGesture(magnification)
+            .simultaneousGesture(dismissDrag)
+            .ignoresSafeArea()
+        }
+        .overlay(alignment: .top) {
+            HStack {
+                if photos.count > 1 {
+                    Text("\(index + 1) of \(photos.count)")
+                        .font(LoreTheme.label)
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .frame(height: 40)
+                        .background(Capsule().fill(Color.white.opacity(0.16)))
+                        .contentTransition(.numericText())
+                        .animation(.snappy, value: index)
+                        .accessibilityIdentifier("photoViewerCounter")
+                }
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 40, height: 40)
+                        .background(Circle().fill(Color.white.opacity(0.16)))
+                }
+                .accessibilityLabel("Close photo")
+                .accessibilityIdentifier("closePhotoViewerButton")
+            }
+            .padding(.horizontal, 18)
             .padding(.top, 8)
             .opacity(1 - dismissProgress)
-            .accessibilityLabel("Close photo")
-            .accessibilityIdentifier("closePhotoViewerButton")
+        }
+        .onChange(of: selection) { _, _ in
+            zoom = 1
+            committedZoom = 1
+            dragOffset = 0
         }
         .statusBarHidden()
     }
@@ -265,19 +306,21 @@ struct DayPhotoViewer: View {
             }
     }
 
+    /// Only mostly-vertical drags dismiss, so sideways swipes page instead.
     private var dismissDrag: some Gesture {
         DragGesture(minimumDistance: 12)
             .onChanged { value in
-                guard zoom <= 1 else { return }
-                dragOffset = value.translation
+                guard zoom <= 1,
+                      dragOffset != 0 || abs(value.translation.height) > abs(value.translation.width) * 1.5 else { return }
+                dragOffset = value.translation.height
             }
             .onEnded { value in
-                guard zoom <= 1 else { return }
+                guard zoom <= 1, dragOffset != 0 else { return }
                 if abs(value.translation.height) > 120 || abs(value.predictedEndTranslation.height) > 320 {
                     dismiss()
                 } else {
                     withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
-                        dragOffset = .zero
+                        dragOffset = 0
                     }
                 }
             }
@@ -285,19 +328,11 @@ struct DayPhotoViewer: View {
 }
 
 extension DayPhotoStore {
-    /// Encodes picked photo data off the main thread, then stores it. Returns
-    /// nil when the data is not an image.
-    @discardableResult
-    static func setPhoto(
-        decodingInBackground data: Data,
-        for dayKey: String,
-        in context: ModelContext
-    ) async throws -> DayPhoto? {
-        guard let encoded = await Task.detached(priority: .userInitiated, operation: {
+    /// Downscales picked photo data off the main thread. Returns nil when the
+    /// data is not an image.
+    static func encodeInBackground(_ data: Data) async -> DayPhotoEncoder.Output? {
+        await Task.detached(priority: .userInitiated) {
             DayPhotoEncoder.encode(data)
-        }).value else { return nil }
-        // Hand the already-downscaled JPEG to the store so its own encode pass
-        // on the main actor stays cheap.
-        return try setPhoto(encoded.imageData, for: dayKey, in: context)
+        }.value
     }
 }

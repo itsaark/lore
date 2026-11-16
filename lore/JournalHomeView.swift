@@ -243,9 +243,7 @@ private struct JournalCalendarContent: View, Equatable {
             storyDayKeys: storyDayKeys,
             calendar: journalCalendar
         )
-        let photosByDay = Dictionary(photos.map { ($0.dayKey, $0) }, uniquingKeysWith: { newest, older in
-            newest.updatedAt >= older.updatedAt ? newest : older
-        })
+        let photosByDay = photos.coversByDay()
         ZoomableJournal(
             model: JournalCalendarModel(
                 calendar: journalCalendar,
@@ -1355,15 +1353,13 @@ private struct TodayCaptureButton: View {
         self.dayKey = dayKey
         self.action = action
         _photos = Query(
-            filter: #Predicate<DayPhoto> { $0.dayKey == dayKey },
-            sort: \DayPhoto.updatedAt,
-            order: .reverse
+            filter: #Predicate<DayPhoto> { $0.dayKey == dayKey }
         )
     }
 
     var body: some View {
         CaptureSideButton(title: "Today", action: action) {
-            if let photo = photos.first {
+            if let photo = photos.inDayOrder().first {
                 DayPhotoImage(photo: photo)
             } else {
                 Text(dayNumber)

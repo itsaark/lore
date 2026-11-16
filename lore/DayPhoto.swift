@@ -2,7 +2,8 @@ import Foundation
 import SwiftData
 import UIKit
 
-/// The single photo a person chose for one journal day. Photos are picked by
+/// One of up to five photos a person chose for a journal day; the one at the
+/// lowest `position` is the day's cover. Photos are picked by
 /// the user, re-encoded on device (which drops EXIF and GPS metadata), kept in
 /// the private archive, and never sent to Lore's API.
 @Model
@@ -14,11 +15,15 @@ final class DayPhoto {
     @Attribute(.externalStorage) private(set) var thumbnailData: Data?
     private(set) var pixelWidth: Int = 0
     private(set) var pixelHeight: Int = 0
+    /// Order within the day, starting at 0 for the cover. Photos saved before
+    /// days held several default to 0, which makes them the cover.
+    fileprivate(set) var position: Int = 0
     private(set) var createdAt: Date = Date()
     private(set) var updatedAt: Date = Date()
 
-    init(dayKey: String, encoded: DayPhotoEncoder.Output, now: Date = Date()) {
+    init(dayKey: String, encoded: DayPhotoEncoder.Output, position: Int = 0, now: Date = Date()) {
         self.dayKey = dayKey
+        self.position = position
         imageData = encoded.imageData
         thumbnailData = encoded.thumbnailData
         pixelWidth = encoded.pixelWidth
@@ -90,39 +95,94 @@ enum DayPhotoEncoder {
 
 @MainActor
 enum DayPhotoStore {
+    /// How many photos one journal day can hold.
+    static let maximumPhotosPerDay = 5
+
+    /// The day's photos in display order; the first is the cover.
+    static func photos(for dayKey: String, in context: ModelContext) -> [DayPhoto] {
+        let photos = (try? context.fetch(FetchDescriptor<DayPhoto>(
+            predicate: #Predicate { $0.dayKey == dayKey }
+        ))) ?? []
+        return photos.inDayOrder()
+    }
+
+    /// The cover photo for `dayKey`, if the day has any.
     static func photo(for dayKey: String, in context: ModelContext) -> DayPhoto? {
-        var descriptor = FetchDescriptor<DayPhoto>(
-            predicate: #Predicate { $0.dayKey == dayKey },
-            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
-        )
-        descriptor.fetchLimit = 1
-        return try? context.fetch(descriptor).first
+        photos(for: dayKey, in: context).first
     }
 
-    /// Sets or replaces the one photo for `dayKey`. Duplicate rows that can
-    /// appear after an iCloud merge are collapsed to the newest.
+    /// Appends photos to the day, after any it already has. Only as many as
+    /// fit under `maximumPhotosPerDay` are kept; returns the ones added.
     @discardableResult
-    static func setPhoto(_ data: Data, for dayKey: String, in context: ModelContext) throws -> DayPhoto? {
-        guard let encoded = DayPhotoEncoder.encode(data) else { return nil }
-        let existing = try context.fetch(FetchDescriptor<DayPhoto>(
-            predicate: #Predicate { $0.dayKey == dayKey },
-            sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
-        ))
-        let photo: DayPhoto
-        if let newest = existing.first {
-            newest.replace(with: encoded)
-            existing.dropFirst().forEach(context.delete)
-            photo = newest
-        } else {
-            photo = DayPhoto(dayKey: dayKey, encoded: encoded)
-            context.insert(photo)
+    static func addPhotos(
+        _ encoded: [DayPhotoEncoder.Output],
+        for dayKey: String,
+        in context: ModelContext,
+        now: Date = Date()
+    ) throws -> [DayPhoto] {
+        let existing = photos(for: dayKey, in: context)
+        let room = max(maximumPhotosPerDay - existing.count, 0)
+        let nextPosition = (existing.map(\.position).max() ?? -1) + 1
+        let added = encoded.prefix(room).enumerated().map { offset, output in
+            // Stagger creation times so photos picked together keep their order.
+            DayPhoto(
+                dayKey: dayKey,
+                encoded: output,
+                position: nextPosition + offset,
+                now: now.addingTimeInterval(Double(offset) * 0.001)
+            )
         }
+        added.forEach(context.insert)
         try context.save()
-        return photo
+        return added
     }
 
-    static func removePhoto(for dayKey: String, in context: ModelContext) throws {
+    /// Swaps the image of one photo, keeping its place in the day.
+    static func replace(_ photo: DayPhoto, with encoded: DayPhotoEncoder.Output, in context: ModelContext) throws {
+        photo.replace(with: encoded)
+        try context.save()
+    }
+
+    /// Deletes one photo and closes the gap it leaves in the order.
+    static func remove(_ photo: DayPhoto, in context: ModelContext) throws {
+        let dayKey = photo.dayKey
+        context.delete(photo)
+        renumber(photos(for: dayKey, in: context).filter { $0.id != photo.id })
+        try context.save()
+    }
+
+    /// Moves a photo to the front so the calendar shows it for the day.
+    static func makeCover(_ photo: DayPhoto, in context: ModelContext) throws {
+        let others = photos(for: photo.dayKey, in: context).filter { $0.id != photo.id }
+        renumber([photo] + others)
+        try context.save()
+    }
+
+    static func removeAllPhotos(for dayKey: String, in context: ModelContext) throws {
         try context.delete(model: DayPhoto.self, where: #Predicate { $0.dayKey == dayKey })
         try context.save()
+    }
+
+    private static func renumber(_ ordered: [DayPhoto]) {
+        for (index, photo) in ordered.enumerated() where photo.position != index {
+            photo.position = index
+        }
+    }
+}
+
+extension Sequence where Element == DayPhoto {
+    /// Display order within a day: position, then the order photos were added.
+    /// Ties can appear when two devices add photos before iCloud merges them.
+    func inDayOrder() -> [DayPhoto] {
+        sorted {
+            if $0.position != $1.position { return $0.position < $1.position }
+            if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+    }
+
+    /// Each day's cover photo, keyed by day.
+    func coversByDay() -> [String: DayPhoto] {
+        Dictionary(grouping: self, by: \.dayKey).compactMapValues { $0.inDayOrder().first }
     }
 }
