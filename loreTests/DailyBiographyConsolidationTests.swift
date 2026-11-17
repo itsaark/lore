@@ -55,6 +55,20 @@ struct DailyBiographyConsolidationTests {
         #expect(!prepared[0].sourceStoryIds.contains(fixture.currentStory.id))
     }
 
+    @Test func dayInProgressIsRewrittenOnceItHasMultipleNotes() throws {
+        let fixture = try makeFixture()
+        let lateEvening = try #require(ISO8601DateFormatter().date(from: "2026-08-03T23:30:00Z"))
+        let prepared = try DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued,
+            in: fixture.context,
+            now: lateEvening
+        )
+
+        #expect(prepared.count == 1)
+        #expect(prepared[0].dayKey == "2026-08-03")
+        #expect(prepared[0].sourceStoryIds == fixture.pastStories.map(\.id))
+    }
+
     @Test func transcriptCorrectionCreatesANewRevisionForTheSameDayEntry() async throws {
         let fixture = try makeFixture()
         let first = try #require(DailyBiographyJobRunner.prepareCompletedDays(

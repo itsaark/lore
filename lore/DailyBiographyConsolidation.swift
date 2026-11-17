@@ -432,6 +432,10 @@ enum DailyBiographyJobRunner {
             uniquingKeysWith: { current, _ in current }
         )
         var sourcesByDay: [String: [Source]] = [:]
+        // Days still in progress. They are rewritten as one story each time a
+        // note is added, so several notes never read as separate, repeating
+        // fragments. A lone note already has its own entry, so it waits.
+        var openDayKeys: Set<String> = []
 
         for story in stories {
             let timezone = story.metadataId
@@ -441,9 +445,10 @@ enum DailyBiographyJobRunner {
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = timezone
             let start = calendar.startOfDay(for: story.date)
-            guard let nextDay = calendar.date(byAdding: .day, value: 1, to: start), nextDay <= now else {
+            guard let nextDay = calendar.date(byAdding: .day, value: 1, to: start) else {
                 continue
             }
+            let dayIsComplete = nextDay <= now
             guard let artifact = artifacts.first(where: { $0.storyId == story.id }) else {
                 continue
             }
@@ -457,6 +462,7 @@ enum DailyBiographyJobRunner {
             }
 
             let dayKey = localDayKey(for: story.date, timezone: timezone)
+            if !dayIsComplete { openDayKeys.insert(dayKey) }
             sourcesByDay[dayKey, default: []].append(Source(
                 story: story,
                 artifact: artifact,
@@ -467,6 +473,7 @@ enum DailyBiographyJobRunner {
         }
 
         return sourcesByDay.compactMap { dayKey, sources in
+            if openDayKeys.contains(dayKey), sources.count < 2 { return nil }
             let sorted = sources.sorted { $0.story.date < $1.story.date }
             guard let calendarDate = calendarDate(for: dayKey) else { return nil }
             let identifiers = sorted.map(\.timezone.identifier)

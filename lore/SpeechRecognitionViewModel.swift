@@ -59,7 +59,11 @@ private enum RemoteWorkAvailability: Equatable {
 class SpeechRecognitionViewModel: ObservableObject {
     
     // MARK: - Published Properties
-    @Published var isRecording = false
+    @Published var isRecording = false {
+        // Keep the screen awake for the whole recording so long conversations
+        // don't dim and lock the phone; restore the system default on stop.
+        didSet { UIApplication.shared.isIdleTimerDisabled = isRecording }
+    }
     /// Diagnostic context for tests and logs. Background processing failures
     /// must never drive the focused recording surface directly.
     private(set) var errorMessage: String?
@@ -1066,9 +1070,14 @@ class SpeechRecognitionViewModel: ObservableObject {
         isProcessingAudio = false
         
         if shouldSave {
+            // Flip straight from "recording" to "finishing" so the capture
+            // overlay never sees a gap, fades out, and then reappears once
+            // the async save starts.
+            isAwaitingRemoteTranscription = true
             beginRecordingSaveBackgroundTask()
             pendingSaveTask = Task { [weak self] in
                 guard !Task.isCancelled else {
+                    self?.isAwaitingRemoteTranscription = false
                     self?.endRecordingSaveBackgroundTask()
                     return
                 }
@@ -1096,12 +1105,16 @@ class SpeechRecognitionViewModel: ObservableObject {
     /// Saves the current recording session
     private func saveCurrentRecording() async {
         defer { endRecordingSaveBackgroundTask() }
-        guard let startTime = recordingStartTime else { return }
+        guard let startTime = recordingStartTime else {
+            isAwaitingRemoteTranscription = false
+            return
+        }
 
         let endTime = Date()
         let audioFileURL = currentRecordingAudioFileURL
         guard let modelContext, let audioFileURL else {
             pendingSaveTask = nil
+            isAwaitingRemoteTranscription = false
             setError("Lore could not secure this recording locally. The audio was kept on this iPhone.")
             return
         }
@@ -1123,6 +1136,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             )
         } catch {
             pendingSaveTask = nil
+            isAwaitingRemoteTranscription = false
             setError("Failed to save the recording before transcription. The audio was kept on this iPhone: \(error.localizedDescription)")
             return
         }
