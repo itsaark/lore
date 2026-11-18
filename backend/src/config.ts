@@ -4,7 +4,7 @@ import { LoreApiError } from "./http/errors.js";
 // This identifier describes the provider/model policy implemented by this
 // release. It belongs in source control so provenance cannot drift because of
 // a mistyped deployment setting.
-export const PROVIDER_POLICY_VERSION = "direct-fireworks-groq-openai-2026-11-18-v6";
+export const PROVIDER_POLICY_VERSION = "direct-fireworks-groq-openai-2026-11-18-v7";
 export const APP_ATTEST_TEAM_IDENTIFIER = "6PP52WCRHS";
 export const APP_ATTEST_BUNDLE_IDENTIFIER = "cascadianpines.lore";
 export const DAY_ILLUSTRATION_IMAGE_MODEL = "gpt-image-2.6-flare";
@@ -48,7 +48,7 @@ export type FireworksRuntimeConfig = {
   apiKey: string;
   policyVersion: string;
   baseUrl: string;
-  /** Journal writer: the best-scoring cheap open model on Fireworks. */
+  /** Journal writer: fast and reliable; GLM 5.3 timed out at 30 s on day stories (2026-11-18). */
   dailyEntryModel: string;
   /** Used for a journal entry only when the primary writer fails or stalls. */
   dailyEntryFallbackModel: string;
@@ -112,8 +112,8 @@ export function loadFireworksRuntimeConfig(
     apiKey: parsed.data.FIREWORKS_API_KEY,
     policyVersion: PROVIDER_POLICY_VERSION,
     baseUrl: "https://api.fireworks.ai/inference/v1",
-    dailyEntryModel: "accounts/fireworks/models/glm-5p3",
-    dailyEntryFallbackModel: "accounts/fireworks/models/gpt-oss-120b",
+    dailyEntryModel: "accounts/fireworks/models/gpt-oss-120b",
+    dailyEntryFallbackModel: "accounts/fireworks/models/glm-5p3",
     reflectionGuideModel: "accounts/fireworks/models/gpt-oss-120b"
   };
 }

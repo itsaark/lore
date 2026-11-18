@@ -50,7 +50,7 @@ describe("FireworksClient writer fallback", () => {
     const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
       const body = JSON.parse(String(init?.body));
       expect(body.model).toBe("accounts/fireworks/models/gpt-oss-120b");
-      expect(body).not.toHaveProperty("reasoning_effort");
+      expect(body.reasoning_effort).toBe("low");
       expect(body.messages[0].content).toContain("private biographer");
       return Response.json(validCompletion());
     });

@@ -118,15 +118,15 @@ export class FireworksClient {
     try {
       return await attempt(requestId, "writer_primary", () => run({
         modelId: config.dailyEntryModel,
-        reasoningEffort: null,
+        reasoningEffort: "low",
         maxCompletionTokens: 8_192
       }, primarySignal));
     } catch (error) {
       if (signal?.aborted || !shouldFallBack(error)) throw error;
       return await attempt(requestId, "writer_fallback", () => run({
         modelId: config.dailyEntryFallbackModel,
-        reasoningEffort: "low",
-        maxCompletionTokens: 4_096
+        reasoningEffort: null,
+        maxCompletionTokens: 8_192
       }, signal));
     }
   }

@@ -530,7 +530,7 @@ watermarks, logos, or frames. No recognisable faces. Portrait canvas.\n\nScene: 
 
     expect(response.status).toBe(200);
     expect(provider).toHaveBeenCalledTimes(3);
-    expect(JSON.parse(String(provider.mock.calls[1]![1]?.body)).model).toBe("accounts/fireworks/models/gpt-oss-120b");
+    expect(JSON.parse(String(provider.mock.calls[1]![1]?.body)).model).toBe("accounts/fireworks/models/glm-5p3");
     const description = longScene.slice(0, 800).trimEnd();
     expect(JSON.parse(String(provider.mock.calls[2]![1]?.body)).prompt.endsWith(`\n\nScene: ${description}`)).toBe(true);
     await expect(response.json()).resolves.toMatchObject({ scene: { description } });
