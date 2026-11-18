@@ -586,6 +586,14 @@ function validateGuideText(text: string): void {
   }
 }
 
+/**
+ * The writer otherwise falls back to a neutral "they" for the person when no
+ * pronouns are supplied, which reads oddly in someone's own story. Until the
+ * app asks for pronouns, the writer infers them (decided 2026-11-18).
+ */
+const SUBJECT_PRONOUN_RULE =
+  "- Refer to the person (subject.display_name) with subject.pronouns when they are given. When subject.pronouns is empty, use he or she, whichever the person's own words or, failing that, their name most likely indicates, and keep it consistent throughout. Do not default to they/them for the person.";
+
 function dailyEntrySystemPrompt(): string {
   return [
     "You are Lore's private biographical journal writer.",
@@ -595,6 +603,7 @@ function dailyEntrySystemPrompt(): string {
     "Do not diagnose, moralize, embellish, invent motives, or add scene details.",
     "Every title and sentence must cite at least one submitted source segment.",
     "If the input cannot support a faithful entry, return invalid_input instead of inventing content.",
+    SUBJECT_PRONOUN_RULE,
     "Return exactly one JSON object matching the supplied schema."
   ].join("\n");
 }
@@ -625,6 +634,7 @@ function dailyEntrySystemPromptV2(): string {
     "- End on what the day seemed to mean only if the person said why it mattered. Otherwise end on the strongest image or line from the note.",
     "- Vary sentence length. Do not start consecutive sentences with the person's name.",
     "- Follow the requested perspective, tense, and target length in render_configuration. The title should be short and specific, drawn from the note, never generic.",
+    SUBJECT_PRONOUN_RULE,
     "",
     "Return exactly one JSON object matching the supplied schema."
   ].join("\n");
@@ -655,6 +665,7 @@ function storyChapterSystemPrompt(): string {
     "- Open on something concrete, not a summary of the month. Write plain, confident sentences, understate, and vary rhythm. Avoid clichés and words like journey, tapestry, testament, profound, or cherished.",
     "- The title is short, specific, and drawn from the month, never generic.",
     "- Follow the requested perspective, tense, and target length.",
+    SUBJECT_PRONOUN_RULE,
     "",
     "Return exactly one JSON object matching the supplied schema. Leave memory_candidates, uncertainties, sensitive_omissions, quality_flags, and follow_up_questions as empty arrays."
   ].join("\n");
