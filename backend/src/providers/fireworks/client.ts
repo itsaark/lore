@@ -561,6 +561,7 @@ function storyChapterSystemPrompt(): string {
     "Craft:",
     "- This is a chapter, not a list of days. Find the arc of the month: the threads, people, places, and turning points that run through it, and tell it as one continuous story.",
     "- Follow time, but you are free to group related moments and let a thread run across days when that makes the story clearer.",
+    "- Move through time the way a narrative biographer does, not like a diary. Do not stamp sentences with calendar dates (\"On August 14th... On August 20th...\"). Use the rhythm of the story instead: \"a few days later\", \"that weekend\", \"by the end of the week\", \"the following Monday\", \"two weeks in\". Name an exact date only when it matters to the story, such as a birthday, a departure, or a first, and then at most once or twice in the whole chapter. Compute relative gaps from the day dates supplied and never guess; if the gap is unclear, just let the next moment follow.",
     "- Do not retell every day. Keep the moments that matter and the telling detail; leave out the repetition. A day that carries little can be skipped or folded in with a clause.",
     "- Keep the person's own distinctive words, names, numbers, and specifics. When a short phrase carries their voice, quote it exactly and cite its day.",
     "- Open on something concrete, not a summary of the month. Write plain, confident sentences, understate, and vary rhythm. Avoid clichés and words like journey, tapestry, testament, profound, or cherished.",

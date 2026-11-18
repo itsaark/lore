@@ -275,6 +275,7 @@ describe("processing routes", () => {
     const provider = vi.fn<typeof fetch>(async (_input, init) => {
       const body = JSON.parse(String(init?.body));
       expect(body.messages[0].content).toContain("one chapter of a person's autobiography");
+      expect(body.messages[0].content).toContain("Do not stamp sentences with calendar dates");
       expect(body.messages[1].content).toContain("<lore_chapter_data>");
       expect(body.messages[1].content).toContain("2026-07-02");
       return Response.json({
