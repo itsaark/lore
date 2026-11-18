@@ -159,6 +159,47 @@ paths:
           $ref: "#/components/responses/ApiError"
         default:
           $ref: "#/components/responses/ApiError"
+  /v1/day-illustrations:
+    post:
+      operationId: createDayIllustration
+      description: >-
+        Creates a portrait placeholder cover from a finished daily entry.
+        Fireworks receives the title and prose and writes a de-identified scene.
+        OpenAI receives only the scene and a fixed painting prompt.
+        The Idempotency-Key must equal day-illustration:<job_id lowercased>.
+      security: [{ bearerSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        description: The JSON body may be at most 200,000 bytes.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DayIllustrationGenerationRequest"
+      responses:
+        "200":
+          description: Portrait JPEG, de-identified scene, and processing provenance for each provider.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DayIllustrationGenerationResponse"
+        "400":
+          $ref: "#/components/responses/ApiError"
+        "409":
+          $ref: "#/components/responses/ApiError"
+        "413":
+          $ref: "#/components/responses/ApiError"
+        "415":
+          $ref: "#/components/responses/ApiError"
+        "422":
+          description: OpenAI moderation refusal or a Fireworks scene containing digits. Returns invalid_provider_response with retryable set to false.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+        default:
+          $ref: "#/components/responses/ApiError"
   /v1/reflections/session-credentials:
     post:
       operationId: createReflectionSessionCredentials
@@ -353,6 +394,63 @@ components:
     RemoteTranscriptionResponse:
       type: object
       description: Canonical strict schema lives in src/contracts/transcription.ts.
+    DayIllustrationGenerationRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, prompt_version, job_id, day_key, language_code, title, prose, retention_policy]
+      properties:
+        schema_version: { const: "1.0" }
+        prompt_version: { const: day-illustration-v1 }
+        job_id: { type: string, format: uuid }
+        day_key: { type: string, format: date }
+        language_code: { type: string, minLength: 2, maxLength: 35 }
+        title: { type: string, maxLength: 200 }
+        prose: { type: string, minLength: 1, maxLength: 20000 }
+        retention_policy:
+          type: object
+          additionalProperties: false
+          required: [mode, maximum_retention_seconds]
+          properties:
+            mode: { const: request_ephemeral }
+            maximum_retention_seconds: { const: 0 }
+    DayIllustrationGenerationResponse:
+      type: object
+      additionalProperties: false
+      required: [schema_version, prompt_version, job_id, request_id, image, scene, scene_provenance, provenance]
+      properties:
+        schema_version: { const: "1.0" }
+        prompt_version: { const: day-illustration-v1 }
+        job_id: { type: string, format: uuid }
+        request_id: { type: string }
+        image:
+          type: object
+          additionalProperties: false
+          required: [media_type, data_base64, pixel_width, pixel_height]
+          properties:
+            media_type: { const: image/jpeg }
+            data_base64: { type: string, contentEncoding: base64, minLength: 1, maxLength: 2500000 }
+            pixel_width: { const: 1024 }
+            pixel_height: { const: 1536 }
+        scene:
+          type: object
+          additionalProperties: false
+          required: [description]
+          properties:
+            description: { type: string, minLength: 40, maxLength: 800 }
+        scene_provenance:
+          type: object
+          description: ProcessingProvenance as defined in src/contracts/common.ts.
+          required: [provider_id, model_alias]
+          properties:
+            provider_id: { const: fireworks }
+            model_alias: { const: day-scene-v1 }
+        provenance:
+          type: object
+          description: ProcessingProvenance as defined in src/contracts/common.ts.
+          required: [provider_id, model_alias]
+          properties:
+            provider_id: { const: openai }
+            model_alias: { const: day-illustration-v1 }
     ApiError:
       type: object
       additionalProperties: false

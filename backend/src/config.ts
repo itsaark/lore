@@ -4,9 +4,14 @@ import { LoreApiError } from "./http/errors.js";
 // This identifier describes the provider/model policy implemented by this
 // release. It belongs in source control so provenance cannot drift because of
 // a mistyped deployment setting.
-export const PROVIDER_POLICY_VERSION = "direct-fireworks-groq-2026-11-15-v5";
+export const PROVIDER_POLICY_VERSION = "direct-fireworks-groq-openai-2026-11-18-v6";
 export const APP_ATTEST_TEAM_IDENTIFIER = "6PP52WCRHS";
 export const APP_ATTEST_BUNDLE_IDENTIFIER = "cascadianpines.lore";
+export const DAY_ILLUSTRATION_IMAGE_MODEL = "gpt-image-2.6-flare";
+export const DAY_ILLUSTRATION_IMAGE_SIZE = "1024x1536";
+export const DAY_ILLUSTRATION_IMAGE_QUALITY = "medium";
+export const DAY_ILLUSTRATION_IMAGE_COMPLEXITY = "low";
+const OPENAI_BASE_URL = "https://api.openai.com/v1";
 
 const FireworksEnvironmentSchema = z.object({
   FIREWORKS_API_KEY: z.string().min(1)
@@ -14,6 +19,10 @@ const FireworksEnvironmentSchema = z.object({
 
 const GroqEnvironmentSchema = z.object({
   GROQ_API_KEY: z.string().min(1)
+}).passthrough();
+
+const OpenAIEnvironmentSchema = z.object({
+  OPENAI_API_KEY: z.string().min(1)
 }).passthrough();
 
 const SonioxEnvironmentSchema = z.object({
@@ -52,6 +61,12 @@ export type GroqRuntimeConfig = {
   policyVersion: string;
   baseUrl: string;
   transcriptionModel: string;
+};
+
+export type OpenAIRuntimeConfig = {
+  apiKey: string;
+  policyVersion: string;
+  baseUrl: string;
 };
 
 export type SonioxRuntimeConfig = {
@@ -116,6 +131,21 @@ export function loadGroqRuntimeConfig(
     policyVersion: PROVIDER_POLICY_VERSION,
     baseUrl: "https://api.groq.com/openai/v1",
     transcriptionModel: "whisper-large-v3-turbo"
+  };
+}
+
+export function loadOpenAIRuntimeConfig(
+  environment: NodeJS.ProcessEnv = process.env
+): OpenAIRuntimeConfig {
+  const parsed = OpenAIEnvironmentSchema.safeParse(environment);
+  if (!parsed.success) {
+    throw new LoreApiError("provider_policy_unverified", 503, false);
+  }
+
+  return {
+    apiKey: parsed.data.OPENAI_API_KEY,
+    policyVersion: PROVIDER_POLICY_VERSION,
+    baseUrl: OPENAI_BASE_URL
   };
 }
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DAY_SCENE_MAX_CHARACTERS } from "../../contracts/day-illustration.js";
 import {
   DailyEntryGenerationResponseSchema,
   GroundedJournalEntrySchema
@@ -28,6 +29,17 @@ export const FireworksDailyEntryJsonSchema = z.toJSONSchema(FireworksDailyEntryO
   target: "draft-7",
   reused: "ref"
 });
+
+export const FireworksDaySceneOutputSchema = z.object({
+  scene: z.string().trim().min(40)
+}).strict();
+
+export const FireworksDaySceneJsonSchema = z.toJSONSchema(
+  FireworksDaySceneOutputSchema.extend({
+    scene: FireworksDaySceneOutputSchema.shape.scene.max(DAY_SCENE_MAX_CHARACTERS)
+  }),
+  { target: "draft-7" }
+);
 
 export const FireworksChatCompletionSchema = z.object({
   id: z.string().min(1),

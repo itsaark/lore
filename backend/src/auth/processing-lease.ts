@@ -6,6 +6,7 @@ export type ProcessingTask =
   | "transcription"
   | "daily_entry"
   | "story_chapter"
+  | "day_illustration"
   | "reflection_guide"
   | "reflection_finalize";
 
@@ -21,6 +22,7 @@ export async function acquireProcessingLease(input: {
   task: ProcessingTask;
   taskId: string;
   idempotencyKey: string;
+  ttlSeconds?: number;
   now?: Date;
   randomToken?: () => string;
 }): Promise<HeldProcessingLease> {
@@ -28,7 +30,7 @@ export async function acquireProcessingLease(input: {
 
   const now = input.now ?? new Date();
   const expiresAt = new Date(
-    now.getTime() + authorization.config.processingLeaseTtlSeconds * 1_000
+    now.getTime() + (input.ttlSeconds ?? authorization.config.processingLeaseTtlSeconds) * 1_000
   );
   const claimRef = processingClaimReference({
     secret: authorization.config.stateHmacSecret,

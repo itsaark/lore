@@ -5,6 +5,11 @@ import {
   type ProcessingProvenance
 } from "../../contracts/common.js";
 import {
+  DAY_SCENE_MAX_CHARACTERS,
+  DAY_SCENE_MODEL_ALIAS,
+  type DayIllustrationGenerationRequest
+} from "../../contracts/day-illustration.js";
+import {
   DAILY_ENTRY_PROMPT_VERSION,
   DailyEntryGenerationResponseSchema,
   DailyEntryLabResponseSchema,
@@ -27,6 +32,8 @@ import {
   FireworksChatCompletionSchema,
   FireworksDailyEntryJsonSchema,
   FireworksDailyEntryOutputSchema,
+  FireworksDaySceneJsonSchema,
+  FireworksDaySceneOutputSchema,
   FireworksReflectionGuideJsonSchema,
   FireworksReflectionGuideOutputSchema,
   type FireworksDailyEntryOutput
@@ -51,6 +58,12 @@ type DailyEntrySource = Pick<
   | "accepted_prior_facts"
 >;
 
+type WriterModelOptions = {
+  modelId: string;
+  reasoningEffort: "low" | null;
+  maxCompletionTokens: number;
+};
+
 export type FireworksClientOptions = {
   config: FireworksRuntimeConfig;
   fetch?: typeof globalThis.fetch;
@@ -71,11 +84,11 @@ export class FireworksClient {
     request: DailyEntryGenerationRequest,
     signal?: AbortSignal
   ): Promise<DailyEntryGenerationResponse> {
-    const run = await this.runWithFallback(
-      requestId,
-      request,
-      systemPromptFor(request.prompt_version),
-      signal
+    const run = await this.runWithFallback(signal, (model, modelSignal) =>
+      this.runDailyEntry(requestId, request, {
+        ...model,
+        systemPrompt: systemPromptFor(request.prompt_version)
+      }, modelSignal)
     );
 
     return DailyEntryGenerationResponseSchema.parse({
@@ -92,33 +105,26 @@ export class FireworksClient {
    * its time budget. Rate limits, cancellation, and credential failures are
    * not retried: a second model would not fix them.
    */
-  private async runWithFallback(
-    requestId: string,
-    request: DailyEntrySource,
-    systemPrompt: string,
-    signal?: AbortSignal,
-    userPayload: (request: DailyEntrySource) => string = dailyEntryUserPayload
-  ) {
+  private async runWithFallback<Result>(
+    signal: AbortSignal | undefined,
+    run: (model: WriterModelOptions, signal?: AbortSignal) => Promise<Result>
+  ): Promise<Result> {
     const config = this.options.config;
     const primarySignal = signal
       ? AbortSignal.any([signal, AbortSignal.timeout(PRIMARY_WRITER_BUDGET_MS)])
       : AbortSignal.timeout(PRIMARY_WRITER_BUDGET_MS);
     try {
-      return await this.runDailyEntry(requestId, request, {
+      return await run({
         modelId: config.dailyEntryModel,
-        systemPrompt,
         reasoningEffort: null,
-        maxCompletionTokens: 8_192,
-        userPayload
+        maxCompletionTokens: 8_192
       }, primarySignal);
     } catch (error) {
       if (signal?.aborted || !shouldFallBack(error)) throw error;
-      return await this.runDailyEntry(requestId, request, {
+      return await run({
         modelId: config.dailyEntryFallbackModel,
-        systemPrompt,
         reasoningEffort: "low",
-        maxCompletionTokens: 4_096,
-        userPayload
+        maxCompletionTokens: 4_096
       }, signal);
     }
   }
@@ -159,12 +165,9 @@ export class FireworksClient {
   private async runDailyEntry(
     requestId: string,
     request: DailyEntrySource,
-    options: {
-      modelId: string;
+    options: WriterModelOptions & {
       systemPrompt: string;
-      reasoningEffort: "low" | null;
-      maxCompletionTokens: number;
-      userPayload?: (request: DailyEntrySource) => string;
+      userPayload?: string;
     },
     signal?: AbortSignal
   ): Promise<{
@@ -174,6 +177,35 @@ export class FireworksClient {
     startedAt: number;
     usage: { prompt_tokens: number | null; completion_tokens: number | null };
   }> {
+    const run = await this.runWriterCompletion(requestId, {
+      ...options,
+      userPayload: options.userPayload ?? dailyEntryUserPayload(request),
+      schemaName: "lore_daily_entry",
+      schema: FireworksDailyEntryJsonSchema
+    }, signal);
+
+    const modelOutput = FireworksDailyEntryOutputSchema.safeParse(run.output);
+    if (!modelOutput.success) {
+      throw invalidProviderResponse("provider_output_schema_invalid", true);
+    }
+    if (modelOutput.data.status !== "completed" || !modelOutput.data.entry) {
+      throw invalidProviderResponse("provider_output_not_completed", false);
+    }
+    validateSourceReferences(request, modelOutput.data);
+
+    return { ...run, output: modelOutput.data };
+  }
+
+  private async runWriterCompletion(
+    requestId: string,
+    options: WriterModelOptions & {
+      systemPrompt: string;
+      userPayload: string;
+      schemaName: string;
+      schema: object;
+    },
+    signal?: AbortSignal
+  ) {
     const startedAt = performance.now();
     const response = await this.fetchImpl(`${this.options.config.baseUrl}/chat/completions`, {
       method: "POST",
@@ -185,13 +217,13 @@ export class FireworksClient {
         model: options.modelId,
         messages: [
           { role: "system", content: options.systemPrompt },
-          { role: "user", content: (options.userPayload ?? dailyEntryUserPayload)(request) }
+          { role: "user", content: options.userPayload }
         ],
         response_format: {
           type: "json_schema",
           json_schema: {
-            name: "lore_daily_entry",
-            schema: FireworksDailyEntryJsonSchema
+            name: options.schemaName,
+            schema: options.schema
           }
         },
         ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
@@ -215,17 +247,8 @@ export class FireworksClient {
       throw invalidProviderResponse("provider_content_missing", true);
     }
 
-    const modelOutput = FireworksDailyEntryOutputSchema.safeParse(parseJson(choice.message.content));
-    if (!modelOutput.success) {
-      throw invalidProviderResponse("provider_output_schema_invalid", true);
-    }
-    if (modelOutput.data.status !== "completed" || !modelOutput.data.entry) {
-      throw invalidProviderResponse("provider_output_not_completed", false);
-    }
-    validateSourceReferences(request, modelOutput.data);
-
     return {
-      output: modelOutput.data,
+      output: parseJson(choice.message.content),
       modelId: completion.data.model,
       providerRequestId: providerRequestId(response, completion.data.id),
       startedAt,
@@ -260,12 +283,12 @@ export class FireworksClient {
       })),
       accepted_prior_facts: []
     };
-    const run = await this.runWithFallback(
-      requestId,
-      source,
-      storyChapterSystemPrompt(),
-      signal,
-      () => storyChapterUserPayload(request)
+    const run = await this.runWithFallback(signal, (model, modelSignal) =>
+      this.runDailyEntry(requestId, source, {
+        ...model,
+        systemPrompt: storyChapterSystemPrompt(),
+        userPayload: storyChapterUserPayload(request)
+      }, modelSignal)
     );
 
     return StoryChapterGenerationResponseSchema.parse({
@@ -276,6 +299,34 @@ export class FireworksClient {
       entry: run.output.entry,
       provenance: this.provenance(run.modelId, run.providerRequestId, run.startedAt, "story-chapter-v1")
     });
+  }
+
+  async generateDayScene(
+    requestId: string,
+    request: DayIllustrationGenerationRequest,
+    signal?: AbortSignal
+  ): Promise<{ description: string; provenance: ProcessingProvenance }> {
+    const userPayload = JSON.stringify({ title: request.title, prose: request.prose });
+    const run = await this.runWithFallback(signal, async (model, modelSignal) => {
+      const completion = await this.runWriterCompletion(requestId, {
+        ...model,
+        systemPrompt: DAY_SCENE_SYSTEM_PROMPT,
+        userPayload,
+        schemaName: "lore_day_scene",
+        schema: FireworksDaySceneJsonSchema
+      }, modelSignal);
+      const output = FireworksDaySceneOutputSchema.safeParse(completion.output);
+      if (!output.success) throw invalidProviderResponse("provider_output_schema_invalid", true);
+      return { ...completion, scene: output.data.scene };
+    });
+
+    if (/\p{Decimal_Number}/u.test(run.scene)) {
+      throw new LoreApiError("invalid_provider_response", 422, false, undefined, null, "provider_scene_contains_digits");
+    }
+    return {
+      description: run.scene.slice(0, DAY_SCENE_MAX_CHARACTERS).trimEnd(),
+      provenance: this.provenance(run.modelId, run.providerRequestId, run.startedAt, DAY_SCENE_MODEL_ALIAS)
+    };
   }
 
   async generateReflectionGuide(
@@ -432,6 +483,28 @@ export class FireworksClient {
     };
   }
 }
+
+const DAY_SCENE_SYSTEM_PROMPT = `You turn one day of someone's private journal into a description of a single painting.
+The painting is a placeholder cover for that day: an abstract, impressionist reflection of it,
+not an illustration of events.
+
+Write the scene the way Virginia Woolf saw a moment: from the inside, through light, weather,
+rooms, windows, water, flowers, the sea, the passing of an hour. Choose ONE or at most TWO things
+from the day to carry its feeling: the weather or quality of light, the mood, a setting (a kitchen
+at dusk, a rain-wet street, a garden, a shoreline), or a single ordinary object (a cup, an open
+window, a coat on a chair, a bicycle, a vase). Give the time of day, the light, and two or three
+dominant colours.
+
+Strict rules. The description must contain:
+- no people's names, no initials, no relationships named ("my mother", "her boss"),
+- no identifiable faces; at most a distant, faceless, small figure seen from behind,
+- no real place names, addresses, businesses, brands, landmarks, or schools,
+- no dates, numbers, written words, signs, screens, or text of any kind,
+- no medical, sexual, violent, legal, financial, or otherwise sensitive details,
+- nothing that would let a stranger work out who wrote the journal or what happened.
+If the day is painful, express it only through weather, light and colour, gently.
+Write 2 to 4 sentences of plain visual description, in English, present tense.
+Return JSON: {"scene": "..."}.`;
 
 function reflectionGuideSystemPrompt(): string {
   return [

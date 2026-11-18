@@ -1,10 +1,11 @@
 # Lore Processing API
 
-Provider-neutral, request-ephemeral backend for Lore transcription and grounded daily-entry generation.
+Request-ephemeral backend for Lore transcription, journal writing, and day illustrations.
 
 ## Current provider topology
 
 - Daily entries: direct Fireworks Chat Completions using `accounts/fireworks/models/gpt-oss-120b`
+- Day illustrations: Fireworks writes a de-identified scene; OpenAI Images paints it from that scene only
 - Transcription: direct Groq Audio Transcriptions using `whisper-large-v3-turbo`
 - Reflect dialogue and finalization: direct Fireworks structured Chat Completions
 - Reflect live speech: two single-use, capability-scoped Soniox WebSocket credentials minted server-side
@@ -45,6 +46,8 @@ npm test
 - `POST /v1/auth/sessions`
 - `POST /v1/transcriptions`
 - `POST /v1/daily-entries`
+- `POST /v1/story-chapters`
+- `POST /v1/day-illustrations`
 - `POST /v1/reflections/session-credentials`
 - `POST /v1/reflections/respond`
 - `POST /v1/reflections/finalize`
@@ -57,7 +60,8 @@ See `openapi.yaml` for the public HTTP contract.
 
 Copy `.env.example` to a local untracked environment file. Never commit credentials.
 
-- `FIREWORKS_API_KEY`: server-only Fireworks API key for daily-entry generation
+- `FIREWORKS_API_KEY`: server-only Fireworks API key for journal writing, Reflect dialogue, and day scenes
+- `OPENAI_API_KEY`: server-only OpenAI API key for day illustration image generation
 - `GROQ_API_KEY`: server-only Groq API key for audio transcription
 - `SONIOX_API_KEY`: server-only long-lived Soniox key used only to mint short-lived STT/TTS keys
 - `SONIOX_TTS_VOICE`: optional built-in Soniox voice name; defaults to `Adrian`
@@ -75,6 +79,8 @@ Migration `003` installs a bounded cleanup function for expired challenges, rate
 
 Every production processing request must carry a bounded `Idempotency-Key`. Transcription requires that header to exactly match the validated multipart `idempotency_key`; daily entry requires `daily-entry:<job_id>`. After App Attest authorization and complete input validation, Lore HMACs the installation, task, and idempotency identity and atomically acquires a Neon lease before calling a provider. The table stores only the HMAC claim, an opaque lease token, and timestamps—never raw identifiers or user content. An active duplicate returns retryable `409 processing_in_progress` with `Retry-After`; an expired lease may be taken over. Release is token-conditional so a stale invocation cannot clear a newer lease.
 
+Day illustrations require `day-illustration:<job_id lowercased>` and use a 180-second lease. Fireworks receives the entry title and prose, and OpenAI receives only the de-identified scene and a fixed painting prompt. The two provider steps share a 140-second budget within the route's 150-second function limit.
+
 The retention attestation returned by Lore records the policy configuration under which the request ran. It is not a provider-issued deletion receipt. Its zero-second value refers to persistent content retention, not the time plaintext exists in volatile inference memory. Request-ephemeral processing means Lore does not intentionally persist provider-bound audio, prompts, or outputs on the server. Groq's ZDR setting must prevent inference inputs and outputs from being retained for reliability or abuse monitoring; usage metadata may still be retained. Fireworks documents ZDR by default for open-model inference, but also documents default volatile prompt caching that can last from several minutes to several hours. A unique per-request isolation key prevents reuse across Lore requests; it does not delete cached plaintext. Do not enable remote Fireworks processing for real user text until that bounded volatile lifetime is explicitly accepted or Fireworks provides a cache-disabled route.
 
 ## Official API and data-policy references
@@ -82,6 +88,7 @@ The retention attestation returned by Lore records the policy configuration unde
 - <https://docs.fireworks.ai/api-reference/post-chatcompletions>
 - <https://docs.fireworks.ai/structured-responses/structured-response-formatting>
 - <https://docs.fireworks.ai/guides/security_compliance/data_handling>
+- <https://developers.openai.com/api/reference/resources/images/methods/generate>
 - <https://console.groq.com/docs/speech-to-text>
 - <https://console.groq.com/docs/your-data>
 - <https://soniox.com/docs/api-reference/auth/create_temporary_api_key>

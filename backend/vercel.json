@@ -13,6 +13,9 @@
     }
   ],
   "functions": {
+    "api/v1/day-illustrations.ts": {
+      "maxDuration": 150
+    },
     "api/**/*.ts": {
       "maxDuration": 60
     }
