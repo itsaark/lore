@@ -169,6 +169,12 @@ enum DayIllustrationRunner {
                 throw CancellationError()
             } catch LoreBackendProcessingError.cancelled {
                 throw CancellationError()
+            } catch let error where isServerUnconfigured(error) {
+                // The server is missing its image provider; that is not this
+                // day's fault, so stop without counting a failure and retry
+                // on a later refresh.
+                print("Day illustrations are not available on the server yet.")
+                break
             } catch {
                 if let pair {
                     failures[pair] = isNonRetryable(error) ? failureLimit : failures[pair, default: 0] + 1
@@ -251,6 +257,14 @@ enum DayIllustrationRunner {
             throw LoreBackendProcessingError.invalidResponse(requestId: response.requestId)
         }
         return encoded
+    }
+
+    private static func isServerUnconfigured(_ error: Error) -> Bool {
+        if case .rejected(code: "provider_policy_unverified", retryable: _, retryAfterSeconds: _) =
+            error as? LoreBackendProcessingError {
+            return true
+        }
+        return false
     }
 
     private static func isNonRetryable(_ error: Error) -> Bool {
