@@ -329,6 +329,53 @@ describe("processing routes", () => {
     expect(body).not.toHaveProperty("memory_candidates");
   });
 
+  it("keeps a chapter whose sentences cite made-up fact ids, since chapters have no facts", async () => {
+    const harness = await authenticatedHarness();
+    const provider = vi.fn<typeof fetch>(async () => Response.json({
+      id: "chatcmpl_chapter_facts",
+      model: "accounts/fireworks/models/gpt-oss-120b",
+      choices: [{
+        index: 0,
+        finish_reason: "stop",
+        message: {
+          role: "assistant",
+          content: JSON.stringify({
+            status: "completed",
+            entry: {
+              title: "A month by the water",
+              title_source_references: ["2026-07-01"],
+              perspective: "third_person",
+              sentences: [
+                { text: "Maya began July at the harbor.", source_references: ["2026-07-01"], fact_references: ["made-up"], preserves_uncertainty: false },
+                { text: "By the second day the market had her attention.", source_references: ["2026-07-02"], fact_references: ["also-made-up"], preserves_uncertainty: false }
+              ]
+            },
+            memory_candidates: [],
+            uncertainties: [],
+            sensitive_omissions: [],
+            quality_flags: [],
+            follow_up_questions: [],
+            refusal_reason: null
+          })
+        }
+      }]
+    }));
+    const response = await handleStoryChapter(new Request("https://lore.invalid/v1/story-chapters", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${harness.token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "story-chapter:5f3acbd5-676e-4cb3-83a4-150b09c735a9"
+      },
+      body: JSON.stringify(validChapterRequest())
+    }), { environment, fetch: provider, auth: harness.auth });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.entry.sentences.map((sentence: { fact_references: string[] }) => sentence.fact_references))
+      .toEqual([[], []]);
+  });
+
   it("rejects a chapter whose idempotency key does not match its job", async () => {
     const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>();

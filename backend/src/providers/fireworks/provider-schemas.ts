@@ -30,6 +30,45 @@ export const FireworksDailyEntryJsonSchema = z.toJSONSchema(FireworksDailyEntryO
   reused: "ref"
 });
 
+const FACT_ARRAY_PROPERTIES = new Set(["fact_references", "related_fact_ids"]);
+
+/**
+ * The chapter writer works from finished days, never from accepted facts, so
+ * any fact id a chapter cites would be invented. Derived from the daily-entry
+ * writer schema without changing it: both fact-reference arrays are capped at
+ * zero items, so a chapter completion cannot carry fact ids.
+ */
+export const FireworksStoryChapterJsonSchema: Record<string, unknown> = withoutFactArrays(
+  FireworksDailyEntryJsonSchema
+);
+
+/** Deep-copies a JSON schema, capping the fact-array properties at zero items. */
+function withoutFactArrays(value: object): Record<string, unknown> {
+  const copy: Record<string, unknown> = {};
+  for (const [key, property] of Object.entries(value)) {
+    if (Array.isArray(property)) {
+      copy[key] = property.map(copyFragment);
+    } else if (isSchemaObject(property)) {
+      copy[key] = FACT_ARRAY_PROPERTIES.has(key) && property.type === "array"
+        ? { ...property, maxItems: 0 }
+        : withoutFactArrays(property);
+    } else {
+      copy[key] = property;
+    }
+  }
+  return copy;
+}
+
+/** Copies a nested schema fragment: objects recurse, arrays copy per item, primitives pass through. */
+function copyFragment(value: unknown): unknown {
+  if (typeof value !== "object" || value === null) return value;
+  return Array.isArray(value) ? value.map(copyFragment) : withoutFactArrays(value);
+}
+
+function isSchemaObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 export const FireworksDaySceneOutputSchema = z.object({
   scene: z.string().trim().min(40)
 }).strict();

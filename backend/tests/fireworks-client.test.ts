@@ -1,9 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FireworksRuntimeConfig } from "../src/config.js";
 import type { DailyEntryGenerationRequest } from "../src/contracts/daily-entry.js";
+import type { StoryChapterGenerationRequest } from "../src/contracts/story-chapter.js";
 import { LoreApiError } from "../src/http/errors.js";
 import { FireworksClient } from "../src/providers/fireworks/client.js";
-import { FireworksDailyEntryJsonSchema } from "../src/providers/fireworks/provider-schemas.js";
+import {
+  FireworksDailyEntryJsonSchema,
+  FireworksStoryChapterJsonSchema
+} from "../src/providers/fireworks/provider-schemas.js";
 
 const config: FireworksRuntimeConfig = {
   apiKey: "test-key-never-use-live",
@@ -160,6 +164,7 @@ describe("FireworksClient multi-note days", () => {
 describe("FireworksClient", () => {
   it("builds a strict provider schema with required fields on every object", () => {
     assertStrictObjects(FireworksDailyEntryJsonSchema);
+    assertStrictObjects(FireworksStoryChapterJsonSchema);
   });
 
   it("calls Fireworks Chat Completions with strict GPT-OSS JSON Schema", async () => {
@@ -231,6 +236,44 @@ describe("FireworksClient", () => {
       });
   });
 
+  it("rejects a model response containing an unknown fact reference", async () => {
+    const request: DailyEntryGenerationRequest = {
+      ...dailyRequest,
+      accepted_prior_facts: [{
+        id: "fact-1",
+        statement: "Maya keeps a small garden.",
+        status: "accepted",
+        source_references: ["s1"]
+      }]
+    };
+    const completion = validCompletion();
+    completion.choices[0]!.message.content = JSON.stringify({
+      ...validOutput(),
+      entry: {
+        title: "A return home",
+        title_source_references: ["s1"],
+        perspective: "third_person",
+        sentences: [{
+          text: "Maya returned home.",
+          source_references: ["s1"],
+          fact_references: ["made-up-fact"],
+          preserves_uncertainty: false
+        }]
+      }
+    });
+    const client = new FireworksClient({
+      config,
+      fetch: vi.fn<typeof fetch>(async () => Response.json(completion))
+    });
+
+    await expect(client.generateDailyEntry("req_fact_ref", request))
+      .rejects.toMatchObject({
+        code: "invalid_provider_response",
+        retryable: true,
+        diagnosticCode: "provider_fact_reference_invalid"
+      });
+  });
+
   it("maps provider failures without exposing the provider response body", async () => {
     const client = new FireworksClient({
       config,
@@ -249,6 +292,75 @@ describe("FireworksClient", () => {
     expect(caught).toBeInstanceOf(LoreApiError);
     expect(caught).toMatchObject({ code: "provider_rate_limited", retryAfterSeconds: 7 });
     expect((caught as Error).message).not.toContain("sensitive provider detail");
+  });
+});
+
+describe("FireworksClient story chapters", () => {
+  const chapterRequest: StoryChapterGenerationRequest = {
+    schema_version: "1.0",
+    prompt_version: "story-chapter-v1",
+    job_id: "5f3acbd5-676e-4cb3-83a4-150b09c735a9",
+    chapter_key: "2026-07",
+    language_code: "en-US",
+    subject: { display_name: "Maya", pronouns: [] },
+    render_configuration: {
+      perspective: "third_person",
+      tense: "past",
+      tone: "warm_restrained",
+      target_words: 300
+    },
+    source_days: [
+      { id: "2026-07-01", day_key: "2026-07-01", title: "The harbor", prose: "Maya walked the harbor at dawn." },
+      { id: "2026-07-02", day_key: "2026-07-02", title: "The market", prose: "She spent the morning at the market." }
+    ],
+    retention_policy: { mode: "request_ephemeral", maximum_retention_seconds: 0 }
+  };
+
+  it("sends a chapter-specific schema whose fact arrays allow no items", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.response_format).toEqual({
+        type: "json_schema",
+        json_schema: {
+          name: "lore_story_chapter",
+          schema: FireworksStoryChapterJsonSchema
+        }
+      });
+      const factArrayLimits = collectFactArrayLimits(body.response_format.json_schema.schema);
+      expect(factArrayLimits).toHaveLength(2);
+      expect(factArrayLimits.every((limit) => limit === 0)).toBe(true);
+      return Response.json(chapterCompletion());
+    });
+    const client = new FireworksClient({ config, fetch: fetchMock });
+
+    await client.generateStoryChapter("req_chapter_schema", chapterRequest);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("accepts a chapter whose sentences cite invented fact ids, clearing them", async () => {
+    const client = new FireworksClient({
+      config,
+      fetch: vi.fn<typeof fetch>(async () => Response.json(chapterCompletion({ factReferences: ["made-up"] })))
+    });
+
+    const response = await client.generateStoryChapter("req_chapter_facts", chapterRequest);
+
+    expect(response.entry.sentences[0]!.fact_references).toEqual([]);
+  });
+
+  it("still rejects a chapter that cites an unknown source day id", async () => {
+    const client = new FireworksClient({
+      config,
+      fetch: vi.fn<typeof fetch>(async () => Response.json(chapterCompletion({ sourceReferences: ["invented-day"] })))
+    });
+
+    await expect(client.generateStoryChapter("req_chapter_source", chapterRequest))
+      .rejects.toMatchObject({
+        code: "invalid_provider_response",
+        retryable: true,
+        diagnosticCode: "provider_source_reference_invalid"
+      });
   });
 });
 
@@ -285,6 +397,57 @@ function validOutput(): Record<string, unknown> {
     follow_up_questions: [],
     refusal_reason: null
   };
+}
+
+function chapterCompletion(options: { factReferences?: string[]; sourceReferences?: string[] } = {}) {
+  return {
+    id: "chatcmpl_chapter",
+    model: "accounts/fireworks/models/gpt-oss-120b",
+    choices: [{
+      index: 0,
+      finish_reason: "stop",
+      message: {
+        role: "assistant",
+        content: JSON.stringify({
+          status: "completed",
+          entry: {
+            title: "A month by the water",
+            title_source_references: ["2026-07-01", "2026-07-02"],
+            perspective: "third_person",
+            sentences: [{
+              text: "Maya began July at the harbor.",
+              source_references: options.sourceReferences ?? ["2026-07-01"],
+              fact_references: options.factReferences ?? [],
+              preserves_uncertainty: false
+            }]
+          },
+          memory_candidates: [],
+          uncertainties: [],
+          sensitive_omissions: [],
+          quality_flags: [],
+          follow_up_questions: [],
+          refusal_reason: null
+        })
+      }
+    }]
+  };
+}
+
+/** Collects the maxItems of every fact_references / related_fact_ids array in a JSON schema. */
+function collectFactArrayLimits(value: unknown, limits: number[] = []): number[] {
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectFactArrayLimits(item, limits));
+  } else if (typeof value === "object" && value !== null) {
+    for (const [key, property] of Object.entries(value)) {
+      if ((key === "fact_references" || key === "related_fact_ids")
+        && typeof property === "object" && property !== null) {
+        limits.push((property as Record<string, unknown>).maxItems as number);
+      } else {
+        collectFactArrayLimits(property, limits);
+      }
+    }
+  }
+  return limits;
 }
 
 function assertStrictObjects(value: unknown): void {

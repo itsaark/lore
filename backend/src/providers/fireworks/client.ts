@@ -37,6 +37,7 @@ import {
   FireworksDaySceneOutputSchema,
   FireworksReflectionGuideJsonSchema,
   FireworksReflectionGuideOutputSchema,
+  FireworksStoryChapterJsonSchema,
   type FireworksDailyEntryOutput
 } from "./provider-schemas.js";
 import { LAB_MODELS } from "./lab-models.js";
@@ -170,6 +171,12 @@ export class FireworksClient {
     options: WriterModelOptions & {
       systemPrompt: string;
       userPayload?: string;
+      /**
+       * Chapters have no accepted facts a sentence or memory could cite: send
+       * the fact-free schema and drop any fact ids the model emits anyway.
+       * Source-reference validation is unchanged.
+       */
+      withoutFactReferences?: boolean;
     },
     signal?: AbortSignal
   ): Promise<{
@@ -182,8 +189,8 @@ export class FireworksClient {
     const run = await this.runWriterCompletion(requestId, {
       ...options,
       userPayload: options.userPayload ?? dailyEntryUserPayload(request),
-      schemaName: "lore_daily_entry",
-      schema: FireworksDailyEntryJsonSchema
+      schemaName: options.withoutFactReferences ? "lore_story_chapter" : "lore_daily_entry",
+      schema: options.withoutFactReferences ? FireworksStoryChapterJsonSchema : FireworksDailyEntryJsonSchema
     }, signal);
 
     const modelOutput = FireworksDailyEntryOutputSchema.safeParse(run.output);
@@ -193,9 +200,12 @@ export class FireworksClient {
     if (modelOutput.data.status !== "completed" || !modelOutput.data.entry) {
       throw invalidProviderResponse("provider_output_not_completed", false);
     }
-    validateSourceReferences(request, modelOutput.data);
+    const output = options.withoutFactReferences
+      ? withoutChapterFactReferences(modelOutput.data)
+      : modelOutput.data;
+    validateSourceReferences(request, output);
 
-    return { ...run, output: modelOutput.data };
+    return { ...run, output };
   }
 
   private async runWriterCompletion(
@@ -261,7 +271,9 @@ export class FireworksClient {
   /**
    * Writes one month's chapter from the person's finished daily entries. It
    * runs through the same grounded writer, fallback, and citation checks as a
-   * daily entry; each cited "source segment" is one finished day.
+   * daily entry; each cited "source segment" is one finished day. A chapter
+   * request carries no accepted facts, so fact references are forbidden in the
+   * schema and dropped from the output; day-id citations stay fully validated.
    */
   async generateStoryChapter(
     requestId: string,
@@ -289,7 +301,8 @@ export class FireworksClient {
       this.runDailyEntry(requestId, source, {
         ...model,
         systemPrompt: storyChapterSystemPrompt(),
-        userPayload: storyChapterUserPayload(request)
+        userPayload: storyChapterUserPayload(request),
+        withoutFactReferences: true
       }, modelSignal)
     );
 
@@ -772,6 +785,22 @@ function dailyEntryUserPayload(request: DailyEntrySource): string {
     }),
     "</lore_source_data>"
   ].join("\n");
+}
+
+/**
+ * A chapter request carries no accepted facts, so any fact id the model emits
+ * is invented. Chapters therefore drop fact references before citation
+ * validation; source references stay exactly as strict.
+ */
+function withoutChapterFactReferences(output: FireworksDailyEntryOutput): FireworksDailyEntryOutput {
+  return {
+    ...output,
+    entry: output.entry && {
+      ...output.entry,
+      sentences: output.entry.sentences.map((sentence) => ({ ...sentence, fact_references: [] }))
+    },
+    memory_candidates: output.memory_candidates.map((candidate) => ({ ...candidate, related_fact_ids: [] }))
+  };
 }
 
 function validateSourceReferences(
