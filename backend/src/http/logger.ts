@@ -9,6 +9,7 @@ const SafeLogEventSchema = z.object({
     "auth_session",
     "transcription",
     "daily_entry",
+    "story_chapter",
     "lab_daily_entry",
     "reflection_credentials",
     "reflection_guide",
@@ -23,6 +24,7 @@ const SafeLogEventSchema = z.object({
   model_alias: z.enum([
     "transcription-fallback-v1",
     "daily-entry-v1",
+    "story-chapter-v1",
     "reflection-stt-v1",
     "reflection-voice-v1",
     "reflection-guide-v1",

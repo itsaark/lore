@@ -133,6 +133,32 @@ paths:
           $ref: "#/components/responses/ApiError"
         default:
           $ref: "#/components/responses/ApiError"
+  /v1/story-chapters:
+    post:
+      operationId: createStoryChapter
+      description: Writes one month's autobiography chapter from the person's finished daily entries, through the same grounded writer as daily entries.
+      security: [{ bearerSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: StoryChapterGenerationRequest v1.0; canonical validation lives in src/contracts/story-chapter.ts.
+      responses:
+        "200":
+          description: Schema-validated grounded chapter, citing source day ids.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: StoryChapterGenerationResponse v1.0; canonical validation lives in src/contracts/story-chapter.ts.
+        "409":
+          $ref: "#/components/responses/ApiError"
+        default:
+          $ref: "#/components/responses/ApiError"
   /v1/reflections/session-credentials:
     post:
       operationId: createReflectionSessionCredentials

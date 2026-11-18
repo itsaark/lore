@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleDailyEntry } from "../api/v1/daily-entries.js";
+import { handleStoryChapter } from "../api/v1/story-chapters.js";
 import { handleTranscription } from "../api/v1/transcriptions.js";
 import { issueSessionToken } from "../src/auth/session-token.js";
 import { MemoryAuthStateStore, type AppAttestKeyRecord } from "../src/auth/state-store.js";
@@ -268,7 +269,110 @@ describe("processing routes", () => {
       error: { code: "invalid_request", retryable: false }
     });
   });
+
+  it("writes a month chapter from finished days and cites day ids", async () => {
+    const harness = await authenticatedHarness();
+    const provider = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.messages[0].content).toContain("one chapter of a person's autobiography");
+      expect(body.messages[1].content).toContain("<lore_chapter_data>");
+      expect(body.messages[1].content).toContain("2026-07-02");
+      return Response.json({
+        id: "chatcmpl_chapter_1",
+        model: "accounts/fireworks/models/gpt-oss-120b",
+        choices: [{
+          index: 0,
+          finish_reason: "stop",
+          message: {
+            role: "assistant",
+            content: JSON.stringify({
+              status: "completed",
+              entry: {
+                title: "A month by the water",
+                title_source_references: ["2026-07-01", "2026-07-02"],
+                perspective: "third_person",
+                sentences: [
+                  { text: "Maya began July at the harbor.", source_references: ["2026-07-01"], fact_references: [], preserves_uncertainty: false },
+                  { text: "By the second day the market had her attention.", source_references: ["2026-07-02"], fact_references: [], preserves_uncertainty: false }
+                ]
+              },
+              memory_candidates: [],
+              uncertainties: [],
+              sensitive_omissions: [],
+              quality_flags: [],
+              follow_up_questions: [],
+              refusal_reason: null
+            })
+          }
+        }]
+      });
+    });
+    const response = await handleStoryChapter(new Request("https://lore.invalid/v1/story-chapters", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${harness.token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "story-chapter:5f3acbd5-676e-4cb3-83a4-150b09c735a9"
+      },
+      body: JSON.stringify(validChapterRequest())
+    }), { environment, fetch: provider, auth: harness.auth });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      prompt_version: "story-chapter-v1",
+      job_id: "5f3acbd5-676e-4cb3-83a4-150b09c735a9",
+      entry: { title: "A month by the water" }
+    });
+    expect(body).not.toHaveProperty("memory_candidates");
+  });
+
+  it("rejects a chapter whose idempotency key does not match its job", async () => {
+    const harness = await authenticatedHarness();
+    const provider = vi.fn<typeof fetch>();
+    const response = await handleStoryChapter(new Request("https://lore.invalid/v1/story-chapters", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${harness.token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "story-chapter:00000000-0000-4000-8000-000000000000"
+      },
+      body: JSON.stringify(validChapterRequest())
+    }), { environment, fetch: provider, auth: harness.auth });
+
+    expect(response.status).toBe(400);
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unauthenticated chapter request before the provider", async () => {
+    const provider = vi.fn<typeof fetch>();
+    const response = await handleStoryChapter(new Request("https://lore.invalid/v1/story-chapters", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(validChapterRequest())
+    }), { environment, fetch: provider });
+
+    expect(response.status).toBe(401);
+    expect(provider).not.toHaveBeenCalled();
+  });
 });
+
+function validChapterRequest(): Record<string, unknown> {
+  return {
+    schema_version: "1.0",
+    prompt_version: "story-chapter-v1",
+    job_id: "5f3acbd5-676e-4cb3-83a4-150b09c735a9",
+    chapter_key: "2026-07",
+    language_code: "en-US",
+    subject: { display_name: "Maya", pronouns: [] },
+    render_configuration: { perspective: "third_person", tense: "past", tone: "warm_restrained", target_words: 300 },
+    source_days: [
+      { id: "2026-07-01", day_key: "2026-07-01", title: "The harbor", prose: "Maya walked the harbor at dawn." },
+      { id: "2026-07-02", day_key: "2026-07-02", title: "The market", prose: "She spent the morning at the market." }
+    ],
+    retention_policy: { mode: "request_ephemeral", maximum_retention_seconds: 0 }
+  };
+}
 
 async function authenticatedHarness() {
   const config = testConfig();

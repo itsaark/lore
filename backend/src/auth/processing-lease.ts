@@ -5,6 +5,7 @@ import { LoreApiError } from "../http/errors.js";
 export type ProcessingTask =
   | "transcription"
   | "daily_entry"
+  | "story_chapter"
   | "reflection_guide"
   | "reflection_finalize";
 
