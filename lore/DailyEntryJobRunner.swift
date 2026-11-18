@@ -121,6 +121,9 @@ enum DailyEntryJobRunner {
         do {
             let response = try await generator.generateDailyEntry(request)
             try Task.checkCancellation()
+            guard job.modelContext != nil, !job.isDeleted, job.state == .running else {
+                throw DailyEntryJobRunnerError.jobCancelled
+            }
             _ = try DailyEntryResultPersister.persist(
                 response: response,
                 request: request,
@@ -132,6 +135,7 @@ enum DailyEntryJobRunner {
             return story
         } catch is CancellationError {
             modelContext.rollback()
+            guard job.modelContext != nil, !job.isDeleted else { throw CancellationError() }
             job.cancel(at: Date())
             story.processingStatus = "awaitingModel"
             story.updatedAt = Date()
@@ -139,6 +143,7 @@ enum DailyEntryJobRunner {
             throw CancellationError()
         } catch LoreBackendProcessingError.cancelled {
             modelContext.rollback()
+            guard job.modelContext != nil, !job.isDeleted else { throw CancellationError() }
             job.cancel(at: Date())
             story.processingStatus = "awaitingModel"
             story.updatedAt = Date()
@@ -146,7 +151,7 @@ enum DailyEntryJobRunner {
             throw CancellationError()
         } catch {
             modelContext.rollback()
-            guard job.state == .running else { throw error }
+            guard job.modelContext != nil, !job.isDeleted, job.state == .running else { throw error }
             let terminal = isTerminal(error) || job.attemptCount >= job.maximumAttempts
             let failureDate = Date()
             job.markFailed(

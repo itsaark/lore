@@ -2,6 +2,7 @@ import SwiftUI
 
 struct TranscriptArchiveView: View {
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
+    @State private var noteToDelete: Story?
 
     private var stories: [Story] {
         Array(speechRecognizer.stories.reversed())
@@ -32,8 +33,8 @@ struct TranscriptArchiveView: View {
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+                        .voiceNoteDeleteActions { noteToDelete = story }
                     }
-                    .onDelete(perform: speechRecognizer.deleteStories)
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
@@ -44,6 +45,7 @@ struct TranscriptArchiveView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(LoreTheme.canvas, for: .navigationBar)
         .accessibilityIdentifier("transcriptArchive")
+        .voiceNoteDeletionConfirmation(for: $noteToDelete) { speechRecognizer.deleteStory($0) }
     }
 }
 

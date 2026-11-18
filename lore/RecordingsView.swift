@@ -11,6 +11,7 @@ import SwiftUI
 struct StoriesView: View {
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
     @Environment(\.presentationMode) var presentationMode
+    @State private var noteToDelete: Story?
 
     private var storiesByCaptureDateNewestFirst: [Story] {
         Array(speechRecognizer.stories.reversed())
@@ -47,8 +48,8 @@ struct StoriesView: View {
                         .listRowInsets(EdgeInsets(top: 14, leading: 20, bottom: 14, trailing: 20))
                         .listRowBackground(LoreTheme.canvas)
                         .listRowSeparatorTint(LoreTheme.hairline)
+                        .voiceNoteDeleteActions { noteToDelete = story }
                     }
-                    .onDelete(perform: speechRecognizer.deleteStories)
                 }
                 .listStyle(PlainListStyle())
                 .scrollContentBackground(.hidden)
@@ -59,6 +60,7 @@ struct StoriesView: View {
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(false)
         .toolbarBackground(LoreTheme.canvas, for: .navigationBar)
+        .voiceNoteDeletionConfirmation(for: $noteToDelete) { speechRecognizer.deleteStory($0) }
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Text("Stories")

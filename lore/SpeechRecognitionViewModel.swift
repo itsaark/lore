@@ -103,6 +103,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var isRecoveringTranscriptionJobs = false
     private var isRecoveringDailyEntryJobs = false
     private var isRecoveringDailyBiographyJobs = false
+    private var nextDailyBiographyRecoveryDate: Date?
     private var isRefreshingStoryChapters = false
     private var isRefreshingDayIllustrations = false
     private var modelContext: ModelContext?
@@ -301,7 +302,8 @@ class SpeechRecognitionViewModel: ObservableObject {
 
             // On device, waiting jobs run now: no network or consent needed.
             let transcribesOnDevice = resolvedCaptureRoute() == .onDevice
-            for job in jobs {
+            var transcribedNote = false
+            for job in jobs where job.modelContext != nil && !job.isDeleted {
                 if job.state != .succeeded {
                     let availability: RemoteWorkAvailability = transcribesOnDevice
                         ? .permitted
@@ -343,9 +345,10 @@ class SpeechRecognitionViewModel: ObservableObject {
                     continue
                 }
 
+                let jobID = job.id
                 do {
                     _ = try await Self.runTranscriptionJob(
-                        jobID: job.id,
+                        jobID: jobID,
                         remoteTranscriber: remoteTranscriber,
                         localTranscriber: transcribesOnDevice ? localTranscriber : nil,
                         remoteFallbackPermitted: { [weak self] in
@@ -355,15 +358,19 @@ class SpeechRecognitionViewModel: ObservableObject {
                         modelContext: modelContext,
                         now: now
                     )
+                    transcribedNote = transcribedNote || !shouldFinishDeletion
                 } catch TranscriptionJobRunnerError.jobNotReady {
                     continue
                 } catch {
                     // The runner has already persisted retry/failure state and retained audio.
-                    print("Deferred transcription job \(job.id) did not complete: \(error)")
+                    print("Deferred transcription job \(jobID) did not complete: \(error)")
                 }
             }
             loadStories()
             scheduleNextTranscriptionRecovery()
+            if transcribedNote {
+                Task { await resumePendingDailyBiographyJobs() }
+            }
         } catch {
             print("Failed to recover transcription jobs: \(error)")
             scheduleNextTranscriptionRecovery()
@@ -445,7 +452,8 @@ class SpeechRecognitionViewModel: ObservableObject {
                 try modelContext.save()
             }
 
-            for job in jobs where job.state != .succeeded && job.state != .cancelled && job.state != .failed {
+            for job in jobs where job.modelContext != nil && !job.isDeleted {
+                guard job.state != .succeeded, job.state != .cancelled, job.state != .failed else { continue }
                 switch remoteWorkAvailability(requiresAudioUpload: false) {
                 case .permitted:
                     if job.state == .waitingForConsent || job.state == .waitingForNetwork {
@@ -472,9 +480,10 @@ class SpeechRecognitionViewModel: ObservableObject {
                     && job.leaseExpiresAt.map { $0 <= now } == true
                 guard shouldAttempt || shouldRecoverLease else { continue }
 
+                let jobID = job.id
                 do {
                     _ = try await DailyEntryJobRunner.run(
-                        jobID: job.id,
+                        jobID: jobID,
                         userProfile: userProfile,
                         generator: remoteDailyEntryGenerator,
                         in: modelContext,
@@ -484,7 +493,7 @@ class SpeechRecognitionViewModel: ObservableObject {
                     continue
                 } catch {
                     // The runner already persisted a retryable or terminal state.
-                    print("Deferred daily-entry job \(job.id) did not complete: \(error)")
+                    print("Deferred daily-entry job \(jobID) did not complete: \(error)")
                 }
             }
             loadStories()
@@ -531,17 +540,26 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
     }
 
-    /// Creates and resumes one replaceable biography entry for every completed
-    /// local calendar day. The runner reads canonical transcript versions at
-    /// execution time, so no transcript content is duplicated into job state.
+    /// Creates and resumes one replaceable biography entry for each day with
+    /// transcribed notes, including the day in progress.
     func resumePendingDailyBiographyJobs(now: Date = Date()) async {
-        guard let modelContext, let userProfile else { return }
-
-        dailyBiographyRecoveryTask?.cancel()
-        dailyBiographyRecoveryTask = nil
+        nextDailyBiographyRecoveryDate = now
         guard !isRecoveringDailyBiographyJobs else { return }
         isRecoveringDailyBiographyJobs = true
         defer { isRecoveringDailyBiographyJobs = false }
+
+        dailyBiographyRecoveryTask?.cancel()
+        dailyBiographyRecoveryTask = nil
+        var currentJobIds: Set<UUID> = []
+        while let date = nextDailyBiographyRecoveryDate {
+            nextDailyBiographyRecoveryDate = nil
+            currentJobIds = await recoverDailyBiographyJobs(now: date)
+        }
+        scheduleNextDailyBiographyRecovery(jobIDs: currentJobIds)
+    }
+
+    private func recoverDailyBiographyJobs(now: Date) async -> Set<UUID> {
+        guard let modelContext, let userProfile else { return [] }
 
         let availability = remoteWorkAvailability(requiresAudioUpload: false)
         let initialState: ProcessingJobState
@@ -554,13 +572,14 @@ class SpeechRecognitionViewModel: ObservableObject {
             initialState = .waitingForNetwork
         }
 
+        var currentJobIds: Set<UUID> = []
         do {
             let preparedDays = try DailyBiographyJobRunner.prepareCompletedDays(
                 initialState: initialState,
                 in: modelContext,
                 now: now
             )
-            let currentJobIds = Set(preparedDays.map(\.jobId))
+            currentJobIds = Set(preparedDays.map(\.jobId))
             let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
                 .filter { $0.kind == .dailyBiography }
                 .sorted { $0.createdAt < $1.createdAt }
@@ -601,8 +620,11 @@ class SpeechRecognitionViewModel: ObservableObject {
                 print("[DayStory] \(day.dayKey): \(job.state) attempts=\(job.attemptCount) error=\(job.lastErrorCode ?? "none")\(retried.contains { $0 === job } ? " (retrying now)" : "")")
             }
 
-            for job in jobs where job.state != .succeeded && job.state != .cancelled && job.state != .failed {
-                switch availability {
+            for job in jobs where job.modelContext != nil && !job.isDeleted {
+                if nextDailyBiographyRecoveryDate != nil { break }
+                guard currentJobIds.contains(job.id), job.state != .succeeded,
+                      job.state != .cancelled, job.state != .failed else { continue }
+                switch remoteWorkAvailability(requiresAudioUpload: false) {
                 case .permitted:
                     if job.state == .waitingForConsent || job.state == .waitingForNetwork {
                         job.state = .queued
@@ -628,9 +650,10 @@ class SpeechRecognitionViewModel: ObservableObject {
                     && job.leaseExpiresAt.map { $0 <= now } == true
                 guard shouldAttempt || shouldRecoverLease else { continue }
 
+                let jobID = job.id
                 do {
                     _ = try await DailyBiographyJobRunner.run(
-                        jobID: job.id,
+                        jobID: jobID,
                         userProfile: userProfile,
                         generator: remoteDailyEntryGenerator,
                         in: modelContext,
@@ -639,23 +662,24 @@ class SpeechRecognitionViewModel: ObservableObject {
                 } catch DailyBiographyJobRunnerError.jobNotReady {
                     continue
                 } catch {
-                    print("Deferred daily-biography job \(job.id) did not complete: \(error)")
+                    print("Deferred daily-biography job \(jobID) did not complete: \(error)")
                 }
             }
             loadStories()
-            await refreshStoryChaptersAndDayIllustrations(now: now)
-            scheduleNextDailyBiographyRecovery()
+            if nextDailyBiographyRecoveryDate == nil {
+                await refreshStoryChaptersAndDayIllustrations(now: now)
+            }
         } catch {
             print("Failed to recover daily-biography jobs: \(error)")
-            scheduleNextDailyBiographyRecovery()
         }
+        return currentJobIds
     }
 
-    private func scheduleNextDailyBiographyRecovery(now: Date = Date()) {
+    private func scheduleNextDailyBiographyRecovery(jobIDs: Set<UUID>, now: Date = Date()) {
         guard let modelContext else { return }
         do {
             let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
-                .filter { $0.kind == .dailyBiography }
+                .filter { jobIDs.contains($0.id) }
             let wakeDates = jobs.compactMap { job -> Date? in
                 switch job.state {
                 case .queued:
@@ -730,79 +754,86 @@ class SpeechRecognitionViewModel: ObservableObject {
     
     /// Updates the text of an existing story.
     func updateStory(_ story: Story, withText newText: String) {
-        guard let index = stories.firstIndex(where: { $0.id == story.id }) else {
+        guard let savedStory = stories.first(where: { $0.id == story.id }) else {
             print("Story not found for update")
             return
         }
 
-        guard stories[index].text != newText else { return }
+        guard savedStory.text != newText else { return }
         guard let modelContext else {
             setError("Lore could not save this correction because the local archive is unavailable.")
             return
         }
 
         do {
-            try Self.applyUserCorrection(
-                newText,
-                to: stories[index],
-                in: modelContext
-            )
+            if newText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // A blank transcript is excluded from generation, so there may
+                // be no replacement entry to overwrite the old one.
+                try DailyBiographyJobRunner.deleteSupportData(containing: savedStory.id, in: modelContext)
+                let dayKey = storyDayKeys[savedStory.id] ?? JournalCalendar().dayKey(for: savedStory.date)
+                try Self.deleteChapter(forDayKey: dayKey, in: modelContext)
+            }
+            try Self.applyUserCorrection(newText, to: savedStory, in: modelContext)
         } catch {
+            modelContext.rollback()
             setError("Lore could not save this transcript correction: \(error.localizedDescription)")
             return
         }
 
-        let storyToRegenerate = stories[index]
-        Task {
-            await processCapturedStory(storyToRegenerate)
-        }
         loadStories()
+        Task { await resumePendingDailyBiographyJobs() }
         print("Story updated successfully")
     }
 
     /// Deletes stories and persists the updated list.
     func deleteStories(atOffsets offsets: IndexSet) {
         let newestFirstStories = Array(stories.reversed())
-        var affectedChapterMonths: Set<String> = []
-        
-        for index in offsets {
-            guard newestFirstStories.indices.contains(index),
-                  let originalIndex = stories.firstIndex(where: { $0.id == newestFirstStories[index].id }) else {
-                continue
-            }
-            
-            let story = stories.remove(at: originalIndex)
-            if let dayKey = storyDayKeys[story.id] {
-                affectedChapterMonths.insert(String(dayKey.prefix(7)))
-            }
-            if let modelContext {
-                do {
-                    try DailyBiographyJobRunner.deleteSupportData(
-                        containing: story.id,
-                        in: modelContext
-                    )
-                    try Self.deleteAudioAssets(for: story, in: modelContext)
-                    try Self.deleteStoryMetadata(for: story, in: modelContext)
-                    try Self.deleteTranscriptSupportData(for: story, in: modelContext)
-                } catch {
-                    setError("Failed to delete story support data: \(error.localizedDescription)")
-                    print("Failed to delete story support data: \(error)")
-                }
-                modelContext.delete(story)
-            }
+        for index in offsets where newestFirstStories.indices.contains(index) {
+            deleteStory(newestFirstStories[index])
         }
-        
-        // A chapter that drew on a deleted note must not outlive it. Remove it
-        // now; it is rewritten from what remains once the network allows.
-        if let modelContext, !affectedChapterMonths.isEmpty {
-            let stale = (try? modelContext.fetch(FetchDescriptor<StoryChapter>())) ?? []
-            stale.filter { affectedChapterMonths.contains($0.chapterKey) }.forEach(modelContext.delete)
+    }
+
+    @discardableResult
+    func deleteStory(_ story: Story) -> Bool {
+        guard let modelContext, let savedStory = stories.first(where: { $0.id == story.id }) else {
+            return false
         }
-        saveContext()
+
+        let dayKey = storyDayKeys[savedStory.id] ?? JournalCalendar().dayKey(for: savedStory.date)
+        let isLastNote = !stories.contains {
+            $0.id != savedStory.id && (storyDayKeys[$0.id] ?? JournalCalendar().dayKey(for: $0.date)) == dayKey
+        }
+        do {
+            try DailyBiographyJobRunner.deleteSupportData(
+                containing: savedStory.id,
+                emptyDayKey: isLastNote ? dayKey : nil,
+                in: modelContext
+            )
+            try Self.deleteStoryMetadata(for: savedStory, in: modelContext)
+            try Self.deleteTranscriptSupportData(for: savedStory, in: modelContext)
+
+            // Drop the old chapter even if remote rewriting is currently gated.
+            try Self.deleteChapter(forDayKey: dayKey, in: modelContext)
+            try Self.deleteAudioAssets(for: savedStory, in: modelContext)
+            modelContext.delete(savedStory)
+            try modelContext.save()
+        } catch {
+            modelContext.rollback()
+            setError("Failed to delete voice note: \(error.localizedDescription)")
+            return false
+        }
+
         loadStories()
-        if !affectedChapterMonths.isEmpty {
-            Task { await refreshStoryChaptersAndDayIllustrations() }
-        }
+        Task { await resumePendingDailyBiographyJobs() }
+        return true
+    }
+
+    private static func deleteChapter(forDayKey dayKey: String, in modelContext: ModelContext) throws {
+        let monthKey = String(dayKey.prefix(7))
+        let chapters = try modelContext.fetch(FetchDescriptor<StoryChapter>(
+            predicate: #Predicate { $0.chapterKey == monthKey }
+        ))
+        chapters.forEach(modelContext.delete)
     }
 
     private func refreshStoryChaptersAndDayIllustrations(now: Date = Date()) async {
@@ -857,17 +888,6 @@ class SpeechRecognitionViewModel: ObservableObject {
             return
         } catch {
             print("Failed to refresh day illustrations: \(error)")
-        }
-    }
-    
-    /// Saves pending SwiftData changes.
-    private func saveContext() {
-        guard let modelContext else { return }
-
-        do {
-            try modelContext.save()
-        } catch {
-            print("Failed to save stories: \(error)")
         }
     }
     
@@ -1241,7 +1261,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             activeCaptureIsUploading = false
         }
         do {
-            let transcribedStory = try await Self.runTranscriptionJob(
+            try await Self.runTranscriptionJob(
                 jobID: job.id,
                 remoteTranscriber: remoteTranscriber,
                 localTranscriber: route == .onDevice ? localTranscriber : nil,
@@ -1259,7 +1279,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             isAwaitingRemoteTranscription = false
             pendingSaveTask = nil
             loadStories()
-            Task { await processCapturedStory(transcribedStory) }
+            Task { await resumePendingDailyBiographyJobs() }
         } catch {
             isAwaitingRemoteTranscription = false
             pendingSaveTask = nil
@@ -1541,7 +1561,10 @@ class SpeechRecognitionViewModel: ObservableObject {
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
-                    print("On-device transcription failed for job \(job.id): \(error)")
+                    print("On-device transcription failed for job \(jobID): \(error)")
+                    guard job.modelContext != nil, !job.isDeleted, job.state == .running else {
+                        throw TranscriptionJobRunnerError.jobCancelled
+                    }
                     guard remoteFallbackPermitted() else {
                         throw OnDeviceTranscriptionFailure(underlying: error)
                     }
@@ -1562,6 +1585,9 @@ class SpeechRecognitionViewModel: ObservableObject {
                 output = TranscriptionOutput(response, localeIdentifier: localeIdentifier)
             }
             try Task.checkCancellation()
+            guard job.modelContext != nil, !job.isDeleted, job.state == .running else {
+                throw TranscriptionJobRunnerError.jobCancelled
+            }
             let committedStory = try commitTranscription(
                 output,
                 for: story,
@@ -1579,6 +1605,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             return committedStory
         } catch is CancellationError {
             modelContext.rollback()
+            guard job.modelContext != nil, !job.isDeleted else { throw CancellationError() }
             job.cancel(at: Date())
             story.processingStatus = "transcriptionCancelled"
             story.updatedAt = Date()
@@ -1586,7 +1613,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             throw CancellationError()
         } catch {
             modelContext.rollback()
-            guard job.state == .running else {
+            guard job.modelContext != nil, !job.isDeleted, job.state == .running else {
                 throw error
             }
 
@@ -2330,23 +2357,6 @@ class SpeechRecognitionViewModel: ObservableObject {
         } catch {
             print("Failed to enrich story metadata: \(error)")
         }
-    }
-
-    /// A new or corrected note goes straight into its day's story: the day is
-    /// rewritten from every note it holds, so there is no separate per-note
-    /// entry to write first.
-    private func processCapturedStory(_ story: Story) async {
-        guard userProfile != nil else {
-            story.processingStatus = "failed"
-            story.updatedAt = Date()
-            saveContext()
-            loadStories()
-            return
-        }
-
-        story.processingStatus = "awaitingModel"
-        loadStories()
-        await resumePendingDailyBiographyJobs()
     }
 
     /// Sets error message and logs it

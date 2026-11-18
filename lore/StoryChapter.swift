@@ -142,26 +142,39 @@ enum StoryChapterRunner {
         let months = months(from: entries, now: now, calendar: calendar)
         let monthKeys = Set(months.map(\.key))
 
-        var chapters = try modelContext.fetch(FetchDescriptor<StoryChapter>())
+        let chapters = try modelContext.fetch(FetchDescriptor<StoryChapter>())
         let orphaned = chapters.filter { !monthKeys.contains($0.chapterKey) }
         if !orphaned.isEmpty {
             orphaned.forEach(modelContext.delete)
             try modelContext.save()
-            chapters.removeAll { chapter in orphaned.contains { $0 === chapter } }
         }
 
         var written = 0
-        for month in months {
-            let existing = chapters.first { $0.chapterKey == month.key }
-            guard existing?.sourceFingerprint != month.fingerprint else { continue }
+        for key in months.map(\.key) {
             try Task.checkCancellation()
 
-            let request = makeRequest(for: month, userProfile: userProfile)
             do {
+                let entries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
+                guard let month = Self.months(from: entries, now: now, calendar: calendar)
+                    .first(where: { $0.key == key }) else { continue }
+                let chapters = try modelContext.fetch(FetchDescriptor<StoryChapter>())
+                guard chapters.first(where: { $0.chapterKey == key })?.sourceFingerprint != month.fingerprint else {
+                    continue
+                }
+
+                let request = makeRequest(for: month, userProfile: userProfile)
                 let response = try await generator.generateStoryChapter(request)
+                try Task.checkCancellation()
                 try validate(response, for: request)
+
+                // Notes and their daily entries may change while the chapter is writing.
+                let currentEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
+                guard Self.months(from: currentEntries, now: now, calendar: calendar)
+                    .first(where: { $0.key == key })?.fingerprint == month.fingerprint else { continue }
+                let existing = try modelContext.fetch(FetchDescriptor<StoryChapter>())
+                    .first { $0.chapterKey == key }
                 let prose = paragraphs(from: response.entry.sentences.map(\.text))
-                let dayKeys = month.entries.map(\.dayKey)
+                let dayKeys = request.sourceDays.map(\.dayKey)
                 if let existing {
                     existing.replace(
                         title: response.entry.title,
@@ -182,7 +195,6 @@ enum StoryChapterRunner {
                         at: now
                     )
                     modelContext.insert(chapter)
-                    chapters.append(chapter)
                 }
                 try modelContext.save()
                 written += 1
@@ -192,7 +204,7 @@ enum StoryChapterRunner {
                 // One month failing must not block the others; it stays stale
                 // and is retried on the next refresh.
                 modelContext.rollback()
-                print("Story chapter \(month.key) did not complete: \(error)")
+                print("Story chapter \(key) did not complete: \(error)")
             }
         }
         return written

@@ -5,6 +5,11 @@ import SwiftUI
 /// The journal page for one day: its photos, the written entry, and the voice
 /// notes it was built from. Empty days still accept photos.
 struct DayJournalView: View {
+    private enum NotesDestination: Hashable {
+        case list
+        case detail(Story)
+    }
+
     let dayKey: String
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
 
@@ -20,6 +25,7 @@ struct DayJournalView: View {
     @State private var isSavingPhoto = false
     @State private var photoError: String?
     @State private var savedPhotoCount = 0
+    @State private var notesDestination: NotesDestination?
 
     private let journalCalendar = JournalCalendar()
 
@@ -101,6 +107,14 @@ struct DayJournalView: View {
         }
         .scrollIndicators(.hidden)
         .loreCanvas()
+        .navigationDestination(item: $notesDestination) { destination in
+            switch destination {
+            case .list:
+                DayNotesView(dayKey: dayKey, date: date, speechRecognizer: speechRecognizer)
+            case .detail(let story):
+                StoryDetailView(story: story, speechRecognizer: speechRecognizer)
+            }
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(LoreTheme.canvas, for: .navigationBar)
         .toolbar {
@@ -472,11 +486,11 @@ struct DayJournalView: View {
                 .frame(height: 1)
                 .padding(.bottom, 14)
 
-            NavigationLink {
+            Button {
                 if content.stories.count == 1, let story = content.stories.first {
-                    StoryDetailView(story: story, speechRecognizer: speechRecognizer)
+                    notesDestination = .detail(story)
                 } else {
-                    DayNotesView(date: date, stories: content.stories, speechRecognizer: speechRecognizer)
+                    notesDestination = .list
                 }
             } label: {
                 HStack(spacing: 10) {
@@ -601,27 +615,43 @@ private struct DayPhotoPager<Menu: View>: View {
 
 /// All voice notes captured on one day.
 private struct DayNotesView: View {
+    let dayKey: String
     let date: Date
-    let stories: [Story]
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var noteToDelete: Story?
+
+    private var stories: [Story] {
+        let calendar = JournalCalendar()
+        return speechRecognizer.stories.filter {
+            (speechRecognizer.storyDayKeys[$0.id] ?? calendar.dayKey(for: $0.date)) == dayKey
+        }
+    }
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                ForEach(stories) { story in
-                    NavigationLink {
-                        StoryDetailView(story: story, speechRecognizer: speechRecognizer)
-                    } label: {
-                        TranscriptPreviewRow(story: story)
-                    }
-                    .buttonStyle(.plain)
+        List {
+            ForEach(stories) { story in
+                NavigationLink {
+                    StoryDetailView(story: story, speechRecognizer: speechRecognizer)
+                } label: {
+                    TranscriptPreviewRow(story: story)
                 }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 5, leading: 16, bottom: 5, trailing: 16))
+                .voiceNoteDeleteActions { noteToDelete = story }
             }
-            .padding(16)
         }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
         .loreCanvas()
         .navigationTitle(date.formatted(.dateTime.day().month(.wide)))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(LoreTheme.canvas, for: .navigationBar)
+        .voiceNoteDeletionConfirmation(for: $noteToDelete) { speechRecognizer.deleteStory($0) }
+        .onChange(of: stories.isEmpty) { _, isEmpty in
+            if isEmpty { dismiss() }
+        }
     }
 }
 

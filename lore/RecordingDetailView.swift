@@ -11,7 +11,9 @@ import SwiftUI
 struct StoryDetailView: View {
     let story: Story
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
-    
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var noteToDelete: Story?
     @State private var isEditing = false
     @State private var editedText: String = ""
     @FocusState private var isTextFieldFocused: Bool
@@ -110,6 +112,18 @@ struct StoryDetailView: View {
                     }
                 }
 
+                if !isEditing {
+                    Button(role: .destructive) {
+                        noteToDelete = currentStory
+                    } label: {
+                        Label("Delete Voice Note", systemImage: "trash")
+                            .font(LoreTheme.label)
+                            .foregroundStyle(LoreTheme.attention)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("deleteVoiceNoteButton")
+                }
+
                 Spacer()
             }
             .padding(.horizontal, 22)
@@ -147,6 +161,9 @@ struct StoryDetailView: View {
         .onAppear {
             editedText = currentStory.text
         }
+        .voiceNoteDeletionConfirmation(for: $noteToDelete) { note in
+            if speechRecognizer.deleteStory(note) { dismiss() }
+        }
     }
 
     private var currentStory: Story {
@@ -168,6 +185,45 @@ struct StoryDetailView: View {
     private var canRetryTranscription: Bool {
         !displayContent.hasTranscript
             && ["transcriptionFailed", "transcriptionCancelled"].contains(currentStory.processingStatus)
+    }
+}
+
+extension View {
+    func voiceNoteDeleteActions(_ requestDeletion: @escaping () -> Void) -> some View {
+        swipeActions(allowsFullSwipe: false) {
+            Button(action: requestDeletion) {
+                Label("Delete Voice Note", systemImage: "trash")
+            }
+            .tint(LoreTheme.attention)
+            .accessibilityIdentifier("deleteVoiceNoteButton")
+        }
+        .contextMenu {
+            Button(role: .destructive, action: requestDeletion) {
+                Label("Delete Voice Note", systemImage: "trash")
+            }
+            .accessibilityIdentifier("deleteVoiceNoteButton")
+        }
+    }
+
+    func voiceNoteDeletionConfirmation(
+        for note: Binding<Story?>,
+        onDelete: @escaping (Story) -> Void
+    ) -> some View {
+        confirmationDialog(
+            "Delete this voice note?",
+            isPresented: Binding(
+                get: { note.wrappedValue != nil },
+                set: { if !$0 { note.wrappedValue = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: note.wrappedValue
+        ) { story in
+            Button("Delete Voice Note", role: .destructive) { onDelete(story) }
+                .accessibilityIdentifier("confirmDeleteVoiceNoteButton")
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Its recording and transcript are removed, and this day's story is rewritten without it.")
+        }
     }
 }
 

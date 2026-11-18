@@ -142,6 +142,160 @@ struct DailyBiographyConsolidationTests {
         #expect(try fixture.context.fetch(FetchDescriptor<DailyBiographyEntry>()).count == 1)
     }
 
+    @Test func deletingOneNoteImmediatelyRewritesTheDayWithoutItAndRemovesItsAudio() async throws {
+        let fixture = try makeFixture(includeEvening: false)
+        let viewModel = makeViewModel(for: fixture, connection: .wifi)
+        await viewModel.resumePendingDailyBiographyJobs()
+        let remaining = fixture.pastStories[0]
+        let deleted = fixture.pastStories[1]
+        let dayKey = "2026-08-03"
+        let firstJobID = try #require(fixture.context.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>())
+            .first { $0.dayKey == dayKey }?.jobId)
+
+        // First write the day with both notes, so deletion restores a fingerprint
+        // that already has a succeeded job.
+        insertTranscribedNote(deleted, in: fixture.context)
+        try fixture.context.save()
+        await viewModel.resumePendingDailyBiographyJobs()
+        let original = try #require(viewModel.dailyBiographyEntries.first { $0.dayKey == dayKey })
+        let originalID = original.id
+        #expect(original.sourceStoryIds == [remaining.id, deleted.id])
+
+        let deletedID = deleted.id
+        let audio = FileManager.default.temporaryDirectory.appendingPathComponent("\(deletedID).m4a")
+        try Data([1, 2, 3]).write(to: audio)
+        defer { try? FileManager.default.removeItem(at: audio) }
+        fixture.context.insert(AudioAsset(
+            id: deletedID,
+            fileURL: audio.absoluteString,
+            expiresAt: Date().addingTimeInterval(3600),
+            duration: deleted.duration
+        ))
+        try fixture.context.save()
+
+        try #require(viewModel.deleteStory(deleted))
+        #expect(!FileManager.default.fileExists(atPath: audio.path))
+        #expect(try fixture.context.fetch(FetchDescriptor<AudioAsset>()).isEmpty)
+        #expect(!viewModel.stories.contains { $0.id == deletedID })
+        #expect(!viewModel.dailyBiographyEntries.contains { $0.dayKey == dayKey })
+
+        // The deletion itself must start the rewrite; no manual recovery call.
+        try await waitForRewrite { viewModel.dailyBiographyEntries.contains { $0.dayKey == dayKey } }
+        let replacement = try #require(viewModel.dailyBiographyEntries.first { $0.dayKey == dayKey })
+        #expect(replacement.id != originalID)
+        #expect(replacement.sourceStoryIds == [remaining.id])
+        #expect(!replacement.combinedTranscript.contains("Evening memory."))
+
+        let snapshots = try fixture.context.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>())
+            .filter { $0.dayKey == dayKey }
+        let snapshot = try #require(snapshots.first)
+        #expect(snapshots.count == 1)
+        #expect(snapshot.jobId != firstJobID)
+        #expect(snapshot.sourceStoryIds == [remaining.id])
+        let jobs = try fixture.context.fetch(FetchDescriptor<ProcessingJob>())
+        #expect(jobs.first { $0.id == snapshot.jobId }?.state == .succeeded)
+        #expect(!jobs.contains { $0.storyId == deletedID })
+    }
+
+    @Test(arguments: [false, true])
+    func deletingTheOnlyNoteRemovesDaySupportDataAndKeepsPhotos(illustrationAlreadyOrphaned: Bool) async throws {
+        let fixture = try makeFixture()
+        let days = try DailyBiographyJobRunner.prepareCompletedDays(initialState: .queued, in: fixture.context)
+        let day = try #require(days.first { $0.sourceStoryIds == [fixture.currentStory.id] })
+        let entry = try await DailyBiographyJobRunner.run(
+            jobID: day.jobId,
+            userProfile: fixture.profile,
+            generator: SuccessfulDailyBiographyGenerator(),
+            in: fixture.context
+        )
+        if illustrationAlreadyOrphaned { fixture.context.delete(entry) }
+        fixture.context.insert(DayIllustration(dayKey: day.dayKey, at: fixture.now))
+        let photo = DayPhoto(
+            dayKey: day.dayKey,
+            encoded: .init(imageData: Data([1]), thumbnailData: Data([2]), pixelWidth: 1, pixelHeight: 1)
+        )
+        let photoID = photo.id
+        fixture.context.insert(photo)
+        try fixture.context.save()
+
+        let viewModel = makeViewModel(for: fixture, connection: .unavailable)
+        try #require(viewModel.deleteStory(fixture.currentStory))
+
+        #expect(!viewModel.dailyBiographyEntries.contains { $0.dayKey == day.dayKey })
+        #expect(!viewModel.storyDayKeys.values.contains(day.dayKey))
+        #expect(try fixture.context.fetch(FetchDescriptor<DayIllustration>()).isEmpty)
+        #expect(try !fixture.context.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>())
+            .contains { $0.dayKey == day.dayKey })
+        #expect(try !fixture.context.fetch(FetchDescriptor<ProcessingJob>()).contains { $0.id == day.jobId })
+        #expect(try fixture.context.fetch(FetchDescriptor<DayPhoto>()).map(\.id) == [photoID])
+    }
+
+    @Test func deletingDuringGenerationDiscardsTheInFlightStoryAndRunsTheReplacement() async throws {
+        let fixture = try makeFixture()
+        let generator = DailyBiographyGeneratorWithInterruption()
+        let viewModel = makeViewModel(for: fixture, connection: .wifi, generator: generator)
+        let removed = fixture.pastStories[1]
+        generator.beforeTwoNoteResponse = {
+            try #require(viewModel.deleteStory(removed))
+            await viewModel.resumePendingDailyBiographyJobs(now: fixture.now)
+        }
+
+        await viewModel.resumePendingDailyBiographyJobs(now: fixture.now)
+
+        let entry = try #require(viewModel.dailyBiographyEntries.first { $0.dayKey == "2026-08-03" })
+        #expect(entry.sourceStoryIds == [fixture.pastStories[0].id])
+        #expect(!entry.prose.contains("Evening memory."))
+        #expect(!viewModel.stories.contains { $0 === removed })
+    }
+
+    @Test(arguments: [0, -2])
+    func delayedTranscriptionAndCorrectionsImmediatelyRewriteTheCaptureDay(dayOffset: Int) async throws {
+        let fixture = try makeFixture()
+        let calendar = JournalCalendar()
+        let now = Date()
+        let date = try #require(calendar.calendar.date(byAdding: .day, value: dayOffset, to: now))
+        let capture = calendar.calendar.startOfDay(for: date).addingTimeInterval(120)
+        let dayKey = calendar.dayKey(for: capture)
+        let existing = Story(text: "An earlier note.", date: capture.addingTimeInterval(-60), duration: 10)
+        insertTranscribedNote(existing, in: fixture.context, timezone: calendar.calendar.timeZone.identifier)
+
+        let audio = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).m4a")
+        try Data([1, 2, 3]).write(to: audio)
+        defer { try? FileManager.default.removeItem(at: audio) }
+        let (pending, job) = try SpeechRecognitionViewModel.persistRemoteCaptureForTranscription(
+            startTime: capture,
+            endTime: capture.addingTimeInterval(10),
+            audioFileURL: audio,
+            modelContext: fixture.context
+        )
+        job.markFailed(errorCode: "remote_transcription_failed", at: now)
+        try fixture.context.save()
+
+        let viewModel = makeViewModel(
+            for: fixture,
+            connection: .wifi,
+            transcriber: DailyBiographyTestTranscriber()
+        )
+        await viewModel.resumePendingDailyBiographyJobs()
+        let initial = try #require(viewModel.dailyBiographyEntries.first { $0.dayKey == dayKey })
+        let initialID = initial.id
+        #expect(initial.sourceStoryIds == [existing.id])
+
+        viewModel.retryTranscription(for: pending)
+        try await waitForRewrite {
+            viewModel.dailyBiographyEntries.first { $0.dayKey == dayKey }?.sourceStoryIds == [existing.id, pending.id]
+        }
+        #expect(initial.combinedTranscript.contains("The delayed voice note."))
+
+        viewModel.updateStory(pending, withText: "The corrected voice note.")
+        try await waitForRewrite {
+            viewModel.dailyBiographyEntries.first { $0.dayKey == dayKey }?.combinedTranscript
+                .contains("The corrected voice note.") == true
+        }
+        #expect(viewModel.dailyBiographyEntries.first { $0.dayKey == dayKey }?.id == initialID)
+        #expect(!initial.combinedTranscript.contains("The delayed voice note."))
+    }
+
     @Test func invalidProviderResponseCanResumeWithinTheAttemptCeiling() async throws {
         let fixture = try makeFixture()
         let prepared = try #require(DailyBiographyJobRunner.prepareCompletedDays(
@@ -245,7 +399,31 @@ struct DailyBiographyConsolidationTests {
         #expect(entries.map(\.dayKey) == [past.dayKey])
     }
 
-    private func makeFixture() throws -> DailyBiographyFixture {
+    private func makeViewModel(
+        for fixture: DailyBiographyFixture,
+        connection: SpeechNetworkConnection,
+        generator: any DailyEntryGenerationService = SuccessfulDailyBiographyGenerator(),
+        transcriber: any RemoteSpeechTranscribing = UnavailableRemoteSpeechTranscriber()
+    ) -> SpeechRecognitionViewModel {
+        let viewModel = SpeechRecognitionViewModel(
+            remoteDailyEntryGenerator: generator,
+            remoteTranscriber: transcriber,
+            networkConnectionProvider: FixedSpeechNetworkConnectionProvider(connection),
+            requestsMicrophonePermissionOnInit: false
+        )
+        viewModel.configure(modelContext: fixture.context, userProfile: fixture.profile)
+        return viewModel
+    }
+
+    private func waitForRewrite(_ condition: () -> Bool) async throws {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while !condition(), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try #require(condition(), "Timed out waiting for the day to be rewritten")
+    }
+
+    private func makeFixture(includeEvening: Bool = true) throws -> DailyBiographyFixture {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)
         let now = try #require(ISO8601DateFormatter().date(from: "2026-08-04T18:00:00Z"))
@@ -271,29 +449,8 @@ struct DailyBiographyConsolidationTests {
         )
 
         context.insert(profile)
-        for story in pastStories + [currentStory] {
-            let metadata = StoryMetadata(captureDate: story.date, timezone: "UTC")
-            story.metadataId = metadata.id
-            let artifact = TranscriptArtifact(
-                storyId: story.id,
-                rawText: story.text,
-                source: .remoteProvider,
-                languageCode: "en-US",
-                capturedAt: story.date,
-                audioDuration: story.duration
-            )
-            let version = TranscriptVersion(
-                transcriptArtifactId: artifact.id,
-                storyId: story.id,
-                revision: 1,
-                text: story.text,
-                kind: .sourceSnapshot,
-                author: .source
-            )
-            context.insert(story)
-            context.insert(metadata)
-            context.insert(artifact)
-            context.insert(version)
+        for story in pastStories.prefix(includeEvening ? 2 : 1) + [currentStory] {
+            insertTranscribedNote(story, in: context)
         }
         try context.save()
         return DailyBiographyFixture(
@@ -303,6 +460,50 @@ struct DailyBiographyConsolidationTests {
             pastStories: pastStories,
             currentStory: currentStory
         )
+    }
+
+    private func insertTranscribedNote(_ story: Story, in context: ModelContext, timezone: String = "UTC") {
+        let metadata = StoryMetadata(captureDate: story.date, timezone: timezone)
+        story.metadataId = metadata.id
+        let artifact = TranscriptArtifact(
+            storyId: story.id,
+            rawText: story.text,
+            source: .remoteProvider,
+            languageCode: "en-US",
+            capturedAt: story.date,
+            audioDuration: story.duration
+        )
+        let version = TranscriptVersion(
+            transcriptArtifactId: artifact.id,
+            storyId: story.id,
+            revision: 1,
+            text: story.text,
+            kind: .sourceSnapshot,
+            author: .source
+        )
+        context.insert(story)
+        context.insert(metadata)
+        context.insert(artifact)
+        context.insert(version)
+    }
+}
+
+@MainActor
+private final class DailyBiographyGeneratorWithInterruption: DailyEntryGenerationService {
+    var beforeTwoNoteResponse: (() async throws -> Void)?
+
+    func generateDailyEntry(_ request: DailyEntryGenerationRequest) async throws -> DailyEntryGenerationResponse {
+        if request.sourceSegments.count == 2, let beforeTwoNoteResponse {
+            self.beforeTwoNoteResponse = nil
+            try await beforeTwoNoteResponse()
+        }
+        return try await SuccessfulDailyBiographyGenerator().generateDailyEntry(request)
+    }
+}
+
+private struct DailyBiographyTestTranscriber: RemoteSpeechTranscribing {
+    func transcribe(audioFileURL: URL, localeIdentifier: String) async throws -> RemoteSpeechTranscription {
+        RemoteSpeechTranscription(transcript: "The delayed voice note.", provider: "test", model: "test")
     }
 }
 

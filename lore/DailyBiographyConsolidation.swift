@@ -211,7 +211,7 @@ enum DailyBiographyJobRunner {
         in modelContext: ModelContext,
         now: Date = Date()
     ) throws -> [PreparedDay] {
-        let groups = try completedDayGroups(in: modelContext, now: now)
+        let groups = try completedDayGroups(in: modelContext)
         let entries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
         let snapshots = try modelContext.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>())
         let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
@@ -233,12 +233,18 @@ enum DailyBiographyJobRunner {
             if let existingSnapshot = snapshots.first(where: {
                 $0.dayKey == group.dayKey && $0.sourceFingerprint == group.fingerprint
             }), let existingJob = jobsById[existingSnapshot.jobId] {
-                prepared.append(PreparedDay(
-                    jobId: existingJob.id,
-                    dayKey: group.dayKey,
-                    sourceStoryIds: existingSnapshot.sourceStoryIds
-                ))
-                continue
+                if existingJob.state != .succeeded && existingJob.state != .cancelled {
+                    prepared.append(PreparedDay(
+                        jobId: existingJob.id,
+                        dayKey: group.dayKey,
+                        sourceStoryIds: existingSnapshot.sourceStoryIds
+                    ))
+                    continue
+                }
+                // Deleting a note can restore a previous fingerprint after its
+                // original entry was replaced and then removed.
+                modelContext.delete(existingSnapshot)
+                modelContext.delete(existingJob)
             }
 
             for obsolete in snapshots where obsolete.dayKey == group.dayKey
@@ -327,6 +333,8 @@ enum DailyBiographyJobRunner {
             userProfile: userProfile,
             in: modelContext
         )
+        let dayKey = snapshot.dayKey
+        let sourceFingerprint = snapshot.sourceFingerprint
         job.beginAttempt(at: now, leaseDuration: leaseDuration)
         do {
             try modelContext.save()
@@ -338,10 +346,21 @@ enum DailyBiographyJobRunner {
         do {
             let response = try await generator.generateDailyEntry(package.request)
             try Task.checkCancellation()
+            guard job.modelContext != nil, !job.isDeleted, job.state == .running else {
+                throw DailyBiographyJobRunnerError.jobCancelled
+            }
+            guard try completedDayGroups(in: modelContext).contains(where: {
+                $0.dayKey == dayKey && $0.fingerprint == sourceFingerprint
+            }) else {
+                job.cancel(at: Date())
+                try modelContext.save()
+                throw DailyBiographyJobRunnerError.jobCancelled
+            }
             try validate(response: response, for: package.request)
 
             let entry: DailyBiographyEntry
-            if let existing = entries.first(where: { $0.dayKey == snapshot.dayKey }) {
+            let currentEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
+            if let existing = currentEntries.first(where: { $0.dayKey == dayKey }) {
                 existing.replace(
                     sourceStoryIds: package.stories.map(\.id),
                     sourceTranscriptArtifactIds: package.artifacts.map(\.id),
@@ -390,17 +409,19 @@ enum DailyBiographyJobRunner {
             return entry
         } catch is CancellationError {
             modelContext.rollback()
+            guard job.modelContext != nil, !job.isDeleted else { throw CancellationError() }
             job.cancel(at: Date())
             try modelContext.save()
             throw CancellationError()
         } catch LoreBackendProcessingError.cancelled {
             modelContext.rollback()
+            guard job.modelContext != nil, !job.isDeleted else { throw CancellationError() }
             job.cancel(at: Date())
             try modelContext.save()
             throw CancellationError()
         } catch {
             modelContext.rollback()
-            guard job.state == .running else { throw error }
+            guard job.modelContext != nil, !job.isDeleted, job.state == .running else { throw error }
             let terminal = isTerminal(error) || job.attemptCount >= job.maximumAttempts
             let failureDate = Date()
             job.markFailed(
@@ -416,18 +437,23 @@ enum DailyBiographyJobRunner {
     @discardableResult
     static func deleteSupportData(
         containing storyID: UUID,
+        emptyDayKey: String? = nil,
         in modelContext: ModelContext
     ) throws -> Int {
         let allEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
-        let entries = allEntries.filter { $0.sourceStoryIds.contains(storyID) }
+        let entries = allEntries.filter { $0.sourceStoryIds.contains(storyID) || $0.dayKey == emptyDayKey }
         let snapshots = try modelContext.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>())
-            .filter { $0.sourceStoryIds.contains(storyID) }
+            .filter { $0.sourceStoryIds.contains(storyID) || $0.dayKey == emptyDayKey }
         let snapshotJobIds = Set(snapshots.map(\.jobId))
         let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
             .filter { snapshotJobIds.contains($0.id) }
 
-        let remainingDays = Set(allEntries.filter { !$0.sourceStoryIds.contains(storyID) }.map(\.dayKey))
-        let removedDays = Set(entries.map(\.dayKey)).subtracting(remainingDays)
+        let remainingDays = Set(allEntries.filter {
+            !$0.sourceStoryIds.contains(storyID) && $0.dayKey != emptyDayKey
+        }.map(\.dayKey))
+        var affectedDays = Set(entries.map(\.dayKey) + snapshots.map(\.dayKey))
+        if let emptyDayKey { affectedDays.insert(emptyDayKey) }
+        let removedDays = affectedDays.subtracting(remainingDays)
         let illustrations = removedDays.isEmpty ? [] : try modelContext.fetch(FetchDescriptor<DayIllustration>())
             .filter { removedDays.contains($0.dayKey) }
 
@@ -438,10 +464,7 @@ enum DailyBiographyJobRunner {
         return entries.count + illustrations.count + snapshots.count + jobs.count
     }
 
-    private static func completedDayGroups(
-        in modelContext: ModelContext,
-        now: Date
-    ) throws -> [DayGroup] {
+    private static func completedDayGroups(in modelContext: ModelContext) throws -> [DayGroup] {
         let stories = try modelContext.fetch(FetchDescriptor<Story>())
         let artifacts = try modelContext.fetch(FetchDescriptor<TranscriptArtifact>())
         let versions = try modelContext.fetch(FetchDescriptor<TranscriptVersion>())
