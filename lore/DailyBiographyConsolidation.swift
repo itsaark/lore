@@ -432,23 +432,12 @@ enum DailyBiographyJobRunner {
             uniquingKeysWith: { current, _ in current }
         )
         var sourcesByDay: [String: [Source]] = [:]
-        // Days still in progress. They are rewritten as one story each time a
-        // note is added, so several notes never read as separate, repeating
-        // fragments. A lone note already has its own entry, so it waits.
-        var openDayKeys: Set<String> = []
 
         for story in stories {
             let timezone = story.metadataId
                 .flatMap { metadataById[$0] }
                 .flatMap { TimeZone(identifier: $0.timezone) }
                 ?? .current
-            var calendar = Calendar(identifier: .gregorian)
-            calendar.timeZone = timezone
-            let start = calendar.startOfDay(for: story.date)
-            guard let nextDay = calendar.date(byAdding: .day, value: 1, to: start) else {
-                continue
-            }
-            let dayIsComplete = nextDay <= now
             guard let artifact = artifacts.first(where: { $0.storyId == story.id }) else {
                 continue
             }
@@ -462,7 +451,6 @@ enum DailyBiographyJobRunner {
             }
 
             let dayKey = localDayKey(for: story.date, timezone: timezone)
-            if !dayIsComplete { openDayKeys.insert(dayKey) }
             sourcesByDay[dayKey, default: []].append(Source(
                 story: story,
                 artifact: artifact,
@@ -473,7 +461,6 @@ enum DailyBiographyJobRunner {
         }
 
         return sourcesByDay.compactMap { dayKey, sources in
-            if openDayKeys.contains(dayKey), sources.count < 2 { return nil }
             let sorted = sources.sorted { $0.story.date < $1.story.date }
             guard let calendarDate = calendarDate(for: dayKey) else { return nil }
             let identifiers = sorted.map(\.timezone.identifier)
@@ -535,15 +522,24 @@ enum DailyBiographyJobRunner {
             throw DailyBiographyJobRunnerError.sourceNotFound
         }
 
+        let metadataById = Dictionary(
+            try modelContext.fetch(FetchDescriptor<StoryMetadata>()).map { ($0.id, $0) },
+            uniquingKeysWith: { current, _ in current }
+        )
         let segments = tuples.map { story, _, version in
-            TranscriptSourceSegment(
+            let timezone = story.metadataId
+                .flatMap { metadataById[$0] }
+                .flatMap { TimeZone(identifier: $0.timezone) }
+                ?? .current
+            return TranscriptSourceSegment(
                 id: version.id.uuidString.lowercased(),
                 chunkId: story.id.uuidString.lowercased(),
                 startMilliseconds: 0,
                 endMilliseconds: max(0, Int(story.duration * 1_000)),
                 text: version.text,
                 confidence: nil,
-                speakerLabel: nil
+                speakerLabel: nil,
+                recordedAt: TranscriptSourceSegment.recordedAtString(for: story.date, in: timezone)
             )
         }
         // The v1 generation envelope has one canonical note/artifact/version

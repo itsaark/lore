@@ -104,6 +104,59 @@ describe("FireworksClient writer fallback", () => {
   });
 });
 
+describe("FireworksClient multi-note days", () => {
+  const segment = (id: string, text: string) => ({
+    id,
+    chunk_id: `chunk-${id}`,
+    start_milliseconds: 0,
+    end_milliseconds: 5_000,
+    text,
+    confidence: null,
+    speaker_label: null
+  });
+  const output = () => {
+    const base = validOutput() as { entry: { title_source_references: string[]; sentences: Array<Record<string, unknown>> } };
+    base.entry.title_source_references = ["s1", "s2"];
+    base.entry.sentences = [
+      { text: "Maya started the day at the market.", source_references: ["s1"], fact_references: [], preserves_uncertainty: false },
+      { text: "By evening she was back home.", source_references: ["s2"], fact_references: [], preserves_uncertainty: false }
+    ];
+    return base;
+  };
+
+  it("asks for one coherent story and passes each note's recording time", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.messages[1].content).toContain("ONE coherent entry for the whole day");
+      expect(body.messages[1].content).toContain("2026-07-16T08:15:00-07:00");
+      return Response.json({
+        id: "c", model: "m",
+        choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify(output()) } }]
+      });
+    });
+    const client = new FireworksClient({ config, fetch: fetchMock });
+    await client.generateDailyEntry("req_multi", {
+      ...dailyRequest,
+      source_segments: [
+        { ...segment("s1", "I went to the market."), recorded_at: "2026-07-16T08:15:00-07:00" },
+        { ...segment("s2", "Then I came home."), recorded_at: "2026-07-16T18:40:00-07:00" }
+      ]
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("uses the same day-story instructions for a single note", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      expect(body.messages[1].content).toContain("ONE coherent entry for the whole day");
+      return Response.json(validCompletion());
+    });
+    const client = new FireworksClient({ config, fetch: fetchMock });
+    await client.generateDailyEntry("req_single", dailyRequest);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
 describe("FireworksClient", () => {
   it("builds a strict provider schema with required fields on every object", () => {
     assertStrictObjects(FireworksDailyEntryJsonSchema);

@@ -14,12 +14,12 @@ struct DailyBiographyConsolidationTests {
             now: fixture.now
         )
 
-        #expect(prepared.count == 1)
-        #expect(prepared[0].dayKey == "2026-08-03")
-        #expect(prepared[0].sourceStoryIds == fixture.pastStories.map(\.id))
+        #expect(prepared.count == 2)
+        let past = try #require(prepared.first { $0.dayKey == "2026-08-03" })
+        #expect(past.sourceStoryIds == fixture.pastStories.map(\.id))
 
         let entry = try await DailyBiographyJobRunner.run(
-            jobID: prepared[0].jobId,
+            jobID: past.jobId,
             userProfile: fixture.profile,
             generator: SuccessfulDailyBiographyGenerator(),
             in: fixture.context,
@@ -40,10 +40,10 @@ struct DailyBiographyConsolidationTests {
             in: fixture.context,
             now: fixture.now
         )
-        #expect(replay.isEmpty)
+        #expect(!replay.contains { $0.dayKey == "2026-08-03" })
     }
 
-    @Test func currentCalendarDayWaitsUntilItEnds() throws {
+    @Test func currentCalendarDayIsWrittenFromItsFirstNote() throws {
         let fixture = try makeFixture()
         let prepared = try DailyBiographyJobRunner.prepareCompletedDays(
             initialState: .queued,
@@ -51,11 +51,11 @@ struct DailyBiographyConsolidationTests {
             now: fixture.now
         )
 
-        #expect(prepared.count == 1)
-        #expect(!prepared[0].sourceStoryIds.contains(fixture.currentStory.id))
+        let today = try #require(prepared.first { $0.dayKey == "2026-08-04" })
+        #expect(today.sourceStoryIds == [fixture.currentStory.id])
     }
 
-    @Test func dayInProgressIsRewrittenOnceItHasMultipleNotes() throws {
+    @Test func dayInProgressIsRewrittenAsNotesAreAdded() throws {
         let fixture = try makeFixture()
         let lateEvening = try #require(ISO8601DateFormatter().date(from: "2026-08-03T23:30:00Z"))
         let prepared = try DailyBiographyJobRunner.prepareCompletedDays(
@@ -64,9 +64,8 @@ struct DailyBiographyConsolidationTests {
             now: lateEvening
         )
 
-        #expect(prepared.count == 1)
-        #expect(prepared[0].dayKey == "2026-08-03")
-        #expect(prepared[0].sourceStoryIds == fixture.pastStories.map(\.id))
+        let day = try #require(prepared.first { $0.dayKey == "2026-08-03" })
+        #expect(day.sourceStoryIds == fixture.pastStories.map(\.id))
     }
 
     @Test func transcriptCorrectionCreatesANewRevisionForTheSameDayEntry() async throws {

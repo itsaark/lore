@@ -83,10 +83,22 @@ struct TranscriptSourceSegment: Codable, Equatable, Identifiable, Sendable {
     var text: String
     var confidence: Double?
     var speakerLabel: String?
+    /// ISO 8601 local time with UTC offset, e.g. 2026-08-03T15:00:00-07:00.
+    static func recordedAtString(for date: Date, in timeZone: TimeZone) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = timeZone
+        return formatter.string(from: date)
+    }
+
+    /// When the note was spoken: local time with its UTC offset. Lets the
+    /// writer place a day's notes on one timeline. Omitted when unknown.
+    var recordedAt: String? = nil
 
     private enum CodingKeys: String, CodingKey {
         case id
         case chunkId
+        case recordedAt
         case startMilliseconds
         case endMilliseconds
         case text
@@ -101,10 +113,12 @@ struct TranscriptSourceSegment: Codable, Equatable, Identifiable, Sendable {
         endMilliseconds: Int,
         text: String,
         confidence: Double?,
-        speakerLabel: String?
+        speakerLabel: String?,
+        recordedAt: String? = nil
     ) {
         self.id = id
         self.chunkId = chunkId
+        self.recordedAt = recordedAt
         self.startMilliseconds = startMilliseconds
         self.endMilliseconds = endMilliseconds
         self.text = text
@@ -121,6 +135,7 @@ struct TranscriptSourceSegment: Codable, Equatable, Identifiable, Sendable {
         text = try container.decode(String.self, forKey: .text)
         confidence = try container.decodeIfPresent(Double.self, forKey: .confidence)
         speakerLabel = try container.decodeIfPresent(String.self, forKey: .speakerLabel)
+        recordedAt = try container.decodeIfPresent(String.self, forKey: .recordedAt)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -130,6 +145,7 @@ struct TranscriptSourceSegment: Codable, Equatable, Identifiable, Sendable {
         try container.encode(startMilliseconds, forKey: .startMilliseconds)
         try container.encode(endMilliseconds, forKey: .endMilliseconds)
         try container.encode(text, forKey: .text)
+        try container.encodeIfPresent(recordedAt, forKey: .recordedAt)
 
         // The wire contract represents unavailable segment metadata as JSON
         // null. Synthesized Codable omits nil optionals, which caused older

@@ -85,7 +85,8 @@ enum RemoteGenerationRequestFactory {
             endMilliseconds: max(0, Int(story.duration * 1_000)),
             text: transcript,
             confidence: nil,
-            speakerLabel: nil
+            speakerLabel: nil,
+            recordedAt: TranscriptSourceSegment.recordedAtString(for: story.date, in: .current)
         )
 
         let dateFormatter = DateFormatter()
