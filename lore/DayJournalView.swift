@@ -10,6 +10,7 @@ struct DayJournalView: View {
 
     @Environment(\.modelContext) private var modelContext
     @Query private var photos: [DayPhoto]
+    @Query private var illustrations: [DayIllustration]
     @State private var addItems: [PhotosPickerItem] = []
     @State private var showsAddPicker = false
     @State private var replaceItem: PhotosPickerItem?
@@ -26,6 +27,11 @@ struct DayJournalView: View {
         self.dayKey = dayKey
         self.speechRecognizer = speechRecognizer
         _photos = Query(filter: #Predicate<DayPhoto> { $0.dayKey == dayKey })
+        _illustrations = Query(
+            filter: #Predicate<DayIllustration> { $0.dayKey == dayKey },
+            sort: \DayIllustration.updatedAt,
+            order: .reverse
+        )
     }
 
     private var orderedPhotos: [DayPhoto] { photos.inDayOrder() }
@@ -78,7 +84,7 @@ struct DayJournalView: View {
                 }
                 .padding(.bottom, 24)
 
-                photoSection
+                photoSection(for: content?.entry)
                     .padding(.bottom, 30)
 
                 entryBody(for: content)
@@ -141,11 +147,37 @@ struct DayJournalView: View {
     // MARK: Photo
 
     @ViewBuilder
-    private var photoSection: some View {
+    private func photoSection(for entry: DailyBiographyEntry?) -> some View {
         let ordered = orderedPhotos
         Group {
             if ordered.isEmpty {
-                addPhotoPlaceholder
+                if let illustration = illustrations.first,
+                   dayKey < journalCalendar.dayKey(for: Date()),
+                   let entry,
+                   !entry.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let cover = DayCover.illustration(illustration)
+                    VStack(alignment: .leading, spacing: 14) {
+                        DayPhotoImage(cover: cover, variant: .full)
+                            .aspectRatio(min(max(cover.aspectRatio, 3.0 / 4.0), 4.0 / 3.0), contentMode: .fit)
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.1))
+                            }
+                            .shadow(color: .black.opacity(0.55), radius: 18, y: 10)
+                            .overlay {
+                                if isSavingPhoto { savingIndicator }
+                            }
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel("Painting inspired by this day")
+                            .accessibilityAddTraits(.isImage)
+
+                        photoControls(for: ordered)
+                    }
+                } else {
+                    addPhotoPlaceholder
+                }
             } else {
                 VStack(alignment: .leading, spacing: 14) {
                     Group {
@@ -217,7 +249,11 @@ struct DayJournalView: View {
     /// has room for more.
     private func photoControls(for ordered: [DayPhoto]) -> some View {
         HStack(spacing: 12) {
-            if ordered.count > 1 {
+            if ordered.isEmpty {
+                Text("Painted from your day")
+                    .font(LoreTheme.caption(.caption))
+                    .foregroundStyle(LoreTheme.tertiaryInk)
+            } else if ordered.count > 1 {
                 let current = currentPhoto?.id
                 HStack(spacing: 6) {
                     ForEach(ordered) { photo in
@@ -241,9 +277,11 @@ struct DayJournalView: View {
                         Image(systemName: "plus")
                             .font(.caption.weight(.bold))
                         Text("Add photo")
-                        Text("\(ordered.count)/\(DayPhotoStore.maximumPhotosPerDay)")
-                            .foregroundStyle(LoreTheme.tertiaryInk)
-                            .monospacedDigit()
+                        if !ordered.isEmpty {
+                            Text("\(ordered.count)/\(DayPhotoStore.maximumPhotosPerDay)")
+                                .foregroundStyle(LoreTheme.tertiaryInk)
+                                .monospacedDigit()
+                        }
                     }
                     .font(LoreTheme.label)
                     .foregroundStyle(LoreTheme.secondaryInk)

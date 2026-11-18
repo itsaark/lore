@@ -23,6 +23,7 @@ enum LoreModelContainer {
         DailyBiographyEntry.self,
         StoryChapter.self,
         DayPhoto.self,
+        DayIllustration.self,
         VocabularyEntry.self
     ])
 
@@ -55,6 +56,7 @@ enum LoreModelContainer {
         DailyBiographyGenerationSnapshot.self,
         StoryChapter.self,
         DayPhoto.self,
+        DayIllustration.self,
         VocabularyEntry.self
     ])
 

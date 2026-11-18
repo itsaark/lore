@@ -2,7 +2,45 @@ import SwiftData
 import SwiftUI
 import UIKit
 
-/// Decoded day photos keyed by day and revision, so calendar tiles never turn
+enum DayCover {
+    case photo(DayPhoto)
+    case illustration(DayIllustration)
+
+    var id: UUID {
+        switch self {
+        case .photo(let photo): photo.id
+        case .illustration(let illustration): illustration.id
+        }
+    }
+
+    var updatedAt: Date {
+        switch self {
+        case .photo(let photo): photo.updatedAt
+        case .illustration(let illustration): illustration.updatedAt
+        }
+    }
+
+    var aspectRatio: CGFloat {
+        switch self {
+        case .photo(let photo): photo.aspectRatio
+        case .illustration(let illustration): illustration.aspectRatio
+        }
+    }
+
+    var isIllustration: Bool {
+        if case .illustration = self { return true }
+        return false
+    }
+
+    func data(for variant: DayPhotoImage.Variant) -> Data? {
+        switch self {
+        case .photo(let photo): variant == .full ? photo.imageData : photo.thumbnailData
+        case .illustration(let illustration): variant == .full ? illustration.imageData : illustration.thumbnailData
+        }
+    }
+}
+
+/// Decoded day covers keyed by image and revision, so calendar tiles never turn
 /// `Data` into a `UIImage` during a body pass. `NSCache` is thread-safe.
 final class DayPhotoImageCache: @unchecked Sendable {
     static let shared = DayPhotoImageCache()
@@ -22,8 +60,8 @@ final class DayPhotoImageCache: @unchecked Sendable {
         cache.setObject(image, forKey: key as NSString, cost: pixels * 4)
     }
 
-    static func key(for photo: DayPhoto, variant: DayPhotoImage.Variant) -> String {
-        "\(photo.id.uuidString)|\(photo.updatedAt.timeIntervalSinceReferenceDate)|\(variant.rawValue)"
+    static func key(for cover: DayCover, variant: DayPhotoImage.Variant) -> String {
+        "\(cover.id.uuidString)|\(cover.updatedAt.timeIntervalSinceReferenceDate)|\(variant.rawValue)"
     }
 
     static func decode(_ data: Data) async -> UIImage? {
@@ -33,7 +71,7 @@ final class DayPhotoImageCache: @unchecked Sendable {
     }
 }
 
-/// A day photo filling its frame. Decodes off the main thread and shows the
+/// A day cover filling its frame. Decodes off the main thread and shows the
 /// cached thumbnail while a full-size image loads.
 struct DayPhotoImage: View {
     enum Variant: String {
@@ -41,23 +79,32 @@ struct DayPhotoImage: View {
         case full
     }
 
-    let photo: DayPhoto
+    let cover: DayCover
     var variant: Variant = .thumbnail
     var contentMode: ContentMode = .fill
 
-    @State private var image: UIImage?
+    @State private var loadedImage: (coverID: UUID, image: UIImage)?
 
     init(photo: DayPhoto, variant: Variant = .thumbnail, contentMode: ContentMode = .fill) {
-        self.photo = photo
+        self.init(cover: .photo(photo), variant: variant, contentMode: contentMode)
+    }
+
+    init(cover: DayCover, variant: Variant = .thumbnail, contentMode: ContentMode = .fill) {
+        self.cover = cover
         self.variant = variant
         self.contentMode = contentMode
         let cache = DayPhotoImageCache.shared
-        _image = State(initialValue: cache.image(forKey: DayPhotoImageCache.key(for: photo, variant: variant))
-            ?? cache.image(forKey: DayPhotoImageCache.key(for: photo, variant: .thumbnail)))
+        let image = cache.image(forKey: DayPhotoImageCache.key(for: cover, variant: variant))
+            ?? cache.image(forKey: DayPhotoImageCache.key(for: cover, variant: .thumbnail))
+        _loadedImage = State(initialValue: image.map { (cover.id, $0) })
+    }
+
+    private var image: UIImage? {
+        loadedImage?.coverID == cover.id ? loadedImage?.image : nil
     }
 
     private var cacheKey: String {
-        DayPhotoImageCache.key(for: photo, variant: variant)
+        DayPhotoImageCache.key(for: cover, variant: variant)
     }
 
     var body: some View {
@@ -83,21 +130,21 @@ struct DayPhotoImage: View {
     private func load() async {
         let cache = DayPhotoImageCache.shared
         if let cached = cache.image(forKey: cacheKey) {
-            image = cached
+            loadedImage = (cover.id, cached)
             return
         }
-        if variant == .full, image == nil, let thumbnail = await decoded(.thumbnail) {
-            image = thumbnail
+        if variant == .full, image == nil, let thumbnail = await decoded(.thumbnail), !Task.isCancelled {
+            loadedImage = (cover.id, thumbnail)
         }
-        if let decoded = await decoded(variant) {
-            image = decoded
+        if let decoded = await decoded(variant), !Task.isCancelled {
+            loadedImage = (cover.id, decoded)
         }
     }
 
     private func decoded(_ variant: Variant) async -> UIImage? {
-        let key = DayPhotoImageCache.key(for: photo, variant: variant)
+        let key = DayPhotoImageCache.key(for: cover, variant: variant)
         if let cached = DayPhotoImageCache.shared.image(forKey: key) { return cached }
-        guard let data = variant == .full ? photo.imageData : photo.thumbnailData,
+        guard let data = cover.data(for: variant),
               let decoded = await DayPhotoImageCache.decode(data) else { return nil }
         DayPhotoImageCache.shared.insert(decoded, forKey: key)
         return decoded
@@ -109,7 +156,7 @@ struct DayPhotoImage: View {
 struct FannedPhotoStack: View {
     struct Card: Identifiable {
         let day: JournalDay
-        let photo: DayPhoto
+        let cover: DayCover
         let caption: String
 
         var id: String { day.dayKey }
@@ -139,7 +186,7 @@ struct FannedPhotoStack: View {
                     reduceMotion ? nil : .spring(response: 0.62, dampingFraction: 0.7).delay(Double(index) * 0.06),
                     value: isFanned
                 )
-                .accessibilityLabel("\(card.caption), photo")
+                .accessibilityLabel(card.cover.isIllustration ? "\(card.caption), painting" : "\(card.caption), photo")
                 .accessibilityIdentifier("weekPhotoCard_\(card.day.dayKey)")
             }
         }
@@ -171,7 +218,7 @@ private struct PhotoCard: View {
     let size: CGSize
 
     var body: some View {
-        DayPhotoImage(photo: card.photo)
+        DayPhotoImage(cover: card.cover)
             .frame(width: size.width, height: size.height)
             .overlay(alignment: .bottomLeading) {
                 Text(card.caption)

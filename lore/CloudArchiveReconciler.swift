@@ -87,6 +87,12 @@ enum CloudArchiveReconciler {
 
         deleted += try reconcileDailyEntryResults(in: context)
         deleted += try reconcileDailyBiographies(in: context)
+        deleted += reconcileByKey(
+            try context.fetch(FetchDescriptor<DayIllustration>()),
+            key: \.dayKey,
+            prefers: { ($0.updatedAt, $0.id.uuidString) >= ($1.updatedAt, $1.id.uuidString) },
+            in: context
+        )
         deleted += try reconcileVocabulary(in: context)
 
         if deleted > 0 {

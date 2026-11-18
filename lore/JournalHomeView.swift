@@ -223,6 +223,7 @@ private struct JournalCalendarContent: View, Equatable {
     let openSettings: () -> Void
 
     @Query private var photos: [DayPhoto]
+    @Query(sort: \DayIllustration.updatedAt, order: .reverse) private var illustrations: [DayIllustration]
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.stories == rhs.stories
@@ -240,13 +241,13 @@ private struct JournalCalendarContent: View, Equatable {
             storyDayKeys: storyDayKeys,
             calendar: journalCalendar
         )
-        let photosByDay = photos.coversByDay()
         ZoomableJournal(
             model: JournalCalendarModel(
                 calendar: journalCalendar,
                 today: today,
                 content: content,
-                photos: photosByDay
+                photos: photos.coversByDay(),
+                illustrations: illustrations
             ),
             openSettings: openSettings
         )
@@ -396,7 +397,7 @@ private struct ZoomableJournal: View {
             if model.isEmpty {
                 JournalEmptyState()
             } else {
-                let cards = model.photoCards(for: currentWeek)
+                let cards = model.coverCards(for: currentWeek)
                 if cards.isEmpty {
                     Text("No photos this week yet. Open a day to give it one.")
                         .font(LoreTheme.caption(.body))
@@ -485,7 +486,7 @@ private struct ZoomableJournal: View {
             DayListRow(
                 day: row.day,
                 content: model.content[row.day.dayKey],
-                photo: model.photos[row.day.dayKey],
+                cover: model.covers[row.day.dayKey],
                 zoom: zoom
             )
             .transition(layoutTransition)
@@ -517,22 +518,38 @@ private struct JournalCalendarModel {
     let today: Date
     let todayKey: String
     let content: [String: JournalDayContent]
-    let photos: [String: DayPhoto]
-    /// Days with notes, an entry, or a photo, newest first, up to today.
+    let covers: [String: DayCover]
+    /// Days with notes, an entry, or a cover, newest first, up to today.
     let dayRowKeys: [String]
     let dayRows: [DayRowItem]
     let pastWeekItems: [WeekListItem]
     let monthItems: [MonthItem]
 
-    init(calendar: JournalCalendar, today: Date, content: [String: JournalDayContent], photos: [String: DayPhoto]) {
+    init(
+        calendar: JournalCalendar,
+        today: Date,
+        content: [String: JournalDayContent],
+        photos: [String: DayPhoto],
+        illustrations: [DayIllustration]
+    ) {
         self.calendar = calendar
         self.today = today
         self.content = content
-        self.photos = photos
         let todayKey = calendar.dayKey(for: today)
         self.todayKey = todayKey
 
-        let keys = Set(content.keys).union(photos.keys)
+        var covers = photos.mapValues(DayCover.photo)
+        for illustration in illustrations {
+            let dayKey = illustration.dayKey
+            if covers[dayKey] == nil, dayKey < todayKey,
+               let entry = content[dayKey]?.entry,
+               !entry.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                covers[dayKey] = .illustration(illustration)
+            }
+        }
+        self.covers = covers
+
+        let keys = Set(content.keys).union(covers.keys)
         let earliest = keys.compactMap(calendar.date(forDayKey:)).min() ?? today
 
         dayRowKeys = keys.filter { $0 <= todayKey }.sorted(by: >)
@@ -565,14 +582,14 @@ private struct JournalCalendarModel {
         }
     }
 
-    var isEmpty: Bool { content.isEmpty && photos.isEmpty }
+    var isEmpty: Bool { content.isEmpty && covers.isEmpty }
 
-    func photoCards(for week: JournalWeek) -> [FannedPhotoStack.Card] {
+    func coverCards(for week: JournalWeek) -> [FannedPhotoStack.Card] {
         week.days.compactMap { day in
-            guard let photo = photos[day.dayKey] else { return nil }
+            guard let cover = covers[day.dayKey] else { return nil }
             let caption = content[day.dayKey]?.title
                 ?? day.date.formatted(.dateTime.weekday(.wide))
-            return FannedPhotoStack.Card(day: day, photo: photo, caption: caption)
+            return FannedPhotoStack.Card(day: day, cover: cover, caption: caption)
         }
         .suffix(5)
     }
@@ -581,7 +598,7 @@ private struct JournalCalendarModel {
         let dayContent = content[day.dayKey]
         return DayTileState(
             day: day,
-            photo: photos[day.dayKey],
+            cover: covers[day.dayKey],
             hasEntry: dayContent?.hasEntry ?? false,
             hasNotes: dayContent?.hasNotes ?? false,
             isToday: day.dayKey == todayKey,
@@ -623,7 +640,7 @@ private struct DayRowItem: Identifiable {
 
 private struct DayTileState {
     let day: JournalDay
-    let photo: DayPhoto?
+    let cover: DayCover?
     let hasEntry: Bool
     let hasNotes: Bool
     let isToday: Bool
@@ -639,7 +656,7 @@ private struct DayTileState {
         } else if hasNotes {
             parts.append("has voice notes")
         }
-        if photo != nil { parts.append("has photo") }
+        if let cover { parts.append(cover.isIllustration ? "has painting" : "has photo") }
         return parts.joined(separator: ", ")
     }
 }
@@ -836,8 +853,8 @@ private struct WeekDayTile: View {
             .aspectRatio(64.0 / 88.0, contentMode: .fit)
             .frame(maxWidth: .infinity)
             .overlay {
-                if let photo = state.photo {
-                    DayPhotoImage(photo: photo)
+                if let cover = state.cover {
+                    DayPhotoImage(cover: cover)
                         .overlay(alignment: .bottom) {
                             Text(state.day.date.formatted(.dateTime.weekday(.abbreviated)))
                                 .font(.caption2.weight(.semibold))
@@ -942,8 +959,8 @@ private struct MonthDayCell: View {
             .aspectRatio(0.82, contentMode: .fit)
             .frame(maxWidth: .infinity)
             .overlay {
-                if let photo = state.photo {
-                    DayPhotoImage(photo: photo)
+                if let cover = state.cover {
+                    DayPhotoImage(cover: cover)
                         .overlay(alignment: .bottomLeading) {
                             Text(state.day.date.formatted(.dateTime.day()))
                                 .font(.caption2.weight(.bold))
@@ -1000,12 +1017,12 @@ private struct DayHeroCard: View {
 
     var body: some View {
         let day = day
-        let photo = model.photos[day.dayKey]
+        let cover = model.covers[day.dayKey]
         let week = model.calendar.week(containing: day.date)
 
         ZStack(alignment: .bottom) {
             NavigationLink(value: JournalRoute.day(day.dayKey)) {
-                face(day: day, photo: photo)
+                face(day: day, cover: cover)
             }
             .buttonStyle(DayTileButtonStyle())
             .accessibilityLabel(model.state(for: day).accessibilityLabel)
@@ -1045,11 +1062,11 @@ private struct DayHeroCard: View {
         }
     }
 
-    private func face(day: JournalDay, photo: DayPhoto?) -> some View {
+    private func face(day: JournalDay, cover: DayCover?) -> some View {
         ZStack(alignment: .topLeading) {
             Group {
-                if let photo {
-                    DayPhotoImage(photo: photo, variant: .full)
+                if let cover {
+                    DayPhotoImage(cover: cover, variant: .full)
                         .overlay {
                             LinearGradient(
                                 colors: [.black.opacity(0.35), .clear, .clear, .black.opacity(0.6)],
@@ -1128,7 +1145,7 @@ private struct DayHeroCard: View {
 private struct DayListRow: View {
     let day: JournalDay
     let content: JournalDayContent?
-    let photo: DayPhoto?
+    let cover: DayCover?
     let zoom: Double
 
     @ScaledMetric(relativeTo: .body) private var previewHeight: CGFloat = 54
@@ -1147,7 +1164,7 @@ private struct DayListRow: View {
     }
 
     var body: some View {
-        let thumbnail = photo == nil ? 0 : JournalZoom.thumbnailProgress(zoom: zoom)
+        let thumbnail = cover == nil ? 0 : JournalZoom.thumbnailProgress(zoom: zoom)
         let reveal = JournalZoom.proseRevealHeight(zoom: zoom, fullHeight: proseHeight, previewHeight: previewHeight)
         let proseOpacity = prose.isEmpty ? 0 : JournalZoom.proseOpacity(zoom: zoom)
 
@@ -1181,8 +1198,8 @@ private struct DayListRow: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if let photo, thumbnail > 0 {
-                        DayPhotoImage(photo: photo)
+                    if let cover, thumbnail > 0 {
+                        DayPhotoImage(cover: cover)
                             .frame(width: 64 * thumbnail, height: 84 * thumbnail)
                             .clipShape(RoundedRectangle(cornerRadius: 10 * thumbnail, style: .continuous))
                             .opacity(Double(thumbnail))

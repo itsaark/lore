@@ -74,6 +74,8 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
     static let maximumMultipartBodyBytes = 3_500_000
     static let maximumDailyEntryBodyBytes = 1_000_000
     static let maximumStoryChapterBodyBytes = 1_500_000
+    static let maximumDayIllustrationBodyBytes = 200_000
+    static let maximumDayIllustrationResponseBytes = 6_000_000
     static let maximumReflectionBodyBytes = 1_000_000
 
     private let configuration: LoreBackendHTTPClientConfiguration
@@ -200,6 +202,36 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         return result
     }
 
+    func generateDayIllustration(
+        _ request: DayIllustrationGenerationRequest
+    ) async throws -> DayIllustrationGenerationResponse {
+        try Task.checkCancellation()
+        guard request.schemaVersion == DayIllustrationGenerationRequest.currentSchemaVersion,
+              request.promptVersion == DayIllustrationGenerationRequest.currentPromptVersion,
+              Self.isValidLanguageCode(request.languageCode),
+              request.title.utf16.count <= DayIllustrationGenerationRequest.maximumTitleLength,
+              !request.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              request.prose.utf16.count <= DayIllustrationGenerationRequest.maximumProseLength,
+              request.retentionPolicy.mode == .zeroDataRetention,
+              request.retentionPolicy.maximumRetentionSeconds == 0 else {
+            throw LoreBackendProcessingError.invalidRequest
+        }
+        let result: DayIllustrationGenerationResponse = try await postJSON(
+            request,
+            path: "v1/day-illustrations",
+            idempotencyKey: "day-illustration:\(request.jobId.uuidString.lowercased())",
+            maximumBodyBytes: Self.maximumDayIllustrationBodyBytes,
+            maximumResponseBytes: Self.maximumDayIllustrationResponseBytes,
+            timeout: max(configuration.requestTimeout, 160)
+        )
+        guard result.schemaVersion == request.schemaVersion,
+              result.jobId == request.jobId,
+              result.promptVersion == request.promptVersion else {
+            throw LoreBackendProcessingError.invalidResponse(requestId: result.requestId)
+        }
+        return result
+    }
+
     #if DEBUG
     /// Model Lab only. The backend admits this route solely for development
     /// App Attest keys, so it can't run from TestFlight or App Store builds.
@@ -275,7 +307,9 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         _ bodyValue: Request,
         path: String,
         idempotencyKey: String,
-        maximumBodyBytes: Int
+        maximumBodyBytes: Int,
+        maximumResponseBytes: Int? = nil,
+        timeout: TimeInterval? = nil
     ) async throws -> Response {
         let body: Data
         do {
@@ -290,18 +324,23 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         var urlRequest = try await makeRequest(
             path: path,
             requestId: Self.makeRequestId(),
-            idempotencyKey: idempotencyKey
+            idempotencyKey: idempotencyKey,
+            timeout: timeout
         )
         urlRequest.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = body
         let (data, response) = try await perform(urlRequest)
+        if let maximumResponseBytes, data.count > maximumResponseBytes {
+            throw LoreBackendProcessingError.invalidResponse(requestId: response.value(forHTTPHeaderField: "X-Request-ID"))
+        }
         return try decodeSuccess(data, response: response)
     }
 
     private func makeRequest(
         path: String,
         requestId: String,
-        idempotencyKey: String
+        idempotencyKey: String,
+        timeout: TimeInterval? = nil
     ) async throws -> URLRequest {
         guard let url = URL(string: path, relativeTo: configuration.baseURL)?.absoluteURL,
               url.scheme?.lowercased() == "https" else {
@@ -310,7 +349,7 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         var request = URLRequest(
             url: url,
             cachePolicy: .reloadIgnoringLocalCacheData,
-            timeoutInterval: configuration.requestTimeout
+            timeoutInterval: timeout ?? configuration.requestTimeout
         )
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -829,6 +868,7 @@ private protocol LoreRequestIdentifiedResponse {
 
 extension RemoteTranscriptionResponse: LoreRequestIdentifiedResponse {}
 extension DailyEntryGenerationResponse: LoreRequestIdentifiedResponse {}
+extension DayIllustrationGenerationResponse: LoreRequestIdentifiedResponse {}
 extension ReflectionResponse: LoreRequestIdentifiedResponse {}
 
 extension LoreBackendHTTPClient: LoreReflectionBackendClient {}

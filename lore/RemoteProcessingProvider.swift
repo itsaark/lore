@@ -432,6 +432,9 @@ protocol LoreBackendProcessingClient: Sendable {
     func generateStoryChapter(
         _ request: StoryChapterGenerationRequest
     ) async throws -> StoryChapterGenerationResponse
+    func generateDayIllustration(
+        _ request: DayIllustrationGenerationRequest
+    ) async throws -> DayIllustrationGenerationResponse
 }
 
 extension LoreBackendProcessingClient {
@@ -439,6 +442,12 @@ extension LoreBackendProcessingClient {
     func generateStoryChapter(
         _ request: StoryChapterGenerationRequest
     ) async throws -> StoryChapterGenerationResponse {
+        throw LoreBackendProcessingError.notConfigured
+    }
+
+    func generateDayIllustration(
+        _ request: DayIllustrationGenerationRequest
+    ) async throws -> DayIllustrationGenerationResponse {
         throw LoreBackendProcessingError.notConfigured
     }
 }

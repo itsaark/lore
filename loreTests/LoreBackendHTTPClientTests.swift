@@ -136,6 +136,50 @@ struct LoreBackendHTTPClientTests {
         #expect((object["retention_policy"] as? [String: Any])?["mode"] as? String == "request_ephemeral")
     }
 
+    @Test func dayIllustrationUsesTheFrozenRouteAndLongTimeout() async throws {
+        let request = DayIllustrationGenerationRequest(
+            jobId: UUID(), dayKey: "2026-11-17", languageCode: "en_US", title: "Rain", prose: "Rain crossed the window."
+        )
+        func provenance(provider: String, alias: String) -> String {
+            """
+            {"provider_id":"\(provider)","model_alias":"\(alias)","model_id":"test-model",
+             "model_policy_version":"test-policy","processed_at":"2026-11-18T00:00:00Z",
+             "processing_duration_milliseconds":20,
+             "retention_attestation":{"mode":"request_ephemeral","maximum_retention_seconds":0,
+             "policy_version":"test-policy","attested_at":"2026-11-18T00:00:00Z"}}
+            """
+        }
+        let responseData = Data("""
+        {"schema_version":"1.0","prompt_version":"day-illustration-v1","job_id":"\(request.jobId)",
+         "request_id":"req_painting","image":{"media_type":"image/jpeg","data_base64":"/9j/","pixel_width":1024,"pixel_height":1536},
+         "scene":{"description":"Rain on glass."},"scene_provenance":\(provenance(provider: "fireworks", alias: "day-scene-v1")),
+         "provenance":\(provenance(provider: "openai", alias: "day-illustration-v1"))}
+        """.utf8)
+        let capture = LoreRequestCapture()
+        let transport = LoreBackendHTTPTransport { request, _ in
+            await capture.record(request, body: request.httpBody ?? Data())
+            return (
+                responseData,
+                try #require(HTTPURLResponse(
+                    url: request.url!, statusCode: 200, httpVersion: nil,
+                    headerFields: ["Content-Type": "application/json", "X-Request-ID": "req_painting"]
+                ))
+            )
+        }
+        let client = try makeClient(transport: transport)
+        let result = try await client.generateDayIllustration(request)
+        let recorded = try #require(await capture.last)
+        #expect(recorded.request.url?.absoluteString == "https://lore.example/api/v1/day-illustrations")
+        #expect(recorded.request.httpMethod == "POST")
+        #expect(recorded.request.timeoutInterval >= 160)
+        #expect(recorded.request.value(forHTTPHeaderField: "Authorization") == "Bearer production-session")
+        #expect(recorded.request.value(forHTTPHeaderField: "Idempotency-Key") == "day-illustration:\(request.jobId.uuidString.lowercased())")
+        #expect(result.image.dataBase64 == "/9j/")
+        #expect(result.image.pixelHeight == 1536)
+        #expect(result.sceneProvenance.providerId == "fireworks")
+        #expect(result.provenance.providerId == "openai")
+    }
+
     @Test func dailyEntryDecodesGroundedResponseAndRejectsWrongJob() async throws {
         let request = makeDailyRequest()
         let transport = LoreBackendHTTPTransport { urlRequest, _ in

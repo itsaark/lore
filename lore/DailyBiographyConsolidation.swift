@@ -411,18 +411,24 @@ enum DailyBiographyJobRunner {
         containing storyID: UUID,
         in modelContext: ModelContext
     ) throws -> Int {
-        let entries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
-            .filter { $0.sourceStoryIds.contains(storyID) }
+        let allEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
+        let entries = allEntries.filter { $0.sourceStoryIds.contains(storyID) }
         let snapshots = try modelContext.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>())
             .filter { $0.sourceStoryIds.contains(storyID) }
         let snapshotJobIds = Set(snapshots.map(\.jobId))
         let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
             .filter { snapshotJobIds.contains($0.id) }
 
+        let remainingDays = Set(allEntries.filter { !$0.sourceStoryIds.contains(storyID) }.map(\.dayKey))
+        let removedDays = Set(entries.map(\.dayKey)).subtracting(remainingDays)
+        let illustrations = removedDays.isEmpty ? [] : try modelContext.fetch(FetchDescriptor<DayIllustration>())
+            .filter { removedDays.contains($0.dayKey) }
+
         entries.forEach(modelContext.delete)
+        illustrations.forEach(modelContext.delete)
         snapshots.forEach(modelContext.delete)
         jobs.forEach(modelContext.delete)
-        return entries.count + snapshots.count + jobs.count
+        return entries.count + illustrations.count + snapshots.count + jobs.count
     }
 
     private static func completedDayGroups(

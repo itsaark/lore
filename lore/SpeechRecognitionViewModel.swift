@@ -104,6 +104,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var isRecoveringDailyEntryJobs = false
     private var isRecoveringDailyBiographyJobs = false
     private var isRefreshingStoryChapters = false
+    private var isRefreshingDayIllustrations = false
     private var modelContext: ModelContext?
     private var userProfile: UserProfile?
     private var hasLoadedStories = false
@@ -620,7 +621,7 @@ class SpeechRecognitionViewModel: ObservableObject {
                 }
             }
             loadStories()
-            await refreshStoryChapters(now: now)
+            await refreshStoryChaptersAndDayIllustrations(now: now)
             scheduleNextDailyBiographyRecovery()
         } catch {
             print("Failed to recover daily-biography jobs: \(error)")
@@ -778,8 +779,14 @@ class SpeechRecognitionViewModel: ObservableObject {
         saveContext()
         loadStories()
         if !affectedChapterMonths.isEmpty {
-            Task { await refreshStoryChapters() }
+            Task { await refreshStoryChaptersAndDayIllustrations() }
         }
+    }
+
+    private func refreshStoryChaptersAndDayIllustrations(now: Date = Date()) async {
+        guard !isRefreshingStoryChapters, !isRefreshingDayIllustrations else { return }
+        await refreshStoryChapters(now: now)
+        await refreshDayIllustrations(now: now)
     }
 
     /// Writes any month chapter whose finished days have changed. Needs the
@@ -802,6 +809,21 @@ class SpeechRecognitionViewModel: ObservableObject {
             return
         } catch {
             print("Failed to refresh story chapters: \(error)")
+        }
+    }
+
+    func refreshDayIllustrations(now: Date = Date()) async {
+        guard let modelContext, !isRefreshingDayIllustrations else { return }
+        guard remoteWorkAvailability(requiresAudioUpload: false) == .permitted else { return }
+        isRefreshingDayIllustrations = true
+        defer { isRefreshingDayIllustrations = false }
+
+        do {
+            try await DayIllustrationRunner.refresh(generator: remoteDailyEntryGenerator, in: modelContext, now: now)
+        } catch is CancellationError {
+            return
+        } catch {
+            print("Failed to refresh day illustrations: \(error)")
         }
     }
     

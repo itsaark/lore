@@ -18,12 +18,21 @@ protocol DailyEntryGenerationService: Sendable {
     func generateStoryChapter(
         _ request: StoryChapterGenerationRequest
     ) async throws -> StoryChapterGenerationResponse
+    func generateDayIllustration(
+        _ request: DayIllustrationGenerationRequest
+    ) async throws -> DayIllustrationGenerationResponse
 }
 
 extension DailyEntryGenerationService {
     func generateStoryChapter(
         _ request: StoryChapterGenerationRequest
     ) async throws -> StoryChapterGenerationResponse {
+        throw LoreBackendProcessingError.notConfigured
+    }
+
+    func generateDayIllustration(
+        _ request: DayIllustrationGenerationRequest
+    ) async throws -> DayIllustrationGenerationResponse {
         throw LoreBackendProcessingError.notConfigured
     }
 }
@@ -41,6 +50,12 @@ struct RemoteDailyEntryGenerationService: DailyEntryGenerationService {
         _ request: StoryChapterGenerationRequest
     ) async throws -> StoryChapterGenerationResponse {
         try await backend.generateStoryChapter(request)
+    }
+
+    func generateDayIllustration(
+        _ request: DayIllustrationGenerationRequest
+    ) async throws -> DayIllustrationGenerationResponse {
+        try await backend.generateDayIllustration(request)
     }
 }
 
