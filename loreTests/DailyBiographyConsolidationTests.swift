@@ -174,6 +174,77 @@ struct DailyBiographyConsolidationTests {
         #expect(entry.dayKey == "2026-08-03")
     }
 
+    @Test(arguments: ["assertion_invalid", "counter_replayed", "challenge_expired", "invalid_request"])
+    func dayStoryRetriesAuthenticationRejectionsWithItsNormalBackoff(code: String) async throws {
+        let fixture = try makeFixture()
+        let prepared = try #require(DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued,
+            in: fixture.context,
+            now: fixture.now
+        ).first)
+        let job = try #require(try fixture.context.fetch(FetchDescriptor<ProcessingJob>())
+            .first(where: { $0.id == prepared.jobId }))
+        let error = LoreBackendProcessingError.rejected(code: code, retryable: false, retryAfterSeconds: nil)
+
+        await #expect(throws: error) {
+            try await DailyBiographyJobRunner.run(
+                jobID: job.id,
+                userProfile: fixture.profile,
+                generator: RejectedDailyBiographyGenerator(error: error),
+                in: fixture.context,
+                now: fixture.now
+            )
+        }
+
+        #expect(job.attemptCount == 1)
+        #expect(job.lastErrorCode == code)
+        if code == "invalid_request" {
+            #expect(job.state == .failed)
+            #expect(job.nextAttemptAt == nil)
+        } else {
+            #expect(job.state == .queued)
+            #expect(job.nextAttemptAt == job.updatedAt.addingTimeInterval(30))
+        }
+    }
+
+    @Test func launchRecoveryRetriesAnOldAssertionFailureAfterTheCooldown() async throws {
+        let fixture = try makeFixture()
+        let days = try DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued,
+            in: fixture.context,
+            now: fixture.now
+        )
+        let past = try #require(days.first { $0.dayKey == "2026-08-03" })
+        let current = try #require(days.first { $0.dayKey == "2026-08-04" })
+        let jobs = try fixture.context.fetch(FetchDescriptor<ProcessingJob>())
+        let authFailure = try #require(jobs.first { $0.id == past.jobId })
+        let invalidRequest = try #require(jobs.first { $0.id == current.jobId })
+        for (job, code) in [(authFailure, "assertion_invalid"), (invalidRequest, "invalid_request")] {
+            job.beginAttempt(at: fixture.now)
+            job.markFailed(errorCode: code, at: fixture.now)
+        }
+        try fixture.context.save()
+
+        let viewModel = SpeechRecognitionViewModel(
+            remoteDailyEntryGenerator: SuccessfulDailyBiographyGenerator(),
+            networkConnectionProvider: FixedSpeechNetworkConnectionProvider(.wifi),
+            requestsMicrophonePermissionOnInit: false
+        )
+        viewModel.configure(modelContext: fixture.context, userProfile: fixture.profile)
+        await viewModel.resumePendingDailyBiographyJobs(now: fixture.now.addingTimeInterval(3_599))
+        #expect(authFailure.state == .failed)
+        #expect(authFailure.attemptCount == 1)
+
+        await viewModel.resumePendingDailyBiographyJobs(now: fixture.now.addingTimeInterval(3_600))
+        #expect(authFailure.state == .succeeded)
+        #expect(authFailure.attemptCount == 2)
+        #expect(authFailure.lastErrorCode == nil)
+        #expect(invalidRequest.state == .failed)
+        #expect(invalidRequest.attemptCount == 1)
+        let entries = try fixture.context.fetch(FetchDescriptor<DailyBiographyEntry>())
+        #expect(entries.map(\.dayKey) == [past.dayKey])
+    }
+
     private func makeFixture() throws -> DailyBiographyFixture {
         let container = try LoreModelContainer.make(inMemory: true)
         let context = ModelContext(container)
@@ -242,6 +313,14 @@ private struct DailyBiographyFixture {
     let profile: UserProfile
     let pastStories: [Story]
     let currentStory: Story
+}
+
+private struct RejectedDailyBiographyGenerator: DailyEntryGenerationService {
+    let error: LoreBackendProcessingError
+
+    func generateDailyEntry(_ request: DailyEntryGenerationRequest) async throws -> DailyEntryGenerationResponse {
+        throw error
+    }
 }
 
 private struct SuccessfulDailyBiographyGenerator: DailyEntryGenerationService {

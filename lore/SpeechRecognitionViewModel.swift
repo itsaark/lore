@@ -580,15 +580,13 @@ class SpeechRecognitionViewModel: ObservableObject {
                 try modelContext.save()
             }
 
-            // A day story that ran out of attempts on a passing failure (the
-            // writer or network was down, or a since-fixed check rejected it)
-            // gets one more attempt an hour later, so a bad afternoon never
-            // leaves a day without its story.
-            let transientCodes: Set<String> = [
+            // Give day stories blocked by a passing writer, network, or
+            // authentication failure another attempt after the cooldown.
+            let transientCodes = DailyBiographyJobRunner.retryableAuthenticationCodes.union([
                 "provider_unavailable", "network_unavailable", "invalid_provider_response",
                 "invalid_remote_response", "remote_rate_limited", "provider_rate_limited",
                 "processing_in_progress", "daily_biography_invalid_response"
-            ]
+            ])
             let cooldown: TimeInterval = 60 * 60
             let retried = jobs.filter { job in
                 guard job.state == .failed,

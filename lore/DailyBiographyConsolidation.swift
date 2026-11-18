@@ -168,6 +168,13 @@ enum DailyBiographyJobRunnerError: Error, LocalizedError, Equatable {
 
 @MainActor
 enum DailyBiographyJobRunner {
+    static let retryableAuthenticationCodes: Set<String> = [
+        "assertion_invalid", "app_attest_key_unknown", "counter_replayed", "unauthorized",
+        "challenge_expired", "challenge_replayed", "auth_unavailable",
+        "app_attest_key_invalid", "app_attest_backoff", "app_attest_server_unavailable",
+        "app_attest_system_failure"
+    ]
+
     struct PreparedDay: Equatable {
         let jobId: UUID
         let dayKey: String
@@ -660,8 +667,8 @@ enum DailyBiographyJobRunner {
              LoreBackendProcessingError.payloadTooLarge,
              DailyBiographyJobRunnerError.sourceNotFound:
             true
-        case let LoreBackendProcessingError.rejected(_, retryable, _):
-            !retryable
+        case let LoreBackendProcessingError.rejected(code, retryable, _):
+            !retryable && !retryableAuthenticationCodes.contains(code)
         default:
             false
         }
