@@ -555,11 +555,12 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
 
         do {
-            _ = try DailyBiographyJobRunner.prepareCompletedDays(
+            let preparedDays = try DailyBiographyJobRunner.prepareCompletedDays(
                 initialState: initialState,
                 in: modelContext,
                 now: now
             )
+            let currentJobIds = Set(preparedDays.map(\.jobId))
             let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
                 .filter { $0.kind == .dailyBiography }
                 .sorted { $0.createdAt < $1.createdAt }
@@ -579,15 +580,27 @@ class SpeechRecognitionViewModel: ObservableObject {
                 try modelContext.save()
             }
 
-            // Until 2026-11-18 the app rejected any day story that left a note
-            // uncited, so valid stories failed for good. Retry those days once.
-            let citationRepairKey = "LoreDailyBiographyCitationRepair-v1"
-            if !UserDefaults.standard.bool(forKey: citationRepairKey) {
-                let retried = jobs.filter {
-                    $0.grantOneMoreAttempt(afterFixing: "daily_biography_invalid_response", at: now)
-                }
-                if !retried.isEmpty { try modelContext.save() }
-                UserDefaults.standard.set(true, forKey: citationRepairKey)
+            // A day story that ran out of attempts on a passing failure (the
+            // writer or network was down, or a since-fixed check rejected it)
+            // gets one more attempt an hour later, so a bad afternoon never
+            // leaves a day without its story.
+            let transientCodes: Set<String> = [
+                "provider_unavailable", "network_unavailable", "invalid_provider_response",
+                "invalid_remote_response", "remote_rate_limited", "provider_rate_limited",
+                "processing_in_progress", "daily_biography_invalid_response"
+            ]
+            let cooldown: TimeInterval = 60 * 60
+            let retried = jobs.filter { job in
+                guard job.state == .failed,
+                      currentJobIds.contains(job.id),
+                      let code = job.lastErrorCode, transientCodes.contains(code),
+                      job.updatedAt <= now.addingTimeInterval(-cooldown) else { return false }
+                return job.grantOneMoreAttempt(afterFixing: code, at: now)
+            }
+            if !retried.isEmpty { try modelContext.save() }
+            for day in preparedDays {
+                guard let job = jobs.first(where: { $0.id == day.jobId }) else { continue }
+                print("[DayStory] \(day.dayKey): \(job.state) attempts=\(job.attemptCount) error=\(job.lastErrorCode ?? "none")\(retried.contains { $0 === job } ? " (retrying now)" : "")")
             }
 
             for job in jobs where job.state != .succeeded && job.state != .cancelled && job.state != .failed {
