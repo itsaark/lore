@@ -27,6 +27,7 @@ import {
   type ReflectionFinalizationRequest
 } from "../../contracts/reflection.js";
 import { LoreApiError } from "../../http/errors.js";
+import { writeSafeLog } from "../../http/logger.js";
 import { fireworksError } from "./errors.js";
 import {
   FireworksChatCompletionSchema,
@@ -84,7 +85,7 @@ export class FireworksClient {
     request: DailyEntryGenerationRequest,
     signal?: AbortSignal
   ): Promise<DailyEntryGenerationResponse> {
-    const run = await this.runWithFallback(signal, (model, modelSignal) =>
+    const run = await this.runWithFallback(requestId, signal, (model, modelSignal) =>
       this.runDailyEntry(requestId, request, {
         ...model,
         systemPrompt: systemPromptFor(request.prompt_version)
@@ -106,6 +107,7 @@ export class FireworksClient {
    * not retried: a second model would not fix them.
    */
   private async runWithFallback<Result>(
+    requestId: string,
     signal: AbortSignal | undefined,
     run: (model: WriterModelOptions, signal?: AbortSignal) => Promise<Result>
   ): Promise<Result> {
@@ -114,18 +116,18 @@ export class FireworksClient {
       ? AbortSignal.any([signal, AbortSignal.timeout(PRIMARY_WRITER_BUDGET_MS)])
       : AbortSignal.timeout(PRIMARY_WRITER_BUDGET_MS);
     try {
-      return await run({
+      return await attempt(requestId, "writer_primary", () => run({
         modelId: config.dailyEntryModel,
         reasoningEffort: null,
         maxCompletionTokens: 8_192
-      }, primarySignal);
+      }, primarySignal));
     } catch (error) {
       if (signal?.aborted || !shouldFallBack(error)) throw error;
-      return await run({
+      return await attempt(requestId, "writer_fallback", () => run({
         modelId: config.dailyEntryFallbackModel,
         reasoningEffort: "low",
         maxCompletionTokens: 4_096
-      }, signal);
+      }, signal));
     }
   }
 
@@ -283,7 +285,7 @@ export class FireworksClient {
       })),
       accepted_prior_facts: []
     };
-    const run = await this.runWithFallback(signal, (model, modelSignal) =>
+    const run = await this.runWithFallback(requestId, signal, (model, modelSignal) =>
       this.runDailyEntry(requestId, source, {
         ...model,
         systemPrompt: storyChapterSystemPrompt(),
@@ -307,7 +309,7 @@ export class FireworksClient {
     signal?: AbortSignal
   ): Promise<{ description: string; provenance: ProcessingProvenance }> {
     const userPayload = JSON.stringify({ title: request.title, prose: request.prose });
-    const run = await this.runWithFallback(signal, async (model, modelSignal) => {
+    const run = await this.runWithFallback(requestId, signal, async (model, modelSignal) => {
       const completion = await this.runWriterCompletion(requestId, {
         ...model,
         systemPrompt: DAY_SCENE_SYSTEM_PROMPT,
@@ -664,6 +666,36 @@ function storyChapterUserPayload(request: StoryChapterGenerationRequest): string
     }),
     "</lore_chapter_data>"
   ].join("\n");
+}
+
+/**
+ * Logs how one writer attempt ended (content-free): which writer, how long,
+ * and the error code or JS error name when it failed.
+ */
+async function attempt<Result>(
+  requestId: string,
+  writer: "writer_primary" | "writer_fallback",
+  run: () => Promise<Result>
+): Promise<Result> {
+  const startedAt = performance.now();
+  try {
+    const result = await run();
+    writeSafeLog({
+      event: "provider_completed", request_id: requestId, provider: "fireworks", reason: writer,
+      duration_ms: Math.round(performance.now() - startedAt)
+    });
+    return result;
+  } catch (error) {
+    const code = error instanceof LoreApiError
+      ? (error.diagnosticCode ?? error.code)
+      : error instanceof Error ? error.name.toLowerCase().replace(/[^a-z0-9_]/g, "_").slice(0, 80) || "error" : "unknown";
+    writeSafeLog({
+      event: "provider_failed", request_id: requestId, provider: "fireworks", reason: writer,
+      error_code: /^[a-z0-9_]{1,80}$/.test(code) ? code : "unknown",
+      duration_ms: Math.round(performance.now() - startedAt)
+    });
+    throw error;
+  }
 }
 
 /** How long the primary writer may take before the fallback writer runs. */
