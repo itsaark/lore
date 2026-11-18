@@ -3,6 +3,7 @@ import SwiftUI
 
 enum JournalRoute: Hashable {
     case day(String)
+    case story
 }
 
 /// The calendar-first home: this week's photos and days, earlier weeks or
@@ -15,7 +16,6 @@ struct JournalHomeView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var path = NavigationPath()
     @State private var showsSettings: Bool
-    @State private var showsReflection = false
     @State private var today = Date()
 
     init(
@@ -76,6 +76,11 @@ struct JournalHomeView: View {
                 switch route {
                 case let .day(dayKey):
                     DayJournalView(dayKey: dayKey, speechRecognizer: speechRecognizer)
+                case .story:
+                    StoryBookView(
+                        chapters: speechRecognizer.storyChapters,
+                        dailyEntries: speechRecognizer.dailyBiographyEntries
+                    )
                 }
             }
             .animation(.easeInOut(duration: 0.3), value: isCapturing)
@@ -85,14 +90,6 @@ struct JournalHomeView: View {
         .sheet(isPresented: $showsSettings) {
             SettingsHomeView(userProfile: userProfile, speechRecognizer: speechRecognizer)
                 .presentationDragIndicator(.visible)
-        }
-        .fullScreenCover(isPresented: $showsReflection) {
-            ReflectionLiveSessionView(
-                userProfile: userProfile,
-                backend: reflectionBackend,
-                onViewBiography: { showsReflection = false }
-            )
-            .environment(\.reflectionDismiss) { showsReflection = false }
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
@@ -176,16 +173,16 @@ struct JournalHomeView: View {
                 action: speechRecognizer.toggleRecording
             )
 
-            CaptureSideButton(title: "Talk") {
-                showsReflection = true
+            CaptureSideButton(title: "Story") {
+                path.append(JournalRoute.story)
             } icon: {
-                Image(systemName: "waveform")
+                Image(systemName: "book")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(LoreTheme.ink)
             }
-            .accessibilityLabel("Talk with Lore")
-            .accessibilityHint("Starts a spoken reflection")
-            .accessibilityIdentifier("reflectButton")
+            .accessibilityLabel("Read your story")
+            .accessibilityHint("Opens your story so far, month by month")
+            .accessibilityIdentifier("storyButton")
             .frame(maxWidth: .infinity)
         }
         .frame(maxWidth: 420)

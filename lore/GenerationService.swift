@@ -15,6 +15,17 @@ protocol DailyEntryGenerationService: Sendable {
     func generateDailyEntry(
         _ request: DailyEntryGenerationRequest
     ) async throws -> DailyEntryGenerationResponse
+    func generateStoryChapter(
+        _ request: StoryChapterGenerationRequest
+    ) async throws -> StoryChapterGenerationResponse
+}
+
+extension DailyEntryGenerationService {
+    func generateStoryChapter(
+        _ request: StoryChapterGenerationRequest
+    ) async throws -> StoryChapterGenerationResponse {
+        throw LoreBackendProcessingError.notConfigured
+    }
 }
 
 struct RemoteDailyEntryGenerationService: DailyEntryGenerationService {
@@ -24,6 +35,12 @@ struct RemoteDailyEntryGenerationService: DailyEntryGenerationService {
         _ request: DailyEntryGenerationRequest
     ) async throws -> DailyEntryGenerationResponse {
         try await backend.generateDailyEntry(request)
+    }
+
+    func generateStoryChapter(
+        _ request: StoryChapterGenerationRequest
+    ) async throws -> StoryChapterGenerationResponse {
+        try await backend.generateStoryChapter(request)
     }
 }
 

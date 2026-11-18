@@ -71,6 +71,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     @Published var isAuthorized = false
     @Published var stories: [Story] = []
     @Published private(set) var dailyBiographyEntries: [DailyBiographyEntry] = []
+    @Published private(set) var storyChapters: [StoryChapter] = []
     @Published private(set) var storyDayKeys: [UUID: String] = [:]
     @Published var isProcessingAudio = false
     @Published private(set) var transcriptionRoute: SpeechTranscriptionRoute = .deferred(reason: .networkUnknown)
@@ -102,6 +103,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var isRecoveringTranscriptionJobs = false
     private var isRecoveringDailyEntryJobs = false
     private var isRecoveringDailyBiographyJobs = false
+    private var isRefreshingStoryChapters = false
     private var modelContext: ModelContext?
     private var userProfile: UserProfile?
     private var hasLoadedStories = false
@@ -618,6 +620,7 @@ class SpeechRecognitionViewModel: ObservableObject {
                 }
             }
             loadStories()
+            await refreshStoryChapters(now: now)
             scheduleNextDailyBiographyRecovery()
         } catch {
             print("Failed to recover daily-biography jobs: \(error)")
@@ -737,6 +740,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     /// Deletes stories and persists the updated list.
     func deleteStories(atOffsets offsets: IndexSet) {
         let newestFirstStories = Array(stories.reversed())
+        var affectedChapterMonths: Set<String> = []
         
         for index in offsets {
             guard newestFirstStories.indices.contains(index),
@@ -745,6 +749,9 @@ class SpeechRecognitionViewModel: ObservableObject {
             }
             
             let story = stories.remove(at: originalIndex)
+            if let dayKey = storyDayKeys[story.id] {
+                affectedChapterMonths.insert(String(dayKey.prefix(7)))
+            }
             if let modelContext {
                 do {
                     try DailyBiographyJobRunner.deleteSupportData(
@@ -762,8 +769,40 @@ class SpeechRecognitionViewModel: ObservableObject {
             }
         }
         
+        // A chapter that drew on a deleted note must not outlive it. Remove it
+        // now; it is rewritten from what remains once the network allows.
+        if let modelContext, !affectedChapterMonths.isEmpty {
+            let stale = (try? modelContext.fetch(FetchDescriptor<StoryChapter>())) ?? []
+            stale.filter { affectedChapterMonths.contains($0.chapterKey) }.forEach(modelContext.delete)
+        }
         saveContext()
         loadStories()
+        if !affectedChapterMonths.isEmpty {
+            Task { await refreshStoryChapters() }
+        }
+    }
+
+    /// Writes any month chapter whose finished days have changed. Needs the
+    /// same consent and network as the other remote writing.
+    func refreshStoryChapters(now: Date = Date()) async {
+        guard let modelContext, let userProfile, !isRefreshingStoryChapters else { return }
+        guard remoteWorkAvailability(requiresAudioUpload: false) == .permitted else { return }
+        isRefreshingStoryChapters = true
+        defer { isRefreshingStoryChapters = false }
+
+        do {
+            let written = try await StoryChapterRunner.refresh(
+                userProfile: userProfile,
+                generator: remoteDailyEntryGenerator,
+                in: modelContext,
+                now: now
+            )
+            if written > 0 { loadStories() }
+        } catch is CancellationError {
+            return
+        } catch {
+            print("Failed to refresh story chapters: \(error)")
+        }
     }
     
     /// Saves pending SwiftData changes.
@@ -806,10 +845,14 @@ class SpeechRecognitionViewModel: ObservableObject {
             dailyBiographyEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>(
                 sortBy: [SortDescriptor(\.calendarDate, order: .forward)]
             ))
+            storyChapters = try modelContext.fetch(FetchDescriptor<StoryChapter>(
+                sortBy: [SortDescriptor(\.chapterKey, order: .forward)]
+            ))
         } catch {
             print("Failed to load stories: \(error)")
             stories = []
             dailyBiographyEntries = []
+            storyChapters = []
             storyDayKeys = [:]
         }
     }

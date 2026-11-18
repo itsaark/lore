@@ -73,6 +73,7 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
     static let maximumAudioChunkBytes = 3_250_000
     static let maximumMultipartBodyBytes = 3_500_000
     static let maximumDailyEntryBodyBytes = 1_000_000
+    static let maximumStoryChapterBodyBytes = 1_500_000
     static let maximumReflectionBodyBytes = 1_000_000
 
     private let configuration: LoreBackendHTTPClientConfiguration
@@ -172,6 +173,30 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         let (data, response) = try await perform(urlRequest)
         let result: DailyEntryGenerationResponse = try decodeSuccess(data, response: response)
         try validate(result, for: wireRequest)
+        return result
+    }
+
+    func generateStoryChapter(
+        _ request: StoryChapterGenerationRequest
+    ) async throws -> StoryChapterGenerationResponse {
+        try Task.checkCancellation()
+        guard request.schemaVersion == StoryChapterGenerationRequest.currentSchemaVersion,
+              request.promptVersion == StoryChapterGenerationRequest.currentPromptVersion,
+              !request.sourceDays.isEmpty,
+              request.retentionPolicy.mode == .zeroDataRetention,
+              request.retentionPolicy.maximumRetentionSeconds == 0 else {
+            throw LoreBackendProcessingError.invalidRequest
+        }
+        let result: StoryChapterGenerationResponse = try await postJSON(
+            request,
+            path: "v1/story-chapters",
+            idempotencyKey: "story-chapter:\(request.jobId.uuidString.lowercased())",
+            maximumBodyBytes: Self.maximumStoryChapterBodyBytes
+        )
+        guard result.jobId == request.jobId,
+              result.promptVersion == request.promptVersion else {
+            throw LoreBackendProcessingError.invalidResponse(requestId: result.requestId)
+        }
         return result
     }
 

@@ -429,6 +429,18 @@ protocol LoreBackendProcessingClient: Sendable {
     func generateDailyEntry(
         _ request: DailyEntryGenerationRequest
     ) async throws -> DailyEntryGenerationResponse
+    func generateStoryChapter(
+        _ request: StoryChapterGenerationRequest
+    ) async throws -> StoryChapterGenerationResponse
+}
+
+extension LoreBackendProcessingClient {
+    /// Clients that predate chapters report them as unconfigured.
+    func generateStoryChapter(
+        _ request: StoryChapterGenerationRequest
+    ) async throws -> StoryChapterGenerationResponse {
+        throw LoreBackendProcessingError.notConfigured
+    }
 }
 
 struct UnconfiguredLoreBackendProcessingClient: LoreBackendProcessingClient {
