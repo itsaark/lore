@@ -126,7 +126,7 @@ export class FireworksClient {
       if (signal?.aborted || !shouldFallBack(error)) throw error;
       return await attempt(requestId, "writer_fallback", () => run({
         modelId: config.dailyEntryFallbackModel,
-        reasoningEffort: null,
+        reasoningEffort: "low",
         maxCompletionTokens: 8_192
       }, signal));
     }
