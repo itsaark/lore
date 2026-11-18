@@ -290,9 +290,6 @@ class SpeechRecognitionViewModel: ObservableObject {
             let jobs = allJobs
                 .filter { $0.kind == .transcription }
                 .sorted { $0.createdAt < $1.createdAt }
-            let storiesWithDailyEntryJobs = Set(allJobs.compactMap { job -> UUID? in
-                job.kind == .dailyEntry ? job.storyId : nil
-            })
             let storiesWithPendingAudioDeletion = Set(
                 try modelContext.fetch(FetchDescriptor<AudioAsset>())
                     .filter { !$0.isDeleted }
@@ -334,21 +331,17 @@ class SpeechRecognitionViewModel: ObservableObject {
 
                 let shouldFinishDeletion = job.state == .succeeded
                     && job.storyId.map(storiesWithPendingAudioDeletion.contains) == true
-                let shouldBootstrapDailyEntry = job.state == .succeeded
-                    && job.outputReferenceId != nil
-                    && job.storyId.map { !storiesWithDailyEntryJobs.contains($0) } == true
                 let shouldAttempt = job.state == .queued && job.isReadyForAttempt(at: now)
                 let shouldRecoverLease = job.state == .running
                     && job.leaseExpiresAt.map { $0 <= now } == true
                 guard shouldFinishDeletion
-                        || shouldBootstrapDailyEntry
                         || shouldAttempt
                         || shouldRecoverLease else {
                     continue
                 }
 
                 do {
-                    let story = try await Self.runTranscriptionJob(
+                    _ = try await Self.runTranscriptionJob(
                         jobID: job.id,
                         remoteTranscriber: remoteTranscriber,
                         localTranscriber: transcribesOnDevice ? localTranscriber : nil,
@@ -359,13 +352,6 @@ class SpeechRecognitionViewModel: ObservableObject {
                         modelContext: modelContext,
                         now: now
                     )
-                    let hasDailyEntryJob = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
-                        .contains { $0.kind == .dailyEntry && $0.storyId == story.id }
-                    if !hasDailyEntryJob,
-                       story.biographyProse == nil,
-                       !story.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        await processCapturedStory(story)
-                    }
                 } catch TranscriptionJobRunnerError.jobNotReady {
                     continue
                 } catch {
@@ -2248,8 +2234,11 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
     }
 
+    /// A new or corrected note goes straight into its day's story: the day is
+    /// rewritten from every note it holds, so there is no separate per-note
+    /// entry to write first.
     private func processCapturedStory(_ story: Story) async {
-        guard let userProfile else {
+        guard userProfile != nil else {
             story.processingStatus = "failed"
             story.updatedAt = Date()
             saveContext()
@@ -2257,84 +2246,11 @@ class SpeechRecognitionViewModel: ObservableObject {
             return
         }
 
-        await processRemoteDailyEntry(for: story, userProfile: userProfile)
+        story.processingStatus = "awaitingModel"
         loadStories()
         await resumePendingDailyBiographyJobs()
     }
 
-    private func processRemoteDailyEntry(
-        for story: Story,
-        userProfile: UserProfile
-    ) async {
-        guard let modelContext else {
-            story.processingStatus = "failed"
-            story.updatedAt = Date()
-            print("Daily-entry processing could not access the local archive.")
-            return
-        }
-
-        let availability = remoteWorkAvailability(requiresAudioUpload: false)
-        let initialState: ProcessingJobState
-        switch availability {
-        case .permitted:
-            initialState = .queued
-        case .waitingForConsent:
-            initialState = .waitingForConsent
-        case .waitingForNetwork:
-            initialState = .waitingForNetwork
-        }
-
-        do {
-            let prepared = try DailyEntryJobRunner.prepare(
-                story: story,
-                userProfile: userProfile,
-                initialState: initialState,
-                in: modelContext
-            )
-
-            guard availability == .permitted else {
-                prepared.job.state = initialState
-                prepared.job.nextAttemptAt = nil
-                prepared.job.leaseExpiresAt = nil
-                story.processingStatus = initialState == .waitingForConsent
-                    ? "waitingForConsent"
-                    : "waitingForNetwork"
-                story.updatedAt = Date()
-                try modelContext.save()
-                return
-            }
-
-            if prepared.job.state == .waitingForConsent || prepared.job.state == .waitingForNetwork {
-                prepared.job.state = .queued
-                prepared.job.nextAttemptAt = Date()
-                try modelContext.save()
-            }
-            _ = try await DailyEntryJobRunner.run(
-                jobID: prepared.job.id,
-                userProfile: userProfile,
-                generator: remoteDailyEntryGenerator,
-                in: modelContext
-            )
-        } catch is CancellationError {
-            return
-        } catch DailyEntryJobRunnerError.jobNotReady {
-            // A queued job with a future retry date (or an active lease) is expected
-            // durable orchestration state. Launch recovery can reach this path after
-            // re-checking a completed transcription, so it must not leak an internal
-            // scheduler message into the recording UI.
-            scheduleNextDailyEntryRecovery()
-            return
-        } catch DailyEntryJobRunnerError.jobCancelled {
-            return
-        } catch {
-            // Journal generation is background work. Its durable Story/ProcessingJob
-            // state is the user-visible source of truth; the recording surface should
-            // remain focused on capture rather than displaying provider/debug errors.
-            print("Daily-entry processing did not complete: \(error)")
-            scheduleNextDailyEntryRecovery()
-        }
-    }
-    
     /// Sets error message and logs it
     private func setError(_ message: String) {
         errorMessage = message

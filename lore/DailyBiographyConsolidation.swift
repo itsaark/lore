@@ -366,6 +366,12 @@ enum DailyBiographyJobRunner {
                 )
                 modelContext.insert(entry)
             }
+            // The day's story now covers these notes; they have no separate
+            // per-note entry to wait for.
+            for story in package.stories where story.processingStatus == "awaitingModel" {
+                story.processingStatus = "processed"
+                story.updatedAt = now
+            }
             job.providerId = response.provenance.providerId
             job.providerModelId = response.provenance.modelId
             job.markSucceeded(
