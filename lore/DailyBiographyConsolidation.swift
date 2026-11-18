@@ -589,10 +589,9 @@ enum DailyBiographyJobRunner {
                 && !$0.sourceReferences.isEmpty
                 && Set($0.sourceReferences).isSubset(of: sourceIds)
         }
-        let citedSourceIds = Set(
-            response.entry.titleSourceReferences
-                + response.entry.sentences.flatMap(\.sourceReferences)
-        )
+        // A day story need not cite every note: the writer merges small notes
+        // and sets sensitive ones aside on purpose. Invented references are
+        // still rejected above and by the backend.
         guard response.schemaVersion == DailyEntryGenerationResponse.currentSchemaVersion,
               response.promptVersion == request.promptVersion,
               response.jobId == request.jobId,
@@ -600,8 +599,7 @@ enum DailyBiographyJobRunner {
               !response.entry.titleSourceReferences.isEmpty,
               Set(response.entry.titleSourceReferences).isSubset(of: sourceIds),
               !response.entry.sentences.isEmpty,
-              validSentences,
-              sourceIds.isSubset(of: citedSourceIds) else {
+              validSentences else {
             throw DailyBiographyJobRunnerError.invalidResponse
         }
     }

@@ -369,6 +369,22 @@ final class ProcessingJob {
         return true
     }
 
+    /// Gives a job that exhausted its attempts on a failure Lore has since
+    /// fixed exactly one more attempt.
+    func grantOneMoreAttempt(
+        afterFixing errorCode: String,
+        at date: Date = Date()
+    ) -> Bool {
+        guard state == .failed, lastErrorCode == errorCode else { return false }
+        attemptCount = min(attemptCount, max(maximumAttempts - 1, 0))
+        stateValue = ProcessingJobState.queued.rawValue
+        completedAt = nil
+        nextAttemptAt = date
+        leaseExpiresAt = nil
+        updatedAt = date
+        return true
+    }
+
     func cancel(at date: Date = Date()) {
         stateValue = ProcessingJobState.cancelled.rawValue
         completedAt = date

@@ -579,6 +579,17 @@ class SpeechRecognitionViewModel: ObservableObject {
                 try modelContext.save()
             }
 
+            // Until 2026-11-18 the app rejected any day story that left a note
+            // uncited, so valid stories failed for good. Retry those days once.
+            let citationRepairKey = "LoreDailyBiographyCitationRepair-v1"
+            if !UserDefaults.standard.bool(forKey: citationRepairKey) {
+                let retried = jobs.filter {
+                    $0.grantOneMoreAttempt(afterFixing: "daily_biography_invalid_response", at: now)
+                }
+                if !retried.isEmpty { try modelContext.save() }
+                UserDefaults.standard.set(true, forKey: citationRepairKey)
+            }
+
             for job in jobs where job.state != .succeeded && job.state != .cancelled && job.state != .failed {
                 switch availability {
                 case .permitted:
@@ -784,7 +795,11 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
 
     private func refreshStoryChaptersAndDayIllustrations(now: Date = Date()) async {
-        guard !isRefreshingStoryChapters, !isRefreshingDayIllustrations else { return }
+        guard !isRefreshingStoryChapters, !isRefreshingDayIllustrations else {
+            print("[DayIllustration] skipped: a refresh is already running")
+            return
+        }
+        print("[DayIllustration] refresh started")
         await refreshStoryChapters(now: now)
         await refreshDayIllustrations(now: now)
     }
@@ -813,8 +828,15 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
 
     func refreshDayIllustrations(now: Date = Date()) async {
-        guard let modelContext, !isRefreshingDayIllustrations else { return }
-        guard remoteWorkAvailability(requiresAudioUpload: false) == .permitted else { return }
+        guard let modelContext, !isRefreshingDayIllustrations else {
+            print("[DayIllustration] skipped: no context or already running")
+            return
+        }
+        let availability = remoteWorkAvailability(requiresAudioUpload: false)
+        guard availability == .permitted else {
+            print("[DayIllustration] skipped: remote work \(availability)")
+            return
+        }
         isRefreshingDayIllustrations = true
         defer { isRefreshingDayIllustrations = false }
 

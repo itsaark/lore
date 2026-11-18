@@ -123,6 +123,7 @@ enum DayIllustrationRunner {
 
         var attempted = 0
         var written = 0
+        print("[DayIllustration] today \(todayKey); recent finished days with entries: \(recentKeys)")
         for dayKey in recentKeys {
             guard attempted < generationLimit else { break }
             try Task.checkCancellation()
@@ -133,9 +134,19 @@ enum DayIllustrationRunner {
                       !entry.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 let fingerprint = fingerprint(for: entry)
                 let key = failureKey(dayKey: dayKey, fingerprint: fingerprint)
-                guard failures[key, default: 0] < failureLimit,
-                      try illustration(for: dayKey, in: modelContext)?.sourceFingerprint != fingerprint,
-                      try !hasPhoto(for: dayKey, in: modelContext) else { continue }
+                guard failures[key, default: 0] < failureLimit else {
+                    print("[DayIllustration] \(dayKey): skipped after \(failures[key, default: 0]) failures")
+                    continue
+                }
+                guard try illustration(for: dayKey, in: modelContext)?.sourceFingerprint != fingerprint else {
+                    print("[DayIllustration] \(dayKey): already painted")
+                    continue
+                }
+                guard try !hasPhoto(for: dayKey, in: modelContext) else {
+                    print("[DayIllustration] \(dayKey): has a photo")
+                    continue
+                }
+                print("[DayIllustration] \(dayKey): requesting a painting")
 
                 let request = makeRequest(for: entry)
                 pair = key
@@ -180,7 +191,7 @@ enum DayIllustrationRunner {
                     failures[pair] = isNonRetryable(error) ? failureLimit : failures[pair, default: 0] + 1
                     userDefaults.set(failures, forKey: failureCountsKey)
                 }
-                print("Day illustration \(dayKey) did not complete.")
+                print("[DayIllustration] \(dayKey): did not complete: \(error)")
             }
         }
         return written

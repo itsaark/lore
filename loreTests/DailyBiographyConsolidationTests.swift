@@ -43,6 +43,27 @@ struct DailyBiographyConsolidationTests {
         #expect(!replay.contains { $0.dayKey == "2026-08-03" })
     }
 
+    @Test func dayStoryIsKeptWhenTheWriterLeavesANoteUncited() async throws {
+        let fixture = try makeFixture()
+        let prepared = try DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued,
+            in: fixture.context,
+            now: fixture.now
+        )
+        let past = try #require(prepared.first { $0.dayKey == "2026-08-03" })
+
+        let entry = try await DailyBiographyJobRunner.run(
+            jobID: past.jobId,
+            userProfile: fixture.profile,
+            generator: SuccessfulDailyBiographyGenerator(citesOnlyFirstNote: true),
+            in: fixture.context,
+            now: fixture.now
+        )
+
+        #expect(entry.dayKey == "2026-08-03")
+        #expect(entry.sourceStoryIds == fixture.pastStories.map(\.id))
+    }
+
     @Test func currentCalendarDayIsWrittenFromItsFirstNote() throws {
         let fixture = try makeFixture()
         let prepared = try DailyBiographyJobRunner.prepareCompletedDays(
@@ -224,10 +245,15 @@ private struct DailyBiographyFixture {
 }
 
 private struct SuccessfulDailyBiographyGenerator: DailyEntryGenerationService {
+    /// Writes only from the first note, as the writer may when it merges or
+    /// sets aside the others.
+    var citesOnlyFirstNote = false
+
     func generateDailyEntry(
         _ request: DailyEntryGenerationRequest
     ) async throws -> DailyEntryGenerationResponse {
-        let sourceIds = request.sourceSegments.map(\.id)
+        let segments = citesOnlyFirstNote ? Array(request.sourceSegments.prefix(1)) : request.sourceSegments
+        let sourceIds = segments.map(\.id)
         let processedAt = Date(timeIntervalSince1970: 1_800_000_000)
         return DailyEntryGenerationResponse(
             schemaVersion: "1.0",
@@ -238,7 +264,7 @@ private struct SuccessfulDailyBiographyGenerator: DailyEntryGenerationService {
                 title: "A complete day",
                 titleSourceReferences: sourceIds,
                 perspective: .thirdPerson,
-                sentences: request.sourceSegments.map {
+                sentences: segments.map {
                     GroundedJournalSentence(
                         text: "Remembered: \($0.text)",
                         sourceReferences: [$0.id],
