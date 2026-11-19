@@ -19,6 +19,7 @@ struct JournalHomeView: View {
     @Query private var followUps: [DailyQuestionFollowUps]
     @State private var path = NavigationPath()
     @State private var showsSettings: Bool
+    @State private var showsLifeDial = false
     @State private var today = Date()
     @State private var dailyQuestionDayKey: String?
     @State private var dailyQuestion: DailyQuestionPresentation?
@@ -65,7 +66,8 @@ struct JournalHomeView: View {
                         dailyEntries: speechRecognizer.dailyBiographyEntries,
                         storyDayKeys: speechRecognizer.storyDayKeys,
                         today: today,
-                        openSettings: { showsSettings = true }
+                        openSettings: { showsSettings = true },
+                        openLife: { showsLifeDial = true }
                     )
                     .equatable()
                     .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -122,6 +124,9 @@ struct JournalHomeView: View {
         .sheet(isPresented: $showsSettings) {
             SettingsHomeView(userProfile: userProfile, speechRecognizer: speechRecognizer)
                 .presentationDragIndicator(.visible)
+        }
+        .fullScreenCover(isPresented: $showsLifeDial) {
+            LifeDialView(birthYear: userProfile.birthYear, speechRecognizer: speechRecognizer)
         }
         .task(id: scenePhase) {
             guard scenePhase == .active else { return }
@@ -294,6 +299,7 @@ private struct JournalCalendarContent: View, Equatable {
     let storyDayKeys: [UUID: String]
     let today: Date
     let openSettings: () -> Void
+    let openLife: () -> Void
 
     @Query private var photos: [DayPhoto]
     @Query(sort: \DayIllustration.updatedAt, order: .reverse) private var illustrations: [DayIllustration]
@@ -322,7 +328,8 @@ private struct JournalCalendarContent: View, Equatable {
                 photos: photos.coversByDay(),
                 illustrations: illustrations
             ),
-            openSettings: openSettings
+            openSettings: openSettings,
+            openLife: openLife
         )
     }
 }
@@ -332,6 +339,7 @@ private struct JournalCalendarContent: View, Equatable {
 private struct ZoomableJournal: View {
     let model: JournalCalendarModel
     let openSettings: () -> Void
+    let openLife: () -> Void
 
     static let densityKey = "journalDensity"
 
@@ -344,9 +352,10 @@ private struct ZoomableJournal: View {
     @State private var anchorDayKey: String?
     @State private var heroDayKey: String?
 
-    init(model: JournalCalendarModel, openSettings: @escaping () -> Void) {
+    init(model: JournalCalendarModel, openSettings: @escaping () -> Void, openLife: @escaping () -> Void) {
         self.model = model
         self.openSettings = openSettings
+        self.openLife = openLife
         let stored = UserDefaults.standard.object(forKey: Self.densityKey) as? Int
         let density = stored.flatMap(JournalDensity.init(rawValue:)) ?? .week
         _zoom = State(initialValue: density.zoom)
@@ -358,7 +367,7 @@ private struct ZoomableJournal: View {
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                JournalHeader(model: model, layout: layout, openSettings: openSettings)
+                JournalHeader(model: model, layout: layout, openSettings: openSettings, openLife: openLife)
                     .padding(.top, 8)
                     .id(JournalScrollID.top)
 
@@ -740,6 +749,9 @@ private struct JournalHeader: View {
     let model: JournalCalendarModel
     let layout: JournalLayout
     let openSettings: () -> Void
+    let openLife: () -> Void
+
+    private static let lifeSymbol = UIImage(systemName: "dial.low") == nil ? "timeline.selection" : "dial.low"
 
     @ScaledMetric(relativeTo: .largeTitle) private var titleSize: CGFloat = 44
 
@@ -784,17 +796,27 @@ private struct JournalHeader: View {
 
             Spacer(minLength: 8)
 
-            Button(action: openSettings) {
-                CircleIcon(systemImage: "gearshape")
+            HStack(spacing: 8) {
+                Button(action: openLife) {
+                    CircleIcon(systemImage: Self.lifeSymbol)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Life")
+                .accessibilityIdentifier("lifeDialButton")
+
+                Button(action: openSettings) {
+                    CircleIcon(systemImage: "gearshape")
+                }
+                .accessibilityLabel("Settings")
+                .accessibilityIdentifier("settingsButton")
             }
-            .accessibilityLabel("Settings")
-            .accessibilityIdentifier("settingsButton")
-            .padding(.top, 8)
+            .padding(.top, 6)
         }
     }
 }
 
-private struct CircleIcon: View {
+struct CircleIcon: View {
     let systemImage: String
 
     var body: some View {

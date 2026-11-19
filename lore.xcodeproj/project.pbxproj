@@ -430,6 +430,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Lore uses your location to attach local place and weather context to captured stories.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "This app needs microphone access to convert your speech to text.";
+				INFOPLIST_FILE = "Config/lore-Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
@@ -464,6 +465,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Lore uses your location to attach local place and weather context to captured stories.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "This app needs microphone access to convert your speech to text.";
+				INFOPLIST_FILE = "Config/lore-Info.plist";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "remote-notification";
