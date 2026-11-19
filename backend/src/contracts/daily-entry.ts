@@ -24,6 +24,14 @@ export const DailyEntryGenerationRequestSchema = z.object({
   transcript_artifact_id: UuidSchema,
   transcript_version_id: UuidSchema,
   captured_local_date: z.iso.date(),
+  remembered_time: z.object({
+    precision: z.enum(["week", "month", "year", "span"]),
+    start_date: z.iso.date(),
+    end_date: z.iso.date()
+  }).strict().refine(({ start_date, end_date }) => end_date >= start_date, {
+    path: ["end_date"],
+    message: "End date must be on or after start date"
+  }).optional(),
   language_code: z.string().min(2).max(35),
   subject: z.object({
     display_name: z.string().min(1).max(120),
@@ -43,7 +51,10 @@ export const DailyEntryGenerationRequestSchema = z.object({
     source_references: z.array(z.string().min(1).max(200)).max(100)
   }).strict()).max(500),
   retention_policy: RetentionPolicySchema
-}).strict();
+}).strict().refine(
+  ({ captured_local_date, remembered_time }) => !remembered_time || remembered_time.start_date <= captured_local_date,
+  { path: ["remembered_time", "start_date"], message: "Start date must be on or before capture date" }
+);
 
 export const GroundedJournalEntrySchema = z.object({
   title: z.string().min(1).max(160),
@@ -114,7 +125,7 @@ export const DAILY_ENTRY_LAB_MODEL_ALIASES = [
 export const DailyEntryLabModelAliasSchema = z.enum(DAILY_ENTRY_LAB_MODEL_ALIASES);
 export type DailyEntryLabModelAlias = z.infer<typeof DailyEntryLabModelAliasSchema>;
 
-export const DailyEntryLabRequestSchema = DailyEntryGenerationRequestSchema.extend({
+export const DailyEntryLabRequestSchema = DailyEntryGenerationRequestSchema.safeExtend({
   prompt_version: DailyEntryLabPromptVersionSchema,
   lab_model: DailyEntryLabModelAliasSchema
 }).strict();

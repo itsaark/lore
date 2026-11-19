@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { FireworksRuntimeConfig } from "../src/config.js";
-import type { DailyEntryGenerationRequest } from "../src/contracts/daily-entry.js";
+import { DAILY_ENTRY_PROMPT_VERSIONS, type DailyEntryGenerationRequest } from "../src/contracts/daily-entry.js";
 import type { StoryChapterGenerationRequest } from "../src/contracts/story-chapter.js";
 import { LoreApiError } from "../src/http/errors.js";
 import { FireworksClient } from "../src/providers/fireworks/client.js";
@@ -105,6 +105,51 @@ describe("FireworksClient writer fallback", () => {
     const response = await client.generateDailyEntry("req_v1", dailyRequest);
 
     expect(response.prompt_version).toBe("grounded-journal-v1");
+  });
+});
+
+describe("FireworksClient daily-entry prompts", () => {
+  it.each(DAILY_ENTRY_PROMPT_VERSIONS)("keeps the %s prompts byte-identical without remembered_time", async (promptVersion) => {
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json(validCompletion()));
+    const client = new FireworksClient({ config, fetch: fetchMock });
+
+    await client.generateDailyEntry("req_day_prompt", { ...dailyRequest, prompt_version: promptVersion });
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const { messages } = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    // Encode line endings and whitespace inside each message as part of the snapshot.
+    expect(JSON.stringify(messages, null, 2)).toMatchSnapshot();
+  });
+
+  describe.each(DAILY_ENTRY_PROMPT_VERSIONS)("%s with remembered_time", (promptVersion) => {
+    it.each([
+      ["week", "2003-11-16", "2003-11-22", "the week of 16 November 2003"],
+      ["month", "2003-11-01", "2003-11-30", "November 2003"],
+      ["year", "2003-01-01", "2003-12-31", "2003"],
+      ["span", "2008-01-01", "2011-12-31", "between 2008 and 2011"],
+      ["span", "2008-02-01", "2008-04-30", "2008"]
+    ] as const)("formats %s (%s through %s) as %s", async (precision, startDate, endDate, phrase) => {
+      const fetchMock = vi.fn<typeof fetch>(async () => Response.json(validCompletion()));
+      const client = new FireworksClient({ config, fetch: fetchMock });
+
+      await client.generateDailyEntry("req_memory_prompt", {
+        ...dailyRequest,
+        prompt_version: promptVersion,
+        remembered_time: { precision, start_date: startDate, end_date: endDate },
+        render_configuration: { ...dailyRequest.render_configuration, tense: "present" }
+      });
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const { messages } = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      const prompt = messages[1].content;
+      expect(prompt).toContain(`The notes were spoken on 2026-07-16. The period they recall is ${phrase}.`);
+      expect(prompt).toContain("in the past tense");
+      expect(prompt).toContain("Do not invent a specific day, month, or season more precise than the remembered period.");
+      expect(prompt).toContain("Leave the day of recording out of the entry. Give the memory a title drawn from the events recalled.");
+      expect(prompt).toContain('"tense":"past"');
+      expect(prompt).toContain("Every sentence cites the segment IDs it draws on");
+      expect(prompt).not.toContain("ONE coherent entry for the whole day");
+    });
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DailyEntryGenerationRequestSchema } from "../src/contracts/daily-entry.js";
+import { DailyEntryGenerationRequestSchema, DailyEntryLabRequestSchema } from "../src/contracts/daily-entry.js";
 import { TranscriptionMetadataSchema } from "../src/contracts/transcription.js";
 
 const retentionPolicy = {
@@ -49,6 +49,41 @@ describe("wire contracts", () => {
     const result = DailyEntryGenerationRequestSchema.parse(dailyEntryRequest());
 
     expect(result.source_segments).toHaveLength(1);
+    expect(result).not.toHaveProperty("remembered_time");
+  });
+
+  it("accepts remembered time with inclusive dates in daily-entry and Lab requests", () => {
+    const rememberedTime = { precision: "week", start_date: "2026-07-16", end_date: "2026-07-16" };
+    const request = { ...dailyEntryRequest(), remembered_time: rememberedTime };
+
+    expect(DailyEntryGenerationRequestSchema.parse(request).remembered_time).toEqual(rememberedTime);
+    expect(DailyEntryLabRequestSchema.parse({ ...request, lab_model: "glm-5p3" }).remembered_time).toEqual(rememberedTime);
+  });
+
+  it.each([
+    ["2003-11-16", "2003-11-15", "end_date"],
+    ["2026-07-17", "2026-07-23", "start_date"]
+  ])("rejects invalid remembered range %s through %s in daily-entry and Lab requests", (startDate, endDate, invalidField) => {
+    const request = {
+      ...dailyEntryRequest(),
+      remembered_time: { precision: "week", start_date: startDate, end_date: endDate }
+    };
+
+    for (const result of [
+      DailyEntryGenerationRequestSchema.safeParse(request),
+      DailyEntryLabRequestSchema.safeParse({ ...request, lab_model: "glm-5p3" })
+    ]) {
+      expect(result.error?.issues).toMatchObject([{ path: ["remembered_time", invalidField] }]);
+    }
+  });
+
+  it("rejects client-supplied labels in remembered time", () => {
+    const result = DailyEntryGenerationRequestSchema.safeParse({
+      ...dailyEntryRequest(),
+      remembered_time: { precision: "year", start_date: "2003-01-01", end_date: "2003-12-31", label: "School days" }
+    });
+
+    expect(result.error?.issues).toMatchObject([{ code: "unrecognized_keys", path: ["remembered_time"] }]);
   });
 
   it("normalizes omitted nullable transcript metadata from Swift", () => {

@@ -53,6 +53,7 @@ type DailyEntrySource = Pick<
   DailyEntryGenerationRequest,
   | "job_id"
   | "captured_local_date"
+  | "remembered_time"
   | "language_code"
   | "subject"
   | "render_configuration"
@@ -767,6 +768,12 @@ function completionUsage(completion: Record<string, unknown>): {
   return { prompt_tokens: read("prompt_tokens"), completion_tokens: read("completion_tokens") };
 }
 
+const REPEATED_NOTES_RULE =
+  "- When notes repeat or revisit the same thing, say it once, with the most specific wording, and fold in what a later note adds or corrects. A later correction wins.";
+
+const DAILY_ENTRY_GROUNDING_RULE =
+  "- Never invent causes, times, or links between events that the notes do not state. Every sentence cites the segment IDs it draws on, and every note contributes at least one sentence.";
+
 /**
  * One day, one story. The source package always holds every voice note the
  * person has recorded that day (one or many), in the order they were spoken,
@@ -776,21 +783,59 @@ function completionUsage(completion: Record<string, unknown>): {
 const DAY_STORY_INSTRUCTIONS = [
   "source_segments holds every voice note recorded on this one day, in the order they were spoken (recorded_at gives each note's local time when known). Write ONE coherent entry for the whole day, never one paragraph per note.",
   "- Find the through-line: connect related moments, people, places and threads across notes, and organize the day as a story. You have full freedom to arrange it, but it must read as one coherent piece.",
-  "- When notes repeat or revisit the same thing, say it once, with the most specific wording, and fold in what a later note adds or corrects. A later correction wins.",
+  REPEATED_NOTES_RULE,
   "- People often talk about other days (yesterday, last week, years ago). That still belongs to this day's story: place it where it reads best, and resolve relative references against that note's recorded_at, naming the actual day or time only when you can do so without guessing.",
-  "- Never invent causes, times, or links between events that the notes do not state. Every sentence cites the segment IDs it draws on, and every note contributes at least one sentence."
+  DAILY_ENTRY_GROUNDING_RULE
 ];
 
+type RememberedTime = NonNullable<DailyEntrySource["remembered_time"]>;
+
+const REMEMBERED_MONTH_FORMAT = new Intl.DateTimeFormat("en", { month: "long", timeZone: "UTC" });
+
+function rememberedTimePhrase({ precision, start_date, end_date }: RememberedTime): string {
+  const startYear = start_date.slice(0, 4);
+  switch (precision) {
+    case "week":
+    case "month": {
+      const start = new Date(start_date);
+      const monthAndYear = `${REMEMBERED_MONTH_FORMAT.format(start)} ${startYear}`;
+      return precision === "week" ? `the week of ${start.getUTCDate()} ${monthAndYear}` : monthAndYear;
+    }
+    case "year":
+      return startYear;
+    case "span": {
+      const endYear = end_date.slice(0, 4);
+      return startYear === endYear ? startYear : `between ${startYear} and ${endYear}`;
+    }
+  }
+}
+
+function rememberedTimeInstructions(capturedLocalDate: string, rememberedTime: RememberedTime): string[] {
+  return [
+    `The notes were spoken on ${capturedLocalDate}. The period they recall is ${rememberedTimePhrase(rememberedTime)}.`,
+    "Write one coherent entry as a memory set in that period, in the past tense.",
+    "Do not invent a specific day, month, or season more precise than the remembered period.",
+    "Leave the day of recording out of the entry. Give the memory a title drawn from the events recalled.",
+    REPEATED_NOTES_RULE,
+    DAILY_ENTRY_GROUNDING_RULE
+  ];
+}
+
 function dailyEntryUserPayload(request: DailyEntrySource): string {
+  const rememberedTime = request.remembered_time;
   return [
     "Create the grounded daily-entry result from the following JSON source package.",
-    ...DAY_STORY_INSTRUCTIONS,
+    ...(rememberedTime
+      ? rememberedTimeInstructions(request.captured_local_date, rememberedTime)
+      : DAY_STORY_INSTRUCTIONS),
     "<lore_source_data>",
     JSON.stringify({
       captured_local_date: request.captured_local_date,
       language_code: request.language_code,
       subject: request.subject,
-      render_configuration: request.render_configuration,
+      render_configuration: rememberedTime
+        ? { ...request.render_configuration, tense: "past" }
+        : request.render_configuration,
       source_segments: request.source_segments,
       accepted_prior_facts: request.accepted_prior_facts
     }),

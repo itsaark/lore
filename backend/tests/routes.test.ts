@@ -271,6 +271,32 @@ describe("processing routes", () => {
     });
   });
 
+  it.each([
+    ["2003-11-16", "2003-11-15"],
+    ["2026-07-17", "2026-07-23"]
+  ])("rejects remembered time from %s to %s before invoking Fireworks", async (startDate, endDate) => {
+    const harness = await authenticatedHarness();
+    const provider = vi.fn<typeof fetch>();
+    const response = await handleDailyEntry(new Request("https://lore.invalid/v1/daily-entries", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${harness.token}`,
+        "Content-Type": "application/json",
+        "Idempotency-Key": "daily-entry:5f3acbd5-676e-4cb3-83a4-150b09c735a9"
+      },
+      body: JSON.stringify({
+        ...validDailyRequest(),
+        remembered_time: { precision: "week", start_date: startDate, end_date: endDate }
+      })
+    }), { environment, fetch: provider, auth: harness.auth });
+
+    expect(response.status).toBe(400);
+    expect(provider).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "invalid_request", retryable: false }
+    });
+  });
+
   it("writes a month chapter from finished days and cites day ids", async () => {
     const harness = await authenticatedHarness();
     const provider = vi.fn<typeof fetch>(async (_input, init) => {
