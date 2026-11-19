@@ -221,8 +221,12 @@ extension View {
             Button("Delete Voice Note", role: .destructive) { onDelete(story) }
                 .accessibilityIdentifier("confirmDeleteVoiceNoteButton")
             Button("Cancel", role: .cancel) {}
-        } message: { _ in
-            Text("Its recording and transcript are removed, and this day's story is rewritten without it.")
+        } message: { story in
+            if story.rememberedTime?.isCoarse == true {
+                Text("This voice note, its memory, and its painting will be removed.")
+            } else {
+                Text("Its recording and transcript are removed, and this day's story is rewritten without it.")
+            }
         }
     }
 }

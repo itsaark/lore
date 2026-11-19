@@ -6,12 +6,29 @@ enum StorySourceKind: String, Codable, CaseIterable, Sendable {
     case reflection
 }
 
+/// Inclusive local Gregorian dates. Day keys preserve the selected dates
+/// when the phone changes time zone or the archive syncs to another device.
+struct RememberedTime: Codable, Equatable, Sendable {
+    enum Precision: String, Codable, Sendable {
+        case day, week, month, year, period
+    }
+
+    let precision: Precision
+    let startDate: String
+    let endDate: String
+
+    var isCoarse: Bool { precision != .day }
+}
+
 /// Model representing a single captured story entry.
 @Model
 final class Story {
     var id: UUID = UUID()
     @Attribute(.allowsCloudEncryption) var text: String = ""
     @Attribute(.allowsCloudEncryption) var date: Date = Date()
+    @Attribute(.allowsCloudEncryption) private(set) var rememberedTimePrecision: String?
+    @Attribute(.allowsCloudEncryption) private(set) var rememberedTimeStart: String?
+    @Attribute(.allowsCloudEncryption) private(set) var rememberedTimeEnd: String?
     @Attribute(.allowsCloudEncryption) var duration: TimeInterval = 0
     var rawTranscriptExpiresAt: Date?
     var metadataId: UUID?
@@ -34,7 +51,8 @@ final class Story {
         processingStatus: String = "captured",
         sourceKind: StorySourceKind = .note,
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        rememberedTime: RememberedTime? = nil
     ) {
         self.id = id
         self.text = text
@@ -48,6 +66,27 @@ final class Story {
         self.sourceKindValue = sourceKind.rawValue
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.rememberedTime = rememberedTime
+    }
+
+    var rememberedTime: RememberedTime? {
+        get {
+            guard let raw = rememberedTimePrecision, let precision = RememberedTime.Precision(rawValue: raw),
+                  let start = rememberedTimeStart, let end = rememberedTimeEnd, start <= end,
+                  precision != .day || start == end else { return nil }
+            return RememberedTime(precision: precision, startDate: start, endDate: end)
+        }
+        set {
+            rememberedTimePrecision = newValue?.precision.rawValue
+            rememberedTimeStart = newValue?.startDate
+            rememberedTimeEnd = newValue?.endDate
+        }
+    }
+
+    /// Coarse memories have their own entry and do not appear on a day page.
+    func effectiveDayKey(recordedDayKey: @autoclosure () -> String) -> String? {
+        guard let rememberedTime else { return recordedDayKey() }
+        return rememberedTime.isCoarse ? nil : rememberedTime.startDate
     }
 
     var sourceKind: StorySourceKind {

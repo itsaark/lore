@@ -6,7 +6,7 @@ import Foundation
 struct JournalDayContent {
     let dayKey: String
     fileprivate(set) var entries: [DailyBiographyEntry] = []
-    /// Every voice note captured that day, oldest first.
+    /// Every voice note filed under that day, oldest first.
     fileprivate(set) var stories: [Story] = []
     /// Notes with prose that no daily entry covers yet, oldest first.
     fileprivate(set) var draftStories: [Story] = []
@@ -32,14 +32,17 @@ struct JournalDayContent {
         storyDayKeys: [UUID: String],
         calendar: JournalCalendar = JournalCalendar()
     ) -> [String: JournalDayContent] {
-        let compiledStoryIds = Set(dailyEntries.flatMap(\.sourceStoryIds))
+        let dayEntries = dailyEntries.filter { $0.memoryStoryId == nil }
+        let compiledStoryIds = Set(dayEntries.flatMap(\.sourceStoryIds))
         var index: [String: JournalDayContent] = [:]
 
-        for entry in dailyEntries.sorted(by: { $0.updatedAt > $1.updatedAt }) {
+        for entry in dayEntries.sorted(by: { $0.updatedAt > $1.updatedAt }) {
             index[entry.dayKey, default: Self(dayKey: entry.dayKey)].entries.append(entry)
         }
         for story in stories.sorted(by: { $0.date < $1.date }) {
-            let dayKey = storyDayKeys[story.id] ?? calendar.dayKey(for: story.date)
+            guard let dayKey = story.effectiveDayKey(
+                recordedDayKey: storyDayKeys[story.id] ?? calendar.dayKey(for: story.date)
+            ) else { continue }
             index[dayKey, default: Self(dayKey: dayKey)].stories.append(story)
             guard !compiledStoryIds.contains(story.id),
                   !(story.biographyProse ?? "").trimmed.isEmpty else { continue }

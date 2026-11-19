@@ -2,12 +2,21 @@ import CryptoKit
 import Foundation
 import SwiftData
 
-/// The locally persisted, replaceable biography view for one completed calendar day.
+/// Identifies a derived biography and its painting. Each coarse memory
+/// stands on its own, even when several memories share a start date.
+enum BiographyIdentity {
+    static func key(dayKey: String, memoryStoryId: UUID?) -> String {
+        memoryStoryId.map { "memory:" + $0.uuidString.lowercased() } ?? dayKey
+    }
+}
+
+/// A synced, replaceable biography for a calendar day or one coarse memory.
 /// Source stories and transcript versions remain canonical and are never rewritten.
 @Model
 final class DailyBiographyEntry {
     private(set) var id: UUID = UUID()
     @Attribute(.allowsCloudEncryption) private(set) var dayKey: String = ""
+    private(set) var memoryStoryId: UUID?
     @Attribute(.allowsCloudEncryption) private(set) var calendarDate: Date = Date()
     private(set) var sourceStoryIds: [UUID] = []
     private(set) var sourceTranscriptArtifactIds: [UUID] = []
@@ -25,6 +34,8 @@ final class DailyBiographyEntry {
     private(set) var createdAt: Date = Date()
     private(set) var updatedAt: Date = Date()
 
+    var biographyKey: String { BiographyIdentity.key(dayKey: dayKey, memoryStoryId: memoryStoryId) }
+
     var formattedCalendarDate: String {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -38,6 +49,7 @@ final class DailyBiographyEntry {
     init(
         id: UUID = UUID(),
         dayKey: String,
+        memoryStoryId: UUID? = nil,
         calendarDate: Date,
         sourceStoryIds: [UUID],
         sourceTranscriptArtifactIds: [UUID],
@@ -53,6 +65,7 @@ final class DailyBiographyEntry {
     ) {
         self.id = id
         self.dayKey = dayKey
+        self.memoryStoryId = memoryStoryId
         self.calendarDate = calendarDate
         self.sourceStoryIds = sourceStoryIds
         self.sourceTranscriptArtifactIds = sourceTranscriptArtifactIds
@@ -107,6 +120,8 @@ final class DailyBiographyGenerationSnapshot {
     private(set) var id: UUID
     private(set) var jobId: UUID
     private(set) var dayKey: String
+    private(set) var memoryStoryId: UUID?
+    var biographyKey: String { BiographyIdentity.key(dayKey: dayKey, memoryStoryId: memoryStoryId) }
     private(set) var calendarDate: Date
     private(set) var sourceStoryIds: [UUID]
     private(set) var sourceTranscriptArtifactIds: [UUID]
@@ -119,6 +134,7 @@ final class DailyBiographyGenerationSnapshot {
         id: UUID = UUID(),
         jobId: UUID,
         dayKey: String,
+        memoryStoryId: UUID? = nil,
         calendarDate: Date,
         sourceStoryIds: [UUID],
         sourceTranscriptArtifactIds: [UUID],
@@ -130,6 +146,7 @@ final class DailyBiographyGenerationSnapshot {
         self.id = id
         self.jobId = jobId
         self.dayKey = dayKey
+        self.memoryStoryId = memoryStoryId
         self.calendarDate = calendarDate
         self.sourceStoryIds = sourceStoryIds
         self.sourceTranscriptArtifactIds = sourceTranscriptArtifactIds
@@ -186,11 +203,12 @@ enum DailyBiographyJobRunner {
         let artifact: TranscriptArtifact
         let version: TranscriptVersion
         let timezone: TimeZone
-        let dayKey: String
     }
 
-    private struct DayGroup {
+    private struct BiographyGroup {
         let dayKey: String
+        let memoryStoryId: UUID?
+        var biographyKey: String { BiographyIdentity.key(dayKey: dayKey, memoryStoryId: memoryStoryId) }
         let calendarDate: Date
         let sources: [Source]
         let fingerprint: String
@@ -211,7 +229,7 @@ enum DailyBiographyJobRunner {
         in modelContext: ModelContext,
         now: Date = Date()
     ) throws -> [PreparedDay] {
-        let groups = try completedDayGroups(in: modelContext)
+        let groups = try biographyGroups(in: modelContext)
         let entries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
         let snapshots = try modelContext.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>())
         let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
@@ -225,13 +243,13 @@ enum DailyBiographyJobRunner {
 
         for group in groups {
             if entries.contains(where: {
-                $0.dayKey == group.dayKey && $0.sourceFingerprint == group.fingerprint
+                $0.biographyKey == group.biographyKey && $0.sourceFingerprint == group.fingerprint
             }) {
                 continue
             }
 
             if let existingSnapshot = snapshots.first(where: {
-                $0.dayKey == group.dayKey && $0.sourceFingerprint == group.fingerprint
+                $0.biographyKey == group.biographyKey && $0.sourceFingerprint == group.fingerprint
             }), let existingJob = jobsById[existingSnapshot.jobId] {
                 if existingJob.state != .succeeded && existingJob.state != .cancelled {
                     prepared.append(PreparedDay(
@@ -247,7 +265,7 @@ enum DailyBiographyJobRunner {
                 modelContext.delete(existingJob)
             }
 
-            for obsolete in snapshots where obsolete.dayKey == group.dayKey
+            for obsolete in snapshots where obsolete.biographyKey == group.biographyKey
                 && obsolete.sourceFingerprint != group.fingerprint {
                 if let job = jobsById[obsolete.jobId],
                    job.state != .succeeded,
@@ -261,7 +279,7 @@ enum DailyBiographyJobRunner {
             let first = group.sources[0]
             let job = ProcessingJob(
                 id: jobId,
-                idempotencyKey: "daily-biography:\(group.dayKey):\(group.fingerprint)",
+                idempotencyKey: "daily-biography:\(group.biographyKey):\(group.fingerprint)",
                 storyId: first.story.id,
                 transcriptArtifactId: first.artifact.id,
                 inputTranscriptVersionId: first.version.id,
@@ -274,6 +292,7 @@ enum DailyBiographyJobRunner {
             let snapshot = DailyBiographyGenerationSnapshot(
                 jobId: jobId,
                 dayKey: group.dayKey,
+                memoryStoryId: group.memoryStoryId,
                 calendarDate: group.calendarDate,
                 sourceStoryIds: group.sources.map(\.story.id),
                 sourceTranscriptArtifactIds: group.sources.map(\.artifact.id),
@@ -322,7 +341,9 @@ enum DailyBiographyJobRunner {
             throw DailyBiographyJobRunnerError.jobCancelled
         }
 
-        _ = job.recoverExpiredLease(at: now)
+        if job.recoverExpiredLease(at: now) {
+            try saveOrRollback(modelContext)
+        }
         guard job.isReadyForAttempt(at: now) else {
             throw DailyBiographyJobRunnerError.jobNotReady
         }
@@ -333,34 +354,30 @@ enum DailyBiographyJobRunner {
             userProfile: userProfile,
             in: modelContext
         )
-        let dayKey = snapshot.dayKey
+        let biographyKey = snapshot.biographyKey
         let sourceFingerprint = snapshot.sourceFingerprint
         job.beginAttempt(at: now, leaseDuration: leaseDuration)
-        do {
-            try modelContext.save()
-        } catch {
-            modelContext.rollback()
-            throw error
-        }
+        let attempt = job.attemptCount
+        try saveOrRollback(modelContext)
 
         do {
             let response = try await generator.generateDailyEntry(package.request)
             try Task.checkCancellation()
-            guard job.modelContext != nil, !job.isDeleted, job.state == .running else {
+            guard job.modelContext != nil, !job.isDeleted, job.state == .running, job.attemptCount == attempt else {
                 throw DailyBiographyJobRunnerError.jobCancelled
             }
-            guard try completedDayGroups(in: modelContext).contains(where: {
-                $0.dayKey == dayKey && $0.fingerprint == sourceFingerprint
+            guard try biographyGroups(in: modelContext).contains(where: {
+                $0.biographyKey == biographyKey && $0.fingerprint == sourceFingerprint
             }) else {
                 job.cancel(at: Date())
-                try modelContext.save()
+                try saveOrRollback(modelContext)
                 throw DailyBiographyJobRunnerError.jobCancelled
             }
             try validate(response: response, for: package.request)
 
             let entry: DailyBiographyEntry
             let currentEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
-            if let existing = currentEntries.first(where: { $0.dayKey == dayKey }) {
+            if let existing = currentEntries.first(where: { $0.biographyKey == biographyKey }) {
                 existing.replace(
                     sourceStoryIds: package.stories.map(\.id),
                     sourceTranscriptArtifactIds: package.artifacts.map(\.id),
@@ -377,6 +394,7 @@ enum DailyBiographyJobRunner {
             } else {
                 entry = DailyBiographyEntry(
                     dayKey: snapshot.dayKey,
+                    memoryStoryId: snapshot.memoryStoryId,
                     calendarDate: snapshot.calendarDate,
                     sourceStoryIds: package.stories.map(\.id),
                     sourceTranscriptArtifactIds: package.artifacts.map(\.id),
@@ -392,9 +410,11 @@ enum DailyBiographyJobRunner {
                 )
                 modelContext.insert(entry)
             }
-            try DailyQuestionStore.saveFollowUps(
-                for: entry, response: response, request: package.request, in: modelContext
-            )
+            if snapshot.memoryStoryId == nil {
+                try DailyQuestionStore.saveFollowUps(
+                    for: entry, response: response, request: package.request, in: modelContext
+                )
+            }
             // The day's story now covers these notes; they have no separate
             // per-note entry to wait for.
             for story in package.stories where story.processingStatus == "awaitingModel" {
@@ -408,23 +428,28 @@ enum DailyBiographyJobRunner {
                 resultSchemaVersion: response.schemaVersion,
                 at: now
             )
-            try modelContext.save()
+            try saveOrRollback(modelContext)
             return entry
         } catch is CancellationError {
+            guard job.modelContext != nil, !job.isDeleted, job.state == .running, job.attemptCount == attempt else {
+                throw CancellationError()
+            }
             modelContext.rollback()
-            guard job.modelContext != nil, !job.isDeleted else { throw CancellationError() }
             job.cancel(at: Date())
-            try modelContext.save()
+            try saveOrRollback(modelContext)
             throw CancellationError()
         } catch LoreBackendProcessingError.cancelled {
+            guard job.modelContext != nil, !job.isDeleted, job.state == .running, job.attemptCount == attempt else {
+                throw CancellationError()
+            }
             modelContext.rollback()
-            guard job.modelContext != nil, !job.isDeleted else { throw CancellationError() }
             job.cancel(at: Date())
-            try modelContext.save()
+            try saveOrRollback(modelContext)
             throw CancellationError()
         } catch {
+            guard job.modelContext != nil, !job.isDeleted, job.state == .running,
+                  job.attemptCount == attempt else { throw error }
             modelContext.rollback()
-            guard job.modelContext != nil, !job.isDeleted, job.state == .running else { throw error }
             let terminal = isTerminal(error) || job.attemptCount >= job.maximumAttempts
             let failureDate = Date()
             job.markFailed(
@@ -432,7 +457,16 @@ enum DailyBiographyJobRunner {
                 retryAt: terminal ? nil : failureDate.addingTimeInterval(retryDelay(job.attemptCount)),
                 at: failureDate
             )
-            try modelContext.save()
+            try saveOrRollback(modelContext)
+            throw error
+        }
+    }
+
+    private static func saveOrRollback(_ context: ModelContext) throws {
+        do {
+            try context.save()
+        } catch {
+            context.rollback()
             throw error
         }
     }
@@ -444,23 +478,26 @@ enum DailyBiographyJobRunner {
         in modelContext: ModelContext
     ) throws -> Int {
         let allEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>())
-        let entries = allEntries.filter { $0.sourceStoryIds.contains(storyID) || $0.dayKey == emptyDayKey }
+        let entries = allEntries.filter {
+            $0.memoryStoryId == storyID || $0.sourceStoryIds.contains(storyID) || $0.biographyKey == emptyDayKey
+        }
         let snapshots = try modelContext.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>())
-            .filter { $0.sourceStoryIds.contains(storyID) || $0.dayKey == emptyDayKey }
+            .filter {
+                $0.memoryStoryId == storyID || $0.sourceStoryIds.contains(storyID) || $0.biographyKey == emptyDayKey
+            }
         let snapshotJobIds = Set(snapshots.map(\.jobId))
         let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
             .filter { snapshotJobIds.contains($0.id) }
 
-        let remainingDays = Set(allEntries.filter {
-            !$0.sourceStoryIds.contains(storyID) && $0.dayKey != emptyDayKey
-        }.map(\.dayKey))
-        var affectedDays = Set(entries.map(\.dayKey) + snapshots.map(\.dayKey))
-        if let emptyDayKey { affectedDays.insert(emptyDayKey) }
-        let removedDays = affectedDays.subtracting(remainingDays)
-        let illustrations = removedDays.isEmpty ? [] : try modelContext.fetch(FetchDescriptor<DayIllustration>())
-            .filter { removedDays.contains($0.dayKey) }
+        let removedEntryIds = Set(entries.map(\.id))
+        let remainingKeys = Set(allEntries.filter { !removedEntryIds.contains($0.id) }.map(\.biographyKey))
+        var affectedKeys = Set(entries.map(\.biographyKey) + snapshots.map(\.biographyKey))
+        if let emptyDayKey { affectedKeys.insert(emptyDayKey) }
+        let removedKeys = affectedKeys.subtracting(remainingKeys)
+        let illustrations = try modelContext.fetch(FetchDescriptor<DayIllustration>())
+            .filter { $0.memoryStoryId == storyID || removedKeys.contains($0.biographyKey) }
 
-        try DailyQuestionStore.removeFollowUps(for: Set(entries.map(\.id)), in: modelContext)
+        try DailyQuestionStore.removeFollowUps(for: removedEntryIds, in: modelContext)
         entries.forEach(modelContext.delete)
         illustrations.forEach(modelContext.delete)
         snapshots.forEach(modelContext.delete)
@@ -468,7 +505,7 @@ enum DailyBiographyJobRunner {
         return entries.count + illustrations.count + snapshots.count + jobs.count
     }
 
-    private static func completedDayGroups(in modelContext: ModelContext) throws -> [DayGroup] {
+    private static func biographyGroups(in modelContext: ModelContext) throws -> [BiographyGroup] {
         let stories = try modelContext.fetch(FetchDescriptor<Story>())
         let artifacts = try modelContext.fetch(FetchDescriptor<TranscriptArtifact>())
         let versions = try modelContext.fetch(FetchDescriptor<TranscriptVersion>())
@@ -477,7 +514,7 @@ enum DailyBiographyJobRunner {
             metadata.map { ($0.id, $0) },
             uniquingKeysWith: { current, _ in current }
         )
-        var sourcesByDay: [String: [Source]] = [:]
+        var sourcesByBiography: [String: [Source]] = [:]
 
         for story in stories {
             let timezone = story.metadataId
@@ -496,29 +533,34 @@ enum DailyBiographyJobRunner {
                 continue
             }
 
-            let dayKey = localDayKey(for: story.date, timezone: timezone)
-            sourcesByDay[dayKey, default: []].append(Source(
+            let dayKey = story.effectiveDayKey(recordedDayKey: localDayKey(for: story.date, timezone: timezone))
+            let key = BiographyIdentity.key(dayKey: dayKey ?? "", memoryStoryId: dayKey == nil ? story.id : nil)
+            sourcesByBiography[key, default: []].append(Source(
                 story: story,
                 artifact: artifact,
                 version: version,
-                timezone: timezone,
-                dayKey: dayKey
+                timezone: timezone
             ))
         }
 
-        return sourcesByDay.compactMap { dayKey, sources in
+        return sourcesByBiography.compactMap { key, sources in
             let sorted = sources.sorted { $0.story.date < $1.story.date }
+            let first = sorted[0].story
+            let rememberedTime = first.rememberedTime
+            let memoryStoryId = rememberedTime?.isCoarse == true ? first.id : nil
+            let dayKey = memoryStoryId == nil ? key : rememberedTime?.startDate ?? key
             guard let calendarDate = calendarDate(for: dayKey) else { return nil }
             let identifiers = sorted.map(\.timezone.identifier)
-            return DayGroup(
+            return BiographyGroup(
                 dayKey: dayKey,
+                memoryStoryId: memoryStoryId,
                 calendarDate: calendarDate,
                 sources: sorted,
-                fingerprint: fingerprint(dayKey: dayKey, sources: sorted),
+                fingerprint: fingerprint(key: key, sources: sorted, memoryTime: memoryStoryId == nil ? nil : rememberedTime),
                 timezoneIdentifiers: identifiers
             )
         }
-        .sorted { $0.dayKey < $1.dayKey }
+        .sorted { ($0.dayKey, $0.biographyKey) < ($1.dayKey, $1.biographyKey) }
     }
 
     private static func makeRequest(
@@ -592,12 +634,22 @@ enum DailyBiographyJobRunner {
         // anchor. Daily consolidation uses the earliest source as that stable
         // anchor while every transcript remains independently identified in
         // sourceSegments and in the durable local snapshot above.
+        let rememberedTime = first.0.rememberedTime.flatMap(DailyEntryGenerationRequest.RememberedRange.init)
+        guard (snapshot.memoryStoryId == nil && rememberedTime == nil)
+                || (snapshot.memoryStoryId == first.0.id && rememberedTime != nil && tuples.count == 1
+                    && snapshot.dayKey == rememberedTime?.startDate) else {
+            throw DailyBiographyJobRunnerError.sourceNotFound
+        }
+        let capturedDay = snapshot.memoryStoryId == nil ? snapshot.dayKey : localDayKey(
+            for: first.0.date, timezone: snapshot.timezoneIdentifiers.first.flatMap(TimeZone.init(identifier:)) ?? .current
+        )
         let request = DailyEntryGenerationRequest(
             jobId: jobId,
             noteId: first.0.id,
             transcriptArtifactId: first.1.id,
             transcriptVersionId: first.2.id,
-            capturedLocalDate: snapshot.dayKey,
+            capturedLocalDate: capturedDay,
+            rememberedTime: rememberedTime,
             languageCode: first.1.languageCode ?? Locale.current.identifier,
             subject: JournalSubject(displayName: userProfile.name, pronouns: []),
             renderConfiguration: JournalRenderConfiguration(targetWords: min(600, max(160, tuples.count * 120))),
@@ -677,8 +729,12 @@ enum DailyBiographyJobRunner {
         return dateComponents.date
     }
 
-    private static func fingerprint(dayKey: String, sources: [Source]) -> String {
-        let source = ([dayKey] + sources.map {
+    private static func fingerprint(key: String, sources: [Source], memoryTime: RememberedTime?) -> String {
+        var components = [key]
+        if let memoryTime {
+            components += [memoryTime.precision.rawValue, memoryTime.startDate, memoryTime.endDate]
+        }
+        let source = (components + sources.map {
             "\($0.story.id.uuidString.lowercased()):\($0.version.id.uuidString.lowercased())"
         }).joined(separator: "|")
         return SHA256.hash(data: Data(source.utf8))

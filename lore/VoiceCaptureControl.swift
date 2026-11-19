@@ -197,3 +197,71 @@ private struct VoiceCaptureButtonStyle: ButtonStyle {
         )
     }
 }
+
+struct VoiceCaptureOverlay: View {
+    @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
+
+    var body: some View {
+        // The glow rises from the bottom edge of the screen with your voice:
+        // the recorder's own audio, analysed into low, mid and high bands
+        // every frame, so each lobe moves with its part of the voice. It
+        // samples outside SwiftUI state, so speech doesn't re-render this view.
+        VoiceGlow(
+            type: .mobile,
+            audio: { [speechRecognizer] in speechRecognizer.voiceGlowAudio() },
+            active: speechRecognizer.isAuthorized,
+            colorVariant: .colorful,
+            cornerRadius: Self.displayCornerRadius,
+            options: Self.voiceGlowOptions
+        ) {
+            LoreTheme.canvas
+                .opacity(0.96)
+        }
+        .ignoresSafeArea()
+        .accessibilityIdentifier("voiceCaptureOverlay")
+    }
+
+    /// Close to the corner radius of current iPhone displays, so the glow
+    /// follows the screen's own curve into the corners.
+    private static let displayCornerRadius: Double = 55
+
+    private static let voiceGlowOptions: VoiceGlowOptions = {
+        var options = VoiceGlowOptions()
+        // Lore records in `.measurement` mode (no automatic gain, for cleaner
+        // transcription audio), which runs ~10 dB quieter than the default
+        // mode the glow is tuned for. Make up the gain, and raise the gate
+        // with it so room hiss stays below it.
+        options.sensitivity = 6
+        options.threshold = 0.04
+        return options
+    }()
+
+}
+
+struct VoiceCaptureFeedback: View {
+    @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
+    var showsPermissionHint = true
+
+    var body: some View {
+        if let message = speechRecognizer.captureFeedbackMessage {
+            supportMessage(message, color: LoreTheme.attention)
+        } else if showsPermissionHint && !speechRecognizer.isAuthorized {
+            supportMessage("Microphone access is needed to record.", color: LoreTheme.secondaryInk)
+        }
+    }
+
+    private func supportMessage(_ message: String, color: Color) -> some View {
+        Text(message)
+            .font(.footnote)
+            .foregroundStyle(color)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(Capsule().fill(LoreTheme.raisedSurface))
+            .overlay(Capsule().strokeBorder(LoreTheme.hairline))
+            .padding(.horizontal, 28)
+            .transition(.opacity)
+            .accessibilityIdentifier("recordingSupportMessage")
+    }
+
+}

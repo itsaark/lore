@@ -64,6 +64,7 @@ enum CloudArchiveMigrator {
             || !context.fetch(FetchDescriptor<ReflectionSession>()).isEmpty
             || !context.fetch(FetchDescriptor<ReflectionTurn>()).isEmpty
             || !context.fetch(FetchDescriptor<DailyBiographyEntry>()).isEmpty
+            || !context.fetch(FetchDescriptor<DayIllustration>()).isEmpty
             || !context.fetch(FetchDescriptor<VocabularyEntry>()).isEmpty
     }
 
@@ -100,7 +101,8 @@ enum CloudArchiveMigrator {
                 processingStatus: value.processingStatus,
                 sourceKind: value.sourceKind,
                 createdAt: value.createdAt,
-                updatedAt: value.updatedAt
+                updatedAt: value.updatedAt,
+                rememberedTime: value.rememberedTime
             ))
         }
 
@@ -328,6 +330,7 @@ enum CloudArchiveMigrator {
             target.insert(DailyBiographyEntry(
                 id: value.id,
                 dayKey: value.dayKey,
+                memoryStoryId: value.memoryStoryId,
                 calendarDate: value.calendarDate,
                 sourceStoryIds: value.sourceStoryIds,
                 sourceTranscriptArtifactIds: value.sourceTranscriptArtifactIds,
@@ -341,6 +344,11 @@ enum CloudArchiveMigrator {
                 createdAt: value.createdAt,
                 updatedAt: value.updatedAt
             ))
+        }
+
+        let illustrationIDs = Set(try target.fetch(FetchDescriptor<DayIllustration>()).map(\.id))
+        for value in try source.fetch(FetchDescriptor<DayIllustration>()) where !illustrationIDs.contains(value.id) {
+            target.insert(DayIllustration(copying: value))
         }
     }
 
@@ -393,6 +401,7 @@ enum CloudArchiveMigrator {
                 id: value.id,
                 jobId: value.jobId,
                 dayKey: value.dayKey,
+                memoryStoryId: value.memoryStoryId,
                 calendarDate: value.calendarDate,
                 sourceStoryIds: value.sourceStoryIds,
                 sourceTranscriptArtifactIds: value.sourceTranscriptArtifactIds,
@@ -423,6 +432,7 @@ enum CloudArchiveMigrator {
         try requireSubset(source.fetch(FetchDescriptor<ReflectionSession>()).map(\.id), in: target.fetch(FetchDescriptor<ReflectionSession>()).map(\.id))
         try requireSubset(source.fetch(FetchDescriptor<ReflectionTurn>()).map(\.id), in: target.fetch(FetchDescriptor<ReflectionTurn>()).map(\.id))
         try requireSubset(source.fetch(FetchDescriptor<DailyBiographyEntry>()).map(\.id), in: target.fetch(FetchDescriptor<DailyBiographyEntry>()).map(\.id))
+        try requireSubset(source.fetch(FetchDescriptor<DayIllustration>()).map(\.id), in: target.fetch(FetchDescriptor<DayIllustration>()).map(\.id))
         try requireSubset(source.fetch(FetchDescriptor<AudioAsset>()).map(\.id), in: target.fetch(FetchDescriptor<AudioAsset>()).map(\.id))
         try requireSubset(source.fetch(FetchDescriptor<ProcessingJob>()).map(\.id), in: target.fetch(FetchDescriptor<ProcessingJob>()).map(\.id))
         try requireSubset(source.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>()).map(\.id), in: target.fetch(FetchDescriptor<DailyBiographyGenerationSnapshot>()).map(\.id))

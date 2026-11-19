@@ -91,6 +91,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var recordingStartTime: Date?
     private var currentRecordingAudioFileURL: URL?
     private var currentDailyQuestion: DailyQuestionPresentation?
+    private var currentRememberedTime: RememberedTime?
     private var pendingSaveTask: Task<Void, Never>?
     /// The route chosen when the in-flight capture began transcribing.
     private var activeCaptureRoute: SpeechTranscriptionRoute?
@@ -168,11 +169,14 @@ class SpeechRecognitionViewModel: ObservableObject {
     // MARK: - Public Methods
     
     /// Toggles recording state
-    func toggleRecording(answering question: DailyQuestionPresentation? = nil) {
+    func toggleRecording(
+        answering question: DailyQuestionPresentation? = nil,
+        remembering time: @autoclosure () -> RememberedTime? = nil
+    ) {
         if isRecording {
             stopRecording()
         } else {
-            startRecording(answering: question)
+            startRecording(answering: question, remembering: time())
         }
     }
     
@@ -771,8 +775,9 @@ class SpeechRecognitionViewModel: ObservableObject {
                 // A blank transcript is excluded from generation, so there may
                 // be no replacement entry to overwrite the old one.
                 try DailyBiographyJobRunner.deleteSupportData(containing: savedStory.id, in: modelContext)
-                let dayKey = storyDayKeys[savedStory.id] ?? JournalCalendar().dayKey(for: savedStory.date)
-                try Self.deleteChapter(forDayKey: dayKey, in: modelContext)
+                if let dayKey = dayKey(for: savedStory) {
+                    try Self.deleteChapter(forDayKey: dayKey, in: modelContext)
+                }
             }
             try Self.applyUserCorrection(newText, to: savedStory, in: modelContext)
         } catch {
@@ -800,9 +805,9 @@ class SpeechRecognitionViewModel: ObservableObject {
             return false
         }
 
-        let dayKey = storyDayKeys[savedStory.id] ?? JournalCalendar().dayKey(for: savedStory.date)
-        let isLastNote = !stories.contains {
-            $0.id != savedStory.id && (storyDayKeys[$0.id] ?? JournalCalendar().dayKey(for: $0.date)) == dayKey
+        let dayKey = dayKey(for: savedStory)
+        let isLastNote = dayKey != nil && !stories.contains {
+            $0.id != savedStory.id && self.dayKey(for: $0) == dayKey
         }
         do {
             try DailyBiographyJobRunner.deleteSupportData(
@@ -817,7 +822,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             }
 
             // Drop the old chapter even if remote rewriting is currently gated.
-            try Self.deleteChapter(forDayKey: dayKey, in: modelContext)
+            if let dayKey { try Self.deleteChapter(forDayKey: dayKey, in: modelContext) }
             try Self.deleteAudioAssets(for: savedStory, in: modelContext)
             modelContext.delete(savedStory)
             try modelContext.save()
@@ -830,6 +835,10 @@ class SpeechRecognitionViewModel: ObservableObject {
         loadStories()
         Task { await resumePendingDailyBiographyJobs() }
         return true
+    }
+
+    private func dayKey(for story: Story) -> String? {
+        story.effectiveDayKey(recordedDayKey: storyDayKeys[story.id] ?? JournalCalendar().dayKey(for: story.date))
     }
 
     private static func deleteChapter(forDayKey dayKey: String, in modelContext: ModelContext) throws {
@@ -909,7 +918,7 @@ class SpeechRecognitionViewModel: ObservableObject {
                 metadata.map { ($0.id, $0) },
                 uniquingKeysWith: { current, _ in current }
             )
-            storyDayKeys = Dictionary(stories.map { story in
+            storyDayKeys = Dictionary(stories.compactMap { story in
                 let timezone = story.metadataId
                     .flatMap { metadataById[$0] }
                     .flatMap { TimeZone(identifier: $0.timezone) }
@@ -919,7 +928,7 @@ class SpeechRecognitionViewModel: ObservableObject {
                 formatter.locale = Locale(identifier: "en_US_POSIX")
                 formatter.timeZone = timezone
                 formatter.dateFormat = "yyyy-MM-dd"
-                return (story.id, formatter.string(from: story.date))
+                return story.effectiveDayKey(recordedDayKey: formatter.string(from: story.date)).map { (story.id, $0) }
             }, uniquingKeysWith: { current, _ in current })
             dailyBiographyEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>(
                 sortBy: [SortDescriptor(\.calendarDate, order: .forward)]
@@ -1085,7 +1094,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
     
     /// Starts speech recognition
-    private func startRecording(answering question: DailyQuestionPresentation?) {
+    private func startRecording(answering question: DailyQuestionPresentation?, remembering time: RememberedTime?) {
         print("🎤 Attempting to start recording...")
 
         guard pendingSaveTask == nil && !isAwaitingRemoteTranscription else {
@@ -1115,6 +1124,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             try setupAudioSession()
             try startAudioCapture()
             currentDailyQuestion = question
+            currentRememberedTime = time
             print("✅ Recording started successfully")
             if resolvedRoute == .onDevice, let localTranscriber {
                 // Hide the cold model load behind the recording.
@@ -1196,6 +1206,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             discardCurrentAudioFile()
             recordingStartTime = nil
             currentDailyQuestion = nil
+            currentRememberedTime = nil
         }
 
         isProcessingAudio = false
@@ -1243,7 +1254,8 @@ class SpeechRecognitionViewModel: ObservableObject {
                 endTime: endTime,
                 audioFileURL: audioFileURL,
                 modelContext: modelContext,
-                question: currentDailyQuestion
+                question: currentDailyQuestion,
+                rememberedTime: currentRememberedTime
             )
         } catch {
             pendingSaveTask = nil
@@ -1303,6 +1315,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         recordingStartTime = nil
         currentRecordingAudioFileURL = nil
         currentDailyQuestion = nil
+        currentRememberedTime = nil
     }
 
     private func beginRecordingSaveBackgroundTask() {
@@ -1432,7 +1445,8 @@ class SpeechRecognitionViewModel: ObservableObject {
         endTime: Date,
         audioFileURL: URL,
         modelContext: ModelContext,
-        question: DailyQuestionPresentation? = nil
+        question: DailyQuestionPresentation? = nil,
+        rememberedTime: RememberedTime? = nil
     ) throws -> (story: Story, job: ProcessingJob) {
         guard audioFileURL.isFileURL,
               FileManager.default.fileExists(atPath: audioFileURL.path) else {
@@ -1443,7 +1457,8 @@ class SpeechRecognitionViewModel: ObservableObject {
             transcript: "",
             startTime: startTime,
             endTime: endTime,
-            metadataId: metadata.id
+            metadataId: metadata.id,
+            rememberedTime: rememberedTime
         )
         story.processingStatus = "transcriptionPending"
         let audioAsset = makeAudioAsset(
@@ -2303,7 +2318,8 @@ class SpeechRecognitionViewModel: ObservableObject {
         transcript: String,
         startTime: Date,
         endTime: Date,
-        metadataId: UUID? = nil
+        metadataId: UUID? = nil,
+        rememberedTime: RememberedTime? = nil
     ) -> Story {
         Story(
             text: transcript,
@@ -2312,7 +2328,8 @@ class SpeechRecognitionViewModel: ObservableObject {
             rawTranscriptExpiresAt: nil,
             metadataId: metadataId,
             createdAt: endTime,
-            updatedAt: endTime
+            updatedAt: endTime,
+            rememberedTime: rememberedTime
         )
     }
 

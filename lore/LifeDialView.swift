@@ -13,28 +13,50 @@ struct LifeDialView: View {
     @Query private var photos: [DayPhoto]
     @Query private var illustrations: [DayIllustration]
     @State private var now = Date()
-    @State private var dayKey: String?
+    @State private var destination: Destination?
+
+    private enum Destination: Hashable {
+        case day(String)
+        case memories([UUID], selected: UUID)
+    }
 
     var body: some View {
         let calendar = JournalCalendar()
-        let notes = speechRecognizer.stories.map { speechRecognizer.storyDayKeys[$0.id] ?? calendar.dayKey(for: $0.date) }
-        let entryKeys = speechRecognizer.dailyBiographyEntries.map(\.dayKey)
+        let notes = speechRecognizer.stories.compactMap { story in
+            story.effectiveDayKey(recordedDayKey: speechRecognizer.storyDayKeys[story.id] ?? calendar.dayKey(for: story.date))
+        }
+        let entryKeys = speechRecognizer.dailyBiographyEntries.filter { $0.memoryStoryId == nil }.map(\.dayKey)
         let archive = LifeDialArchive(
             birthYear: birthYear,
             now: now,
             calendar: calendar,
             contentDays: Set(notes).union(entryKeys),
+            stories: speechRecognizer.stories,
             photos: photos,
             illustrations: illustrations
         )
 
         NavigationStack {
-            LifeDialScreen(archive: archive, close: { dismiss() }, openDay: { dayKey = $0 })
-                .toolbar(.hidden, for: .navigationBar)
-                .navigationDestination(item: $dayKey) { key in
+            LifeDialScreen(
+                archive: archive,
+                speechRecognizer: speechRecognizer,
+                close: { dismiss() },
+                openDay: { destination = .day($0) },
+                openMemories: { destination = .memories($0, selected: $1) }
+            )
+            .toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(item: $destination) { destination in
+                switch destination {
+                case .day(let key):
                     DayJournalView(dayKey: key, speechRecognizer: speechRecognizer)
+                        .toolbar(.visible, for: .navigationBar)
+                case .memories(let ids, let selected):
+                    MemoryJournalView(storyIds: ids, selected: selected, speechRecognizer: speechRecognizer)
+                        .toolbar(.visible, for: .navigationBar)
                 }
+            }
         }
+        .interactiveDismissDisabled(speechRecognizer.isRecording || speechRecognizer.isAwaitingRemoteTranscription)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
             now = Date()
         }
@@ -53,10 +75,11 @@ private struct LifeDialArchive {
     let dial: LifeDial
     let content: Set<LifeDial.Selection>
     let pictures: [LifeDial.Selection: Picture]
+    let memories: [LifeDial.Selection: [UUID]]
 
     struct Picture {
         let cover: DayCover
-        let dayKey: String
+        let memoryStoryId: UUID?
     }
 
     init(
@@ -64,16 +87,24 @@ private struct LifeDialArchive {
         now: Date,
         calendar: JournalCalendar,
         contentDays: Set<String>,
+        stories: [Story],
         photos: [DayPhoto],
         illustrations: [DayIllustration]
     ) {
         let availablePhotos = photos.filter { $0.pixelWidth > 0 && $0.pixelHeight > 0 }
         let availableIllustrations = illustrations.filter { $0.pixelWidth > 0 && $0.pixelHeight > 0 }
-        let allDays = contentDays.union(availablePhotos.map(\.dayKey)).union(availableIllustrations.map(\.dayKey))
+        let allDays = contentDays.union(availablePhotos.map(\.dayKey))
+            .union(availableIllustrations.filter { $0.memoryStoryId == nil }.map(\.dayKey))
+        let coarseMemories = stories.reversed().compactMap { story -> (UUID, RememberedTime)? in
+            guard let time = story.rememberedTime, time.isCoarse else { return nil }
+            return (story.id, time)
+        }
         let days = allDays.reduce(into: [String: Date]()) { result, key in
             if let date = calendar.date(forDayKey: key), date <= now { result[key] = date }
         }
-        let dial = LifeDial(birthYear: birthYear, earliestData: days.values.min(), now: now, calendar: calendar.calendar)
+        let memoryStarts = coarseMemories.compactMap { calendar.date(forDayKey: $0.1.startDate) }
+        let earliestData = (Array(days.values) + memoryStarts).min()
+        let dial = LifeDial(birthYear: birthYear, earliestData: earliestData, now: now, calendar: calendar.calendar)
         let levels = dial.levels
         var unitsByDay: [String: [LifeDial.Selection]] = [:]
         var occupied: Set<LifeDial.Selection> = []
@@ -83,14 +114,23 @@ private struct LifeDialArchive {
             occupied.formUnion(units)
         }
 
+        var unitsByMemory: [UUID: [LifeDial.Selection]] = [:]
+        var memoriesByUnit: [LifeDial.Selection: [UUID]] = [:]
+        for (id, time) in coarseMemories where unitsByMemory[id] == nil {
+            let units = dial.selections(for: time, calendar: calendar)
+            unitsByMemory[id] = units
+            occupied.formUnion(units)
+            for unit in units { memoriesByUnit[unit, default: []].append(id) }
+        }
+
         let covers = availablePhotos.coversByDay()
         var sources: [UUID: Picture] = [:]
         var candidates: [LifeDial.Selection: [LifeDial.PictureCandidate]] = [:]
 
-        func add(_ cover: DayCover, dayKey: String, kind: LifeDial.PictureCandidate.Kind) {
-            guard let units = unitsByDay[dayKey] else { return }
+        func add(_ cover: DayCover, dayKey: String, memoryStoryId: UUID? = nil, kind: LifeDial.PictureCandidate.Kind) {
+            let units = memoryStoryId.map { unitsByMemory[$0, default: []] } ?? unitsByDay[dayKey, default: []]
             let candidate = LifeDial.PictureCandidate(id: cover.id, kind: kind)
-            sources[cover.id] = Picture(cover: cover, dayKey: dayKey)
+            sources[cover.id] = Picture(cover: cover, memoryStoryId: memoryStoryId)
             for unit in units { candidates[unit, default: []].append(candidate) }
         }
 
@@ -98,11 +138,12 @@ private struct LifeDialArchive {
             add(.photo(photo), dayKey: photo.dayKey, kind: covers[photo.dayKey]?.id == photo.id ? .cover : .photo)
         }
         for illustration in availableIllustrations {
-            add(.illustration(illustration), dayKey: illustration.dayKey, kind: .illustration)
+            add(.illustration(illustration), dayKey: illustration.dayKey, memoryStoryId: illustration.memoryStoryId, kind: .illustration)
         }
 
         self.dial = dial
         content = occupied
+        memories = memoriesByUnit
         pictures = candidates.reduce(into: [:]) { result, bucket in
             if let id = LifeDial.pickPicture(from: bucket.value, for: bucket.key) { result[bucket.key] = sources[id] }
         }
@@ -111,25 +152,77 @@ private struct LifeDialArchive {
 
 private struct LifeDialScreen: View {
     let archive: LifeDialArchive
+    @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
     let close: () -> Void
     let openDay: (String) -> Void
+    let openMemories: ([UUID], UUID) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
     @ScaledMetric(relativeTo: .largeTitle) private var titleSize: CGFloat = 44
     @State private var motion: LifeDialMotion
 
-    init(archive: LifeDialArchive, close: @escaping () -> Void, openDay: @escaping (String) -> Void) {
+    init(
+        archive: LifeDialArchive,
+        speechRecognizer: SpeechRecognitionViewModel,
+        close: @escaping () -> Void,
+        openDay: @escaping (String) -> Void,
+        openMemories: @escaping ([UUID], UUID) -> Void
+    ) {
         self.archive = archive
+        self.speechRecognizer = speechRecognizer
         self.close = close
         self.openDay = openDay
+        self.openMemories = openMemories
         _motion = State(initialValue: LifeDialMotion(dial: archive.dial))
     }
 
+    private var isCapturing: Bool {
+        speechRecognizer.isRecording || speechRecognizer.isAwaitingRemoteTranscription
+    }
+
     var body: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .bottom) {
+                dialContent
+                    .allowsHitTesting(!isCapturing)
+                    .accessibilityHidden(isCapturing)
+                    .padding(.bottom, 94)
+
+                if isCapturing {
+                    VoiceCaptureOverlay(speechRecognizer: speechRecognizer)
+                        .transition(.opacity)
+                }
+
+                VStack(spacing: 8) {
+                    VoiceCaptureFeedback(speechRecognizer: speechRecognizer, showsPermissionHint: false)
+                    VoiceCaptureButton(
+                        containerWidth: geometry.size.width,
+                        isAvailable: speechRecognizer.isAuthorized,
+                        isRecording: speechRecognizer.isRecording,
+                        isProcessing: speechRecognizer.isAwaitingRemoteTranscription,
+                        accessibilityID: "lifeDialRecordButton"
+                    ) {
+                        speechRecognizer.toggleRecording(
+                            remembering: archive.dial.rememberedTime(for: motion.selection, at: Date())
+                        )
+                    }
+                }
+                .padding(.bottom, 14)
+            }
+        }
+        .loreCanvas()
+        .animation(.easeInOut(duration: 0.3), value: isCapturing)
+        .onAppear { motion.start(reduceMotion: reduceMotion) }
+        .onDisappear { motion.stop() }
+        .onChange(of: reduceMotion) { _, enabled in motion.setReduceMotion(enabled) }
+        .onChange(of: archive.dial) { _, dial in motion.update(dial: dial) }
+    }
+
+    private var dialContent: some View {
         let selection = motion.selection
         let labels = archive.dial.labels(for: selection)
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             header(labels)
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
@@ -148,7 +241,9 @@ private struct LifeDialScreen: View {
                 LifeDialPicture(
                     picture: picture,
                     pixelSize: pixelSize,
-                    open: selection.level == .day ? picture.map { picture in { openDay(picture.dayKey) } } : nil,
+                    open: pictureAction(for: selection, picture: picture),
+                    accessibilityLabel: selection.level == .day ? "Open day" : "Open memory",
+                    showsMemoryPlaceholder: archive.memories[selection] != nil && picture == nil,
                     reduceMotion: reduceMotion
                 )
                 .frame(width: width, height: height)
@@ -188,11 +283,18 @@ private struct LifeDialScreen: View {
         .contentShape(Rectangle())
         .gesture(LifeDialScrubGesture(motion: motion))
         .gesture(LifeDialPinchGesture(motion: motion))
-        .loreCanvas()
-        .onAppear { motion.start(reduceMotion: reduceMotion) }
-        .onDisappear { motion.stop() }
-        .onChange(of: reduceMotion) { _, enabled in motion.setReduceMotion(enabled) }
-        .onChange(of: archive.dial) { _, dial in motion.update(dial: dial) }
+    }
+
+    private func pictureAction(for selection: LifeDial.Selection, picture: LifeDialArchive.Picture?) -> (() -> Void)? {
+        if selection.level == .day, archive.content.contains(selection),
+           let date = archive.dial.range(of: selection)?.lowerBound {
+            let key = JournalCalendar(calendar: archive.dial.calendar).dayKey(for: date)
+            return { openDay(key) }
+        }
+        if let ids = archive.memories[selection], let picked = picture?.memoryStoryId ?? ids.first {
+            return { openMemories(ids, picked) }
+        }
+        return nil
     }
 
     private func header(_ labels: LifeDial.Labels) -> some View {
@@ -235,6 +337,8 @@ private struct LifeDialPicture: View {
     let picture: LifeDialArchive.Picture?
     let pixelSize: Int
     let open: (() -> Void)?
+    let accessibilityLabel: String
+    let showsMemoryPlaceholder: Bool
     let reduceMotion: Bool
 
     @State private var presenter = LifeDialPicturePresenter()
@@ -246,6 +350,13 @@ private struct LifeDialPicture: View {
         }
         ZStack {
             shape.strokeBorder(LoreTheme.hairline, lineWidth: 0.5)
+
+            if showsMemoryPlaceholder {
+                Image(systemName: "quote.bubble")
+                    .font(.system(size: 24, weight: .light))
+                    .foregroundStyle(LoreTheme.tertiaryInk)
+                    .accessibilityHidden(true)
+            }
 
             if let frame = presenter.frame {
                 Rectangle()
@@ -263,13 +374,14 @@ private struct LifeDialPicture: View {
         }
         .contentShape(shape)
         .overlay {
-            if let open, let request, presenter.frame?.key == request.key {
+            if let open, presenter.frame == nil || presenter.frame?.key == request?.key {
                 Button(action: open) {
                     shape.fill(.clear)
                         .contentShape(shape)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Open day")
+                .accessibilityLabel(accessibilityLabel)
+                .accessibilityIdentifier("lifeDialPicture")
             }
         }
         .onChange(of: request?.key) { _, _ in
@@ -406,6 +518,9 @@ private struct LifeDialRuler: View {
             let center = size.width / 2
             let top = 13 - 6 * frame.wake
             let dot = 2 + 0.8 * frame.wake
+            if content.contains(motion.selection) {
+                context.fill(Path(CGRect(x: center - 1, y: 46, width: 2, height: 6)), with: .color(LoreTheme.ink))
+            }
             context.fill(Path(CGRect(x: center - 1, y: top, width: 2, height: 46 - top)), with: .color(LoreTheme.ink))
             context.fill(
                 Path(ellipseIn: CGRect(x: center - dot, y: top - 4 - dot, width: 2 * dot, height: 2 * dot)),

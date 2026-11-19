@@ -5,6 +5,55 @@ import Testing
 
 @Suite(.serialized)
 struct CloudArchiveMigrationTests {
+    private let memory = RememberedTime(precision: .year, startDate: "2003-01-01", endDate: "2003-12-31")
+
+    @MainActor
+    @Test func legacyJSONKeepsRememberedTimeAndDefaultsOlderNotesToTheirRecordingDay() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = container.mainContext
+        let suiteName = "LegacyMemoryTests-\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let captured = Date(timeIntervalSince1970: 1_800_000_000)
+        let old = LegacyStoryPayload(text: "Ordinary", date: captured, duration: 1)
+        let pinned = LegacyStoryPayload(text: "Remembered", date: captured, duration: 2, rememberedTime: memory)
+        defaults.set(try JSONEncoder().encode([old, pinned]), forKey: "SavedStories")
+        try LegacyDataMigrator.migrateIfNeeded(modelContext: context, userDefaults: defaults)
+
+        let stories = try context.fetch(FetchDescriptor<Story>())
+        #expect(stories.first { $0.id == old.id }?.rememberedTime == nil)
+        #expect(stories.first { $0.id == pinned.id }?.rememberedTime == memory)
+        #expect(stories.allSatisfy { $0.date == captured })
+    }
+
+    @MainActor
+    @Test func reconciliationKeepsDistinctMemoriesAndDaysWithTheSameStartDate() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = container.mainContext
+        let firstMemory = UUID()
+        let secondMemory = UUID()
+        let firstPainting = DayIllustration(dayKey: memory.startDate, memoryStoryId: firstMemory, at: .now)
+        let newerPainting = DayIllustration(
+            dayKey: memory.startDate, memoryStoryId: firstMemory, at: .now.addingTimeInterval(1)
+        )
+        context.insert(firstPainting)
+        context.insert(newerPainting)
+        context.insert(DayIllustration(dayKey: memory.startDate, memoryStoryId: secondMemory, at: .now))
+        context.insert(DayIllustration(dayKey: memory.startDate, at: .now))
+        let values = [nil, firstMemory, secondMemory, firstMemory].map { id in
+            archiveEntry(memoryStoryId: id)
+        }
+        values.forEach(context.insert)
+        try context.save()
+
+        #expect(try CloudArchiveReconciler.reconcile(in: context) == 2)
+        let entries = try context.fetch(FetchDescriptor<DailyBiographyEntry>())
+        let paintings = try context.fetch(FetchDescriptor<DayIllustration>())
+        #expect(Set(entries.map(\.memoryStoryId)) == [nil, firstMemory, secondMemory])
+        #expect(Set(paintings.map(\.memoryStoryId)) == [nil, firstMemory, secondMemory])
+        #expect(paintings.first { $0.memoryStoryId == firstMemory }?.id == newerPainting.id)
+    }
+
     @MainActor
     @Test func reconciliationKeepsNewestLogicalRecordAfterCloudConflicts() throws {
         let container = try LoreModelContainer.make(inMemory: true)
@@ -32,7 +81,8 @@ struct CloudArchiveMigrationTests {
             text: "Older text",
             date: older,
             duration: 1,
-            updatedAt: older
+            updatedAt: older,
+            rememberedTime: memory
         ))
         context.insert(Story(
             id: storyID,
@@ -64,6 +114,7 @@ struct CloudArchiveMigrationTests {
         #expect(profiles.first?.name == "Newest profile")
         #expect(stories.count == 1)
         #expect(stories.first?.text == "Newest text")
+        #expect(stories.first?.rememberedTime == memory)
         #expect(vocabulary.count == 1)
         #expect(vocabulary.first?.replacement == "Hyderabad")
     }
@@ -106,8 +157,11 @@ struct CloudArchiveMigrationTests {
                 date: Date(timeIntervalSince1970: 1_800_000_000),
                 duration: 42,
                 title: "A day worth keeping",
-                sourceKind: .reflection
+                sourceKind: .reflection,
+                rememberedTime: memory
             ))
+            context.insert(archiveEntry(memoryStoryId: storyID))
+            context.insert(DayIllustration(dayKey: memory.startDate, memoryStoryId: storyID, at: .now))
             context.insert(ReflectionSession(
                 id: storyID,
                 startedAt: Date(timeIntervalSince1970: 1_800_000_000),
@@ -195,6 +249,12 @@ struct CloudArchiveMigrationTests {
         #expect(stories.first?.id == storyID)
         #expect(stories.first?.text == "The durable source transcript.")
         #expect(stories.first?.sourceKind == .reflection)
+        #expect(stories.first?.rememberedTime == memory)
+        let entries = try context.fetch(FetchDescriptor<DailyBiographyEntry>())
+        #expect(entries.first?.memoryStoryId == storyID)
+        let paintings = try context.fetch(FetchDescriptor<DayIllustration>())
+        #expect(paintings.first?.memoryStoryId == storyID)
+        #expect(paintings.first?.dayKey == memory.startDate)
         #expect(artifacts.first?.id == artifactID)
         #expect(artifacts.first?.rawText == "The durable source transcript.")
         #expect(versions.first?.id == versionID)
@@ -210,5 +270,22 @@ struct CloudArchiveMigrationTests {
         #expect(fileManager.fileExists(atPath: legacyURL.path))
         #expect(fileManager.fileExists(atPath: archiveURL.path))
         #expect(fileManager.fileExists(atPath: localURL.path))
+    }
+
+    private func archiveEntry(memoryStoryId: UUID?) -> DailyBiographyEntry {
+        let date = Date(timeIntervalSince1970: 1_041_422_400)
+        return DailyBiographyEntry(
+            dayKey: memory.startDate, memoryStoryId: memoryStoryId, calendarDate: date,
+            sourceStoryIds: [memoryStoryId ?? UUID()], sourceTranscriptArtifactIds: [],
+            sourceTranscriptVersionIds: [], sourceFingerprint: "test", timezoneIdentifiers: ["UTC"],
+            title: "An archive entry", prose: "An archived memory.", combinedTranscript: "Source note.",
+            provider: RemoteProcessingProvenance(
+                providerId: "test", modelAlias: "test", modelId: "test", modelPolicyVersion: "test",
+                providerRequestId: nil, processedAt: date, processingDurationMilliseconds: 0,
+                retentionAttestation: .init(
+                    mode: .zeroDataRetention, maximumRetentionSeconds: 0, policyVersion: "test", attestedAt: date
+                )
+            )
+        )
     }
 }

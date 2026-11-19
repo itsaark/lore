@@ -6,12 +6,14 @@ struct LegacyStoryPayload: Codable, Equatable {
     var text: String
     let date: Date
     let duration: TimeInterval
+    let rememberedTime: RememberedTime?
 
-    init(id: UUID = UUID(), text: String, date: Date, duration: TimeInterval) {
+    init(id: UUID = UUID(), text: String, date: Date, duration: TimeInterval, rememberedTime: RememberedTime? = nil) {
         self.id = id
         self.text = text
         self.date = date
         self.duration = duration
+        self.rememberedTime = rememberedTime
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -19,6 +21,7 @@ struct LegacyStoryPayload: Codable, Equatable {
         case text
         case date
         case duration
+        case rememberedTime
     }
 
     init(from decoder: Decoder) throws {
@@ -28,6 +31,7 @@ struct LegacyStoryPayload: Codable, Equatable {
         text = try container.decode(String.self, forKey: .text)
         date = try container.decode(Date.self, forKey: .date)
         duration = try container.decode(TimeInterval.self, forKey: .duration)
+        rememberedTime = try container.decodeIfPresent(RememberedTime.self, forKey: .rememberedTime)
     }
 }
 struct LegacyUserProfilePayload: Codable, Equatable {
@@ -120,7 +124,8 @@ enum LegacyDataMigrator {
                     duration: legacyStory.duration,
                     rawTranscriptExpiresAt: nil,
                     createdAt: legacyStory.date,
-                    updatedAt: legacyStory.date
+                    updatedAt: legacyStory.date,
+                    rememberedTime: legacyStory.rememberedTime
                 )
             )
         }

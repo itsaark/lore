@@ -219,7 +219,7 @@ enum StoryChapterRunner {
     ) -> [Month] {
         let todayKey = calendar.dayKey(for: now)
         let finished = entries
-            .filter { $0.dayKey < todayKey && !$0.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .filter { $0.memoryStoryId == nil && $0.dayKey < todayKey && !$0.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         return Dictionary(grouping: finished) { String($0.dayKey.prefix(7)) }
             .map { key, group in
                 let sorted = group.sorted { $0.dayKey < $1.dayKey }

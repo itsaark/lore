@@ -30,6 +30,25 @@ struct DayIllustrationRunnerTests {
         #expect(illustration.providerModelId == "test-image-model")
     }
 
+    @Test func memoriesShareTheRefreshLimitAndUseRecordingDateForEligibility() async throws {
+        let fixture = try Fixture()
+        let first = fixture.addMemory(start: "2003-01-01", recorded: "2026-11-18", prose: "A childhood scene.")
+        let second = fixture.addMemory(start: "2003-01-01", recorded: "2026-11-18", prose: "Another scene that year.")
+        fixture.addMemory(start: "2004-01-01", recorded: "2026-10-18", prose: "Captured too long ago.")
+        fixture.addEntry("2026-11-17")
+        fixture.addEntry("2026-11-16")
+
+        #expect(try await fixture.refresh() == 3)
+        let firstRequests = await fixture.generator.requests
+        #expect(firstRequests.map(\.dayKey) == ["2003-01-01", "2003-01-01", "2026-11-17"])
+        #expect(Set(firstRequests.prefix(2).map(\.prose)) == ["A childhood scene.", "Another scene that year."])
+        #expect(Set(try fixture.illustrations().compactMap(\.memoryStoryId)) == [first.id, second.id])
+
+        #expect(try await fixture.refresh() == 1)
+        #expect(try await fixture.refresh() == 0)
+        #expect(await fixture.generator.requests.last?.dayKey == "2026-11-16")
+    }
+
     @Test func capsAttemptsAtThreeNewestFirstEvenWhenAnAttemptFails() async throws {
         let fixture = try Fixture()
         for day in ["2026-11-10", "2026-11-14", "2026-11-13", "2026-11-15"] {
@@ -174,12 +193,14 @@ struct DayIllustrationRunnerTests {
             _ day: String,
             fingerprint: String = "original",
             prose: String = "The window caught the afternoon light.",
-            combinedTranscript: String = "Raw notes."
+            combinedTranscript: String = "Raw notes.",
+            memoryStoryId: UUID? = nil
         ) -> DailyBiographyEntry {
             let entry = DailyBiographyEntry(
                 dayKey: day,
+                memoryStoryId: memoryStoryId,
                 calendarDate: calendar.date(forDayKey: day)!,
-                sourceStoryIds: [UUID()],
+                sourceStoryIds: [memoryStoryId ?? UUID()],
                 sourceTranscriptArtifactIds: [UUID()],
                 sourceTranscriptVersionIds: [UUID()],
                 sourceFingerprint: fingerprint,
@@ -191,6 +212,19 @@ struct DayIllustrationRunnerTests {
             )
             context.insert(entry)
             return entry
+        }
+
+        @discardableResult
+        func addMemory(start: String, recorded: String, prose: String) -> Story {
+            let note = Story(
+                text: prose, date: calendar.date(forDayKey: recorded)!, duration: 10,
+                rememberedTime: RememberedTime(
+                    precision: .year, startDate: start, endDate: String(start.prefix(4)) + "-12-31"
+                )
+            )
+            context.insert(note)
+            addEntry(start, prose: prose, memoryStoryId: note.id)
+            return note
         }
 
         func addPhoto(_ day: String) throws {

@@ -20,6 +20,11 @@ enum CloudArchiveReconciler {
             try context.fetch(FetchDescriptor<Story>()),
             key: \.id,
             prefers: { $0.updatedAt >= $1.updatedAt },
+            merge: { winner, duplicate in
+                // Capture context is immutable. An older build may save a
+                // newer transcript without knowing those capture fields.
+                if winner.rememberedTime == nil { winner.rememberedTime = duplicate.rememberedTime }
+            },
             in: context
         )
         deleted += reconcileByKey(
@@ -89,7 +94,7 @@ enum CloudArchiveReconciler {
         deleted += try reconcileDailyBiographies(in: context)
         deleted += reconcileByKey(
             try context.fetch(FetchDescriptor<DayIllustration>()),
-            key: \.dayKey,
+            key: \.biographyKey,
             prefers: { ($0.updatedAt, $0.id.uuidString) >= ($1.updatedAt, $1.id.uuidString) },
             in: context
         )
@@ -106,6 +111,7 @@ enum CloudArchiveReconciler {
         _ values: [Model],
         key: (Model) -> Key,
         prefers: (Model, Model) -> Bool,
+        merge: (Model, Model) -> Void = { _, _ in },
         in context: ModelContext
     ) -> Int {
         var selected: [Key: Model] = [:]
@@ -119,9 +125,11 @@ enum CloudArchiveReconciler {
             }
 
             if prefers(candidate, current) {
+                merge(candidate, current)
                 context.delete(current)
                 selected[candidateKey] = candidate
             } else {
+                merge(current, candidate)
                 context.delete(candidate)
             }
             deleted += 1
@@ -154,17 +162,17 @@ enum CloudArchiveReconciler {
         let values = try context.fetch(FetchDescriptor<DailyBiographyEntry>())
             .sorted { $0.updatedAt > $1.updatedAt }
         var ids = Set<UUID>()
-        var dayKeys = Set<String>()
+        var biographyKeys = Set<String>()
         var deleted = 0
 
         for value in values {
-            guard !ids.contains(value.id), !dayKeys.contains(value.dayKey) else {
+            guard !ids.contains(value.id), !biographyKeys.contains(value.biographyKey) else {
                 context.delete(value)
                 deleted += 1
                 continue
             }
             ids.insert(value.id)
-            dayKeys.insert(value.dayKey)
+            biographyKeys.insert(value.biographyKey)
         }
         return deleted
     }

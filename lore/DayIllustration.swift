@@ -40,11 +40,14 @@ struct DayIllustrationGenerationResponse: Codable, Equatable, Sendable {
     var provenance: RemoteProcessingProvenance
 }
 
-/// A replaceable painting derived from a finished daily entry.
+/// A replaceable painting derived from a day or memory biography.
 @Model
 final class DayIllustration {
     private(set) var id: UUID = UUID()
     @Attribute(.allowsCloudEncryption) private(set) var dayKey: String = ""
+    private(set) var memoryStoryId: UUID?
+
+    var biographyKey: String { BiographyIdentity.key(dayKey: dayKey, memoryStoryId: memoryStoryId) }
     @Attribute(.externalStorage) private(set) var imageData: Data? = nil
     @Attribute(.externalStorage) private(set) var thumbnailData: Data? = nil
     private(set) var pixelWidth: Int = 0
@@ -55,10 +58,24 @@ final class DayIllustration {
     private(set) var createdAt: Date = Date()
     private(set) var updatedAt: Date = Date()
 
-    init(dayKey: String, at date: Date) {
+    init(dayKey: String, memoryStoryId: UUID? = nil, at date: Date) {
         self.dayKey = dayKey
+        self.memoryStoryId = memoryStoryId
         createdAt = date
         updatedAt = date
+    }
+
+    convenience init(copying value: DayIllustration) {
+        self.init(dayKey: value.dayKey, memoryStoryId: value.memoryStoryId, at: value.createdAt)
+        id = value.id
+        imageData = value.imageData
+        thumbnailData = value.thumbnailData
+        pixelWidth = value.pixelWidth
+        pixelHeight = value.pixelHeight
+        sceneDescription = value.sceneDescription
+        sourceFingerprint = value.sourceFingerprint
+        providerModelId = value.providerModelId
+        updatedAt = value.updatedAt
     }
 
     func replace(
@@ -90,6 +107,13 @@ enum DayIllustrationRunner {
     private static let generationLimit = 3
     private static let failureLimit = 3
 
+    private struct Candidate {
+        let dayKey: String
+        let memoryStoryId: UUID?
+        let eligibleDate: String
+        var biographyKey: String { BiographyIdentity.key(dayKey: dayKey, memoryStoryId: memoryStoryId) }
+    }
+
     @discardableResult
     static func refresh(
         generator: any DailyEntryGenerationService,
@@ -105,48 +129,59 @@ enum DayIllustrationRunner {
         let entries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>(
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
         ))
-        let entriesByDay = Dictionary(entries.map { ($0.dayKey, $0) }, uniquingKeysWith: { latest, _ in latest })
+        let entriesByKey = Dictionary(entries.map { ($0.biographyKey, $0) }, uniquingKeysWith: { latest, _ in latest })
         let illustrations = try modelContext.fetch(FetchDescriptor<DayIllustration>())
-        let orphaned = illustrations.filter { entriesByDay[$0.dayKey] == nil }
+        let orphaned = illustrations.filter { entriesByKey[$0.biographyKey] == nil }
         if !orphaned.isEmpty {
             orphaned.forEach(modelContext.delete)
             try save(modelContext)
         }
 
-        let recentKeys = entriesByDay.keys.filter { $0 >= earliestKey && $0 < todayKey }.sorted(by: >)
-        let recentPairs = Set(recentKeys.compactMap { dayKey in
-            entriesByDay[dayKey].map { failureKey(for: $0) }
-        })
+        let stories = try modelContext.fetch(FetchDescriptor<Story>())
+        let recordedDates = Dictionary(stories.map { ($0.id, $0.date) }, uniquingKeysWith: min)
+        let eligible = entriesByKey.values.compactMap { entry -> Candidate? in
+            if let memoryStoryId = entry.memoryStoryId {
+                guard let recorded = recordedDates[memoryStoryId], recorded >= earliestDate, recorded <= now else {
+                    return nil
+                }
+                return Candidate(dayKey: entry.dayKey, memoryStoryId: memoryStoryId, eligibleDate: calendar.dayKey(for: recorded))
+            }
+            guard entry.dayKey >= earliestKey, entry.dayKey < todayKey else { return nil }
+            return Candidate(dayKey: entry.dayKey, memoryStoryId: nil, eligibleDate: entry.dayKey)
+        }
+        let candidates = eligible.sorted { ($0.eligibleDate, $0.biographyKey) > ($1.eligibleDate, $1.biographyKey) }
+        let recentPairs = Set(candidates.compactMap { entriesByKey[$0.biographyKey].map(failureKey(for:)) })
         let storedFailures = userDefaults.dictionary(forKey: failureCountsKey) as? [String: Int] ?? [:]
         var failures = storedFailures.filter { recentPairs.contains($0.key) }
         if failures != storedFailures { userDefaults.set(failures, forKey: failureCountsKey) }
 
         var attempted = 0
         var written = 0
-        print("[DayIllustration] today \(todayKey); recent finished days with entries: \(recentKeys)")
-        for dayKey in recentKeys {
+        print("[DayIllustration] today \(todayKey); eligible entries: \(candidates.count)")
+        for candidate in candidates {
             guard attempted < generationLimit else { break }
             try Task.checkCancellation()
 
+            let biographyKey = candidate.biographyKey
             var pair: String?
             do {
-                guard let entry = try entry(for: dayKey, in: modelContext),
+                guard let entry = try entry(for: candidate, in: modelContext),
                       !entry.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
                 let fingerprint = fingerprint(for: entry)
-                let key = failureKey(dayKey: dayKey, fingerprint: fingerprint)
+                let key = failureKey(biographyKey: biographyKey, fingerprint: fingerprint)
                 guard failures[key, default: 0] < failureLimit else {
-                    print("[DayIllustration] \(dayKey): skipped after \(failures[key, default: 0]) failures")
+                    print("[DayIllustration] \(biographyKey): skipped after \(failures[key, default: 0]) failures")
                     continue
                 }
-                guard try illustration(for: dayKey, in: modelContext)?.sourceFingerprint != fingerprint else {
-                    print("[DayIllustration] \(dayKey): already painted")
+                guard try illustration(for: candidate, in: modelContext)?.sourceFingerprint != fingerprint else {
+                    print("[DayIllustration] \(biographyKey): already painted")
                     continue
                 }
-                guard try !hasPhoto(for: dayKey, in: modelContext) else {
-                    print("[DayIllustration] \(dayKey): has a photo")
+                guard try entry.memoryStoryId != nil || !hasPhoto(for: entry.dayKey, in: modelContext) else {
+                    print("[DayIllustration] \(biographyKey): has a photo")
                     continue
                 }
-                print("[DayIllustration] \(dayKey): requesting a painting")
+                print("[DayIllustration] \(biographyKey): requesting a painting")
 
                 let request = makeRequest(for: entry)
                 pair = key
@@ -156,12 +191,12 @@ enum DayIllustrationRunner {
                 try Task.checkCancellation()
 
                 // The entry may have changed or been deleted while the image was being painted.
-                guard let current = try self.entry(for: dayKey, in: modelContext),
+                guard let current = try self.entry(for: candidate, in: modelContext),
                       !current.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                       self.fingerprint(for: current) == fingerprint else { continue }
-                let existing = try illustration(for: dayKey, in: modelContext)
+                let existing = try illustration(for: candidate, in: modelContext)
                 if existing?.sourceFingerprint != fingerprint {
-                    let value = existing ?? DayIllustration(dayKey: dayKey, at: now)
+                    let value = existing ?? DayIllustration(dayKey: current.dayKey, memoryStoryId: current.memoryStoryId, at: now)
                     value.replace(
                         with: encoded,
                         sceneDescription: response.scene.description,
@@ -191,7 +226,7 @@ enum DayIllustrationRunner {
                     failures[pair] = isNonRetryable(error) ? failureLimit : failures[pair, default: 0] + 1
                     userDefaults.set(failures, forKey: failureCountsKey)
                 }
-                print("[DayIllustration] \(dayKey): did not complete: \(error)")
+                print("[DayIllustration] \(biographyKey): did not complete: \(error)")
             }
         }
         return written
@@ -206,18 +241,22 @@ enum DayIllustrationRunner {
         }
     }
 
-    private static func entry(for dayKey: String, in context: ModelContext) throws -> DailyBiographyEntry? {
+    private static func entry(for candidate: Candidate, in context: ModelContext) throws -> DailyBiographyEntry? {
+        let dayKey = candidate.dayKey
+        let memoryStoryId = candidate.memoryStoryId
         var descriptor = FetchDescriptor<DailyBiographyEntry>(
-            predicate: #Predicate { $0.dayKey == dayKey },
+            predicate: #Predicate { $0.dayKey == dayKey && $0.memoryStoryId == memoryStoryId },
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
         )
         descriptor.fetchLimit = 1
         return try context.fetch(descriptor).first
     }
 
-    private static func illustration(for dayKey: String, in context: ModelContext) throws -> DayIllustration? {
+    private static func illustration(for candidate: Candidate, in context: ModelContext) throws -> DayIllustration? {
+        let dayKey = candidate.dayKey
+        let memoryStoryId = candidate.memoryStoryId
         var descriptor = FetchDescriptor<DayIllustration>(
-            predicate: #Predicate { $0.dayKey == dayKey },
+            predicate: #Predicate { $0.dayKey == dayKey && $0.memoryStoryId == memoryStoryId },
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
         )
         descriptor.fetchLimit = 1
@@ -236,11 +275,11 @@ enum DayIllustrationRunner {
     }
 
     private static func failureKey(for entry: DailyBiographyEntry) -> String {
-        failureKey(dayKey: entry.dayKey, fingerprint: fingerprint(for: entry))
+        failureKey(biographyKey: entry.biographyKey, fingerprint: fingerprint(for: entry))
     }
 
-    private static func failureKey(dayKey: String, fingerprint: String) -> String {
-        "\(dayKey)|\(fingerprint)"
+    private static func failureKey(biographyKey: String, fingerprint: String) -> String {
+        "\(biographyKey)|\(fingerprint)"
     }
 
     private static func makeRequest(for entry: DailyBiographyEntry) -> DayIllustrationGenerationRequest {

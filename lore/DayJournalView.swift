@@ -34,7 +34,7 @@ struct DayJournalView: View {
         self.speechRecognizer = speechRecognizer
         _photos = Query(filter: #Predicate<DayPhoto> { $0.dayKey == dayKey })
         _illustrations = Query(
-            filter: #Predicate<DayIllustration> { $0.dayKey == dayKey },
+            filter: #Predicate<DayIllustration> { $0.dayKey == dayKey && $0.memoryStoryId == nil },
             sort: \DayIllustration.updatedAt,
             order: .reverse
         )
@@ -624,7 +624,9 @@ private struct DayNotesView: View {
     private var stories: [Story] {
         let calendar = JournalCalendar()
         return speechRecognizer.stories.filter {
-            (speechRecognizer.storyDayKeys[$0.id] ?? calendar.dayKey(for: $0.date)) == dayKey
+            $0.effectiveDayKey(
+                recordedDayKey: speechRecognizer.storyDayKeys[$0.id] ?? calendar.dayKey(for: $0.date)
+            ) == dayKey
         }
     }
 

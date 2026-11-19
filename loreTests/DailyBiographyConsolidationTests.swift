@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 import Testing
@@ -45,6 +46,146 @@ struct DailyBiographyConsolidationTests {
             now: fixture.now
         )
         #expect(!replay.contains { $0.dayKey == "2026-08-03" })
+    }
+
+    @Test func ordinaryDayFingerprintRemainsByteIdenticalAndReusesItsEntry() async throws {
+        let fixture = try makeFixture()
+        let dayKey = "2026-08-03"
+        let job = try #require(DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued, in: fixture.context, now: fixture.now
+        ).first { $0.dayKey == dayKey })
+        let versions = try fixture.context.fetch(FetchDescriptor<TranscriptVersion>())
+        let sourceIds = try fixture.pastStories.map { story in
+            let version = try #require(versions.first { $0.storyId == story.id })
+            return "\(story.id.uuidString.lowercased()):\(version.id.uuidString.lowercased())"
+        }
+        let legacyBytes = Data(([dayKey] + sourceIds).joined(separator: "|").utf8)
+        let legacyFingerprint = SHA256.hash(data: legacyBytes).map { String(format: "%02x", $0) }.joined()
+        let entry = try await DailyBiographyJobRunner.run(
+            jobID: job.jobId, userProfile: fixture.profile, generator: SuccessfulDailyBiographyGenerator(),
+            in: fixture.context, now: fixture.now
+        )
+        #expect(entry.sourceFingerprint == legacyFingerprint)
+        let pending = try DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued, in: fixture.context, now: fixture.now
+        )
+        #expect(!pending.contains { $0.dayKey == dayKey })
+    }
+
+    @Test func aBackdatedDayNoteJoinsAndRewritesThatDay() async throws {
+        let fixture = try makeFixture()
+        let key = "2026-08-03"
+        let initial = try #require(DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued, in: fixture.context, now: fixture.now
+        ).first { $0.dayKey == key })
+        let generator = RecordingBiographyGenerator()
+        let original = try await DailyBiographyJobRunner.run(
+            jobID: initial.jobId, userProfile: fixture.profile, generator: generator,
+            in: fixture.context, now: fixture.now
+        )
+        let oldFingerprint = original.sourceFingerprint
+        let note = Story(
+            text: "I remembered a detail later.", date: fixture.now, duration: 5,
+            rememberedTime: RememberedTime(precision: .day, startDate: key, endDate: key)
+        )
+        insertTranscribedNote(note, in: fixture.context)
+
+        let prepared = try DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued, in: fixture.context, now: fixture.now
+        )
+        let past = try #require(prepared.first { $0.dayKey == key })
+        #expect(past.sourceStoryIds == fixture.pastStories.map(\.id) + [note.id])
+        #expect(prepared.first { $0.dayKey == "2026-08-04" }?.sourceStoryIds == [fixture.currentStory.id])
+        let rewritten = try await DailyBiographyJobRunner.run(
+            jobID: past.jobId, userProfile: fixture.profile, generator: generator,
+            in: fixture.context, now: fixture.now
+        )
+        #expect(rewritten.id == original.id)
+        #expect(rewritten.sourceFingerprint != oldFingerprint)
+        #expect(note.date == fixture.now)
+        #expect(rewritten.memoryStoryId == nil)
+        #expect(rewritten.prose.contains(note.text))
+        #expect(await generator.requests.last?.capturedLocalDate == key)
+        #expect(await generator.requests.last?.rememberedTime == nil)
+        let index = JournalDayContent.index(stories: [note], dailyEntries: [rewritten], storyDayKeys: [:])
+        #expect(index[key]?.stories.map(\.id) == [note.id])
+    }
+
+    @Test func coarseMemoriesAreIndependentOfDaysAndChaptersAndRewriteAfterEditing() async throws {
+        let fixture = try makeFixture()
+        let now = try #require(ISO8601DateFormatter().date(from: "2026-08-18T18:00:00Z"))
+        // Both memories start in the recording month and share a date with one another.
+        let range = RememberedTime(precision: .week, startDate: "2026-08-10", endDate: "2026-08-16")
+        let notes = ["First memory.", "Second memory."].map {
+            Story(text: $0, date: now, duration: 4, rememberedTime: range)
+        }
+        let today = Story(text: "Actually happened today.", date: now, duration: 4)
+        for note in notes + [today] { insertTranscribedNote(note, in: fixture.context) }
+        let prepared = try DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued, in: fixture.context, now: now
+        )
+        #expect(prepared.first { $0.dayKey == "2026-08-18" }?.sourceStoryIds == [today.id])
+        let memories = prepared.filter { $0.dayKey == range.startDate }
+        #expect(Set(memories.flatMap(\.sourceStoryIds)) == Set(notes.map(\.id)))
+        #expect(memories.allSatisfy { $0.sourceStoryIds.count == 1 })
+
+        let generator = RecordingBiographyGenerator()
+        var entries: [DailyBiographyEntry] = []
+        for memory in memories {
+            entries.append(try await DailyBiographyJobRunner.run(
+                jobID: memory.jobId, userProfile: fixture.profile, generator: generator,
+                in: fixture.context, now: now
+            ))
+        }
+
+        #expect(Set(entries.compactMap(\.memoryStoryId)) == Set(notes.map(\.id)))
+        let requests = await generator.requests
+        #expect(requests.count == 2)
+        for request in requests {
+            #expect(request.capturedLocalDate == "2026-08-18")
+            #expect(request.sourceSegments.count == 1)
+            let encoder = JSONEncoder()
+            encoder.keyEncodingStrategy = .convertToSnakeCase
+            let wire = try #require(JSONSerialization.jsonObject(with: encoder.encode(request)) as? [String: Any])
+            #expect(wire["remembered_time"] as? [String: String] == [
+                "precision": "week", "start_date": "2026-08-10", "end_date": "2026-08-16"
+            ])
+        }
+        #expect(StoryChapterRunner.staleMonthKeys(
+            entries: entries, chapters: [], now: now.addingTimeInterval(86_400)
+        ).isEmpty)
+        let index = JournalDayContent.index(
+            stories: notes, dailyEntries: entries, storyDayKeys: [:]
+        )
+        #expect(index.isEmpty)
+        #expect(try fixture.context.fetch(FetchDescriptor<DailyQuestionFollowUps>()).isEmpty)
+
+        let note = notes[0]
+        let original = try #require(entries.first { $0.memoryStoryId == note.id })
+        let originalFingerprint = original.sourceFingerprint
+        try SpeechRecognitionViewModel.applyUserCorrection("Corrected memory.", to: note, in: fixture.context)
+        let correction = try #require(DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued, in: fixture.context, now: now
+        ).first { $0.sourceStoryIds == [note.id] })
+        let updated = try await DailyBiographyJobRunner.run(
+            jobID: correction.jobId, userProfile: fixture.profile, generator: generator,
+            in: fixture.context, now: now
+        )
+        #expect(updated.id == original.id)
+        #expect(updated.sourceFingerprint != originalFingerprint)
+        #expect(updated.prose.contains("Corrected memory."))
+
+        fixture.context.insert(DayIllustration(dayKey: range.startDate, at: now))
+        for memory in notes {
+            fixture.context.insert(DayIllustration(dayKey: range.startDate, memoryStoryId: memory.id, at: now))
+        }
+        try fixture.context.save()
+        let viewModel = makeViewModel(for: fixture, connection: .unavailable)
+        try #require(viewModel.deleteStory(note))
+        #expect(viewModel.dailyBiographyEntries.map(\.memoryStoryId) == [notes[1].id])
+        let paintings = try fixture.context.fetch(FetchDescriptor<DayIllustration>())
+        #expect(paintings.count == 2)
+        #expect(Set(paintings.map(\.memoryStoryId)) == [nil, notes[1].id])
     }
 
     @Test func dayStoryIsKeptWhenTheWriterLeavesANoteUncited() async throws {
@@ -525,6 +666,15 @@ private struct RejectedDailyBiographyGenerator: DailyEntryGenerationService {
 
     func generateDailyEntry(_ request: DailyEntryGenerationRequest) async throws -> DailyEntryGenerationResponse {
         throw error
+    }
+}
+
+private actor RecordingBiographyGenerator: DailyEntryGenerationService {
+    private(set) var requests: [DailyEntryGenerationRequest] = []
+
+    func generateDailyEntry(_ request: DailyEntryGenerationRequest) async throws -> DailyEntryGenerationResponse {
+        requests.append(request)
+        return try await SuccessfulDailyBiographyGenerator(includesFollowUps: true).generateDailyEntry(request)
     }
 }
 

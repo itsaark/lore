@@ -244,6 +244,28 @@ struct JournalPriorFact: Codable, Equatable, Identifiable, Sendable {
 }
 
 struct DailyEntryGenerationRequest: Codable, Equatable, Sendable {
+    struct RememberedRange: Codable, Equatable, Sendable {
+        enum Precision: String, Codable, Sendable {
+            case week, month, year, span
+        }
+
+        let precision: Precision
+        let startDate: String
+        let endDate: String
+
+        init?(_ time: RememberedTime) {
+            switch time.precision {
+            case .day: return nil
+            case .week: precision = .week
+            case .month: precision = .month
+            case .year: precision = .year
+            case .period: precision = .span
+            }
+            startDate = time.startDate
+            endDate = time.endDate
+        }
+    }
+
     static let currentSchemaVersion = "1.0"
     /// v2 is the biographer voice. v1 stays valid so results and jobs created
     /// by earlier builds still install.
@@ -257,6 +279,7 @@ struct DailyEntryGenerationRequest: Codable, Equatable, Sendable {
     var transcriptArtifactId: UUID
     var transcriptVersionId: UUID
     var capturedLocalDate: String
+    var rememberedTime: RememberedRange?
     var languageCode: String
     var subject: JournalSubject
     var renderConfiguration: JournalRenderConfiguration
@@ -272,6 +295,7 @@ struct DailyEntryGenerationRequest: Codable, Equatable, Sendable {
         transcriptArtifactId: UUID,
         transcriptVersionId: UUID,
         capturedLocalDate: String,
+        rememberedTime: RememberedRange? = nil,
         languageCode: String,
         subject: JournalSubject,
         renderConfiguration: JournalRenderConfiguration = JournalRenderConfiguration(),
@@ -286,6 +310,7 @@ struct DailyEntryGenerationRequest: Codable, Equatable, Sendable {
         self.transcriptArtifactId = transcriptArtifactId
         self.transcriptVersionId = transcriptVersionId
         self.capturedLocalDate = capturedLocalDate
+        self.rememberedTime = rememberedTime
         self.languageCode = languageCode
         self.subject = subject
         self.renderConfiguration = renderConfiguration

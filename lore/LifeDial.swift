@@ -168,6 +168,33 @@ struct LifeDial: Equatable, Sendable {
         return max(start, unit.lowerBound)..<min(end, unit.upperBound)
     }
 
+    func rememberedTime(for selection: Selection, at captureDate: Date) -> RememberedTime? {
+        guard let unit = unitRange(of: selection),
+              unit.upperBound <= calendar.startOfDay(for: captureDate),
+              let lastDay = calendar.date(byAdding: .day, value: -1, to: unit.upperBound),
+              let precision = RememberedTime.Precision(rawValue: selection.level.name) else { return nil }
+        let journal = JournalCalendar(calendar: calendar)
+        return RememberedTime(
+            precision: precision,
+            startDate: journal.dayKey(for: unit.lowerBound),
+            endDate: journal.dayKey(for: lastDay)
+        )
+    }
+
+    /// A remembered range can straddle coarser units, such as a week at
+    /// New Year. Light each intersecting unit at the selected precision or coarser.
+    func selections(for memory: RememberedTime, calendar journal: JournalCalendar) -> [Selection] {
+        guard let startDate = journal.date(forDayKey: memory.startDate),
+              let endDate = journal.date(forDayKey: memory.endDate),
+              startDate <= endDate, endDate >= start, startDate <= today,
+              let precision = Level.allCases.first(where: { $0.name == memory.precision.rawValue }) else { return [] }
+        return levels.filter { $0.rawValue <= precision.rawValue }.flatMap { level in
+            let first = index(of: max(startDate, start), at: level)
+            let last = index(of: min(endDate, today), at: level)
+            return (first...last).map { Selection(level: level, index: $0) }
+        }
+    }
+
     private func unitRange(of selection: Selection) -> Range<Date>? {
         let index = selection.index
         guard index >= 0, index <= lastIndex(at: selection.level) else { return nil }

@@ -20,6 +20,71 @@ struct LifeDialTests {
         LifeDial.Selection(level: level, index: dial.index(of: date(key), at: level))
     }
 
+    @Test func yearMemoriesLightOnlyTheirYearAndPeriod() throws {
+        let dial = dial()
+        let year = unit("2003-03-24", at: .year, in: dial)
+        let range = try #require(dial.rememberedTime(for: year, at: dial.today))
+        #expect(range == RememberedTime(precision: .year, startDate: "2003-01-01", endDate: "2003-12-31"))
+        #expect(Set(dial.selections(for: range, calendar: journal)) == [
+            year, unit("2003-03-24", at: .period, in: dial)
+        ])
+    }
+
+    @Test func currentUnitsAreOrdinaryAndPastPeriodsUseInclusiveYears() throws {
+        let dial = dial()
+        for level in dial.levels {
+            let selected = unit("2026-11-18", at: level, in: dial)
+            #expect(dial.rememberedTime(for: selected, at: dial.today) == nil)
+        }
+        let past = unit("2003-06-10", at: .period, in: dial)
+        let time = try #require(dial.rememberedTime(for: past, at: dial.today))
+        #expect(time == RememberedTime(precision: .period, startDate: "2002-01-01", endDate: "2007-12-31"))
+        #expect(DailyEntryGenerationRequest.RememberedRange(time)?.precision == .span)
+    }
+
+    @MainActor
+    @Test func capturePersistsTheTimePinnedBeforeTheDialMoves() throws {
+        let dial = dial()
+        var selection = unit("2003-05-01", at: .year, in: dial)
+        let pinned = dial.rememberedTime(for: selection, at: dial.today)
+        selection = unit("2014-05-01", at: .year, in: dial)
+        #expect(dial.rememberedTime(for: selection, at: dial.today) != pinned)
+
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = container.mainContext
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".m4a")
+        try Data([1, 2, 3]).write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let capture = try SpeechRecognitionViewModel.persistRemoteCaptureForTranscription(
+            startTime: dial.today, endTime: dial.today.addingTimeInterval(5), audioFileURL: file,
+            modelContext: context, rememberedTime: pinned
+        )
+
+        #expect(capture.story.rememberedTime?.startDate == "2003-01-01")
+        #expect(capture.story.date == dial.today)
+        #expect(capture.job.storyId == capture.story.id)
+    }
+
+    @MainActor
+    @Test func stoppingCaptureDoesNotReadTheDialSelectionAgain() async throws {
+        let recorder = SpeechRecognitionViewModel(requestsMicrophonePermissionOnInit: false)
+        recorder.isRecording = true
+        var readSelection = false
+        func selectionTime() -> RememberedTime? {
+            readSelection = true
+            return nil
+        }
+        recorder.toggleRecording(remembering: selectionTime())
+
+        #expect(!recorder.isRecording)
+        #expect(!readSelection)
+        // This test exercises the stop action without creating a microphone session.
+        for _ in 0..<50 where recorder.isAwaitingRemoteTranscription {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!recorder.isAwaitingRemoteTranscription)
+    }
+
     @Test func rangesAndIndicesRoundTripAtBothEndsOfEveryLevel() throws {
         let dial = dial()
         let dates = ["1990-01-01", "1995-12-31", "1996-01-01", "2000-02-29",

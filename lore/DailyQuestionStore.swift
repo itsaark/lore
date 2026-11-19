@@ -155,7 +155,7 @@ enum DailyQuestionStore {
         in context: ModelContext
     ) throws -> (question: DailyQuestion, sourceID: UUID)? {
         let sources = try context.fetch(FetchDescriptor<DailyBiographyEntry>(
-            predicate: #Predicate { $0.dayKey >= firstDay && $0.dayKey <= today },
+            predicate: #Predicate { $0.memoryStoryId == nil && $0.dayKey >= firstDay && $0.dayKey <= today },
             sortBy: [SortDescriptor(\.dayKey, order: .reverse), SortDescriptor(\.updatedAt, order: .reverse)]
         ))
         let cache = try context.fetch(FetchDescriptor<DailyQuestionFollowUps>())
