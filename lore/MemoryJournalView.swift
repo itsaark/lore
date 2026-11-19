@@ -1,3 +1,4 @@
+import SwiftData
 import SwiftUI
 
 /// A coarse memory and the voice note that anchors it.
@@ -6,6 +7,7 @@ struct MemoryJournalView: View {
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
 
     @Environment(\.dismiss) private var dismiss
+    @Query(sort: \DayIllustration.updatedAt, order: .reverse) private var illustrations: [DayIllustration]
     @State private var selected: UUID
     @State private var noteToDelete: Story?
 
@@ -64,11 +66,25 @@ struct MemoryJournalView: View {
 
     private func memory(_ story: Story) -> some View {
         let entry = speechRecognizer.dailyBiographyEntries.first { $0.memoryStoryId == story.id }
+        let key = BiographyIdentity.key(dayKey: "", memoryStoryId: story.id)
+        let cover = illustrations.first { $0.memoryStoryId == story.id }.map(DayCover.illustration)
+        let isGenerating = speechRecognizer.generatingPaintingKeys.contains(key)
         return VStack(alignment: .leading, spacing: 24) {
             Text(entry?.title ?? "Still writing")
                 .font(LoreTheme.display(32))
                 .foregroundStyle(LoreTheme.ink)
                 .accessibilityAddTraits(.isHeader)
+
+            if cover != nil || isGenerating {
+                JournalPaintingHero(
+                    biographyKey: key,
+                    cover: cover,
+                    isGenerating: isGenerating,
+                    session: speechRecognizer.paintingReveals,
+                    accessibilityLabel: "Painting inspired by this memory"
+                )
+                .id(key)
+            }
 
             if let entry {
                 Text(entry.prose)

@@ -163,29 +163,24 @@ struct DayJournalView: View {
     @ViewBuilder
     private func photoSection(for entry: DailyBiographyEntry?) -> some View {
         let ordered = orderedPhotos
+        let isGeneratingPainting = speechRecognizer.generatingPaintingKeys.contains(dayKey)
         Group {
             if ordered.isEmpty {
-                if let illustration = illustrations.first,
-                   dayKey < journalCalendar.dayKey(for: Date()),
+                if dayKey < journalCalendar.dayKey(for: Date()),
                    let entry,
-                   !entry.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    let cover = DayCover.illustration(illustration)
+                   !entry.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                   illustrations.first != nil || isGeneratingPainting {
                     VStack(alignment: .leading, spacing: 14) {
-                        DayPhotoImage(cover: cover, variant: .full)
-                            .aspectRatio(min(max(cover.aspectRatio, 3.0 / 4.0), 4.0 / 3.0), contentMode: .fit)
-                            .frame(maxWidth: .infinity)
-                            .clipShape(RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: LoreTheme.cardCornerRadius, style: .continuous)
-                                    .strokeBorder(Color.white.opacity(0.1))
-                            }
-                            .shadow(color: .black.opacity(0.55), radius: 18, y: 10)
-                            .overlay {
-                                if isSavingPhoto { savingIndicator }
-                            }
-                            .accessibilityElement(children: .ignore)
-                            .accessibilityLabel("Painting inspired by this day")
-                            .accessibilityAddTraits(.isImage)
+                        JournalPaintingHero(
+                            biographyKey: dayKey,
+                            cover: illustrations.first.map(DayCover.illustration),
+                            isGenerating: isGeneratingPainting,
+                            session: speechRecognizer.paintingReveals,
+                            accessibilityLabel: "Painting inspired by this day"
+                        )
+                        .overlay {
+                            if isSavingPhoto { savingIndicator }
+                        }
 
                         photoControls(for: ordered)
                     }

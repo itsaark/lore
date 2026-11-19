@@ -7,10 +7,12 @@ struct VoiceCaptureButton: View {
     let isAvailable: Bool
     let isRecording: Bool
     let isProcessing: Bool
+    var isWriting = false
     var accessibilityID = "recordVoiceNoteButton"
     let action: () -> Void
 
     private var accessibilityTitle: String {
+        if isWriting { return "Lore is writing" }
         if isProcessing { return "Finishing recording" }
         return isRecording ? "Stop recording" : "Start recording"
     }
@@ -25,12 +27,22 @@ struct VoiceCaptureButton: View {
                         tint: LoreTheme.ink
                     )
                         .transition(.scale(scale: 0.88).combined(with: .opacity))
+                } else if isWriting {
+                    ZStack {
+                        Circle()
+                            .fill(LoreTheme.raisedSurface)
+                            .frame(width: controlDiameter * Self.blobDiameterRatio)
+                        ThinkingOrb(state: .breathing, size: .px20)
+                            .accessibilityHidden(true)
+                    }
+                    .transition(.opacity)
                 } else {
                     restingButton
-                        .transition(.scale(scale: 0.88).combined(with: .opacity))
+                        .transition(.opacity)
                 }
             }
             .frame(width: controlDiameter, height: controlDiameter)
+            .contentShape(Rectangle())
         }
         .buttonStyle(VoiceCaptureButtonStyle())
         // Keep the control tappable while prior processing finishes so the
@@ -38,12 +50,13 @@ struct VoiceCaptureButton: View {
         // of appearing completely inert.
         .disabled(!isAvailable)
         .accessibilityLabel(accessibilityTitle)
-        .accessibilityHint(isRecording ? "Ends and saves this voice note" : "Begins a new voice note")
-        .accessibilityValue(isRecording ? "Recording" : isProcessing ? "Processing" : "Not recording")
+        .accessibilityHint(isRecording ? "Ends and saves this voice note" : isProcessing ? "" : "Begins a new voice note")
+        .accessibilityValue(isRecording ? "Recording" : isWriting ? "" : "Not recording")
         .accessibilityIdentifier(accessibilityID)
-        .sensoryFeedback(.impact(weight: .light), trigger: isRecording)
+        .sensoryFeedback(.impact(weight: .light), trigger: isRecording) { _, recording in recording }
         .animation(.easeInOut(duration: 0.24), value: isRecording)
         .animation(.easeInOut(duration: 0.24), value: isProcessing)
+        .animation(.easeInOut(duration: 0.24), value: isWriting)
     }
 
     private var restingButton: some View {
@@ -215,7 +228,6 @@ struct VoiceCaptureOverlay: View {
             options: Self.voiceGlowOptions
         ) {
             LoreTheme.canvas
-                .opacity(0.96)
         }
         .ignoresSafeArea()
         .accessibilityIdentifier("voiceCaptureOverlay")
@@ -223,7 +235,7 @@ struct VoiceCaptureOverlay: View {
 
     /// Close to the corner radius of current iPhone displays, so the glow
     /// follows the screen's own curve into the corners.
-    private static let displayCornerRadius: Double = 55
+    static let displayCornerRadius: Double = 55
 
     private static let voiceGlowOptions: VoiceGlowOptions = {
         var options = VoiceGlowOptions()

@@ -321,7 +321,8 @@ enum DailyBiographyJobRunner {
         generator: any DailyEntryGenerationService,
         in modelContext: ModelContext,
         now: Date = Date(),
-        leaseDuration: TimeInterval = 180
+        leaseDuration: TimeInterval = 180,
+        writingKeyChanged: @MainActor (String?) -> Void = { _ in }
     ) async throws -> DailyBiographyEntry {
         let jobs = try modelContext.fetch(FetchDescriptor<ProcessingJob>())
         guard let job = jobs.first(where: { $0.id == jobID && $0.kind == .dailyBiography }) else {
@@ -360,6 +361,8 @@ enum DailyBiographyJobRunner {
         let attempt = job.attemptCount
         try saveOrRollback(modelContext)
 
+        writingKeyChanged(biographyKey)
+        defer { writingKeyChanged(nil) }
         do {
             let response = try await generator.generateDailyEntry(package.request)
             try Task.checkCancellation()

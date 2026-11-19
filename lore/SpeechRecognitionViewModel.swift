@@ -81,6 +81,10 @@ class SpeechRecognitionViewModel: ObservableObject {
     /// transcription, so the screen returns right away while the note is
     /// transcribed in the background.
     @Published private(set) var isSecuringRecording = false
+    @Published private(set) var securedRecordingID: UUID?
+    @Published private(set) var writingBiographyKey: String?
+    @Published private(set) var generatingPaintingKeys: Set<String> = []
+    let paintingReveals = PaintingRevealSession()
     
     // MARK: - Private Properties
     private let metadataService: any MetadataService
@@ -668,7 +672,8 @@ class SpeechRecognitionViewModel: ObservableObject {
                         userProfile: userProfile,
                         generator: remoteDailyEntryGenerator,
                         in: modelContext,
-                        now: now
+                        now: now,
+                        writingKeyChanged: { writingBiographyKey = $0 }
                     )
                 } catch DailyBiographyJobRunnerError.jobNotReady {
                     continue
@@ -764,16 +769,17 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
     
     /// Updates the text of an existing story.
-    func updateStory(_ story: Story, withText newText: String) {
+    @discardableResult
+    func updateStory(_ story: Story, withText newText: String) -> Bool {
         guard let savedStory = stories.first(where: { $0.id == story.id }) else {
             print("Story not found for update")
-            return
+            return false
         }
 
-        guard savedStory.text != newText else { return }
+        guard savedStory.text != newText else { return true }
         guard let modelContext else {
             setError("Lore could not save this correction because the local archive is unavailable.")
-            return
+            return false
         }
 
         do {
@@ -789,12 +795,13 @@ class SpeechRecognitionViewModel: ObservableObject {
         } catch {
             modelContext.rollback()
             setError("Lore could not save this transcript correction: \(error.localizedDescription)")
-            return
+            return false
         }
 
         loadStories()
         Task { await resumePendingDailyBiographyJobs() }
         print("Story updated successfully")
+        return true
     }
 
     /// Deletes stories and persists the updated list.
@@ -902,7 +909,21 @@ class SpeechRecognitionViewModel: ObservableObject {
         defer { isRefreshingDayIllustrations = false }
 
         do {
-            try await DayIllustrationRunner.refresh(generator: remoteDailyEntryGenerator, in: modelContext, now: now)
+            try await DayIllustrationRunner.refresh(
+                generator: remoteDailyEntryGenerator,
+                in: modelContext,
+                now: now,
+                generationChanged: { key, isGenerating in
+                    if isGenerating {
+                        generatingPaintingKeys.insert(key)
+                    } else {
+                        generatingPaintingKeys.remove(key)
+                    }
+                },
+                didSavePainting: { key, revision in
+                    paintingReveals.register(revision, for: key)
+                }
+            )
         } catch is CancellationError {
             return
         } catch {
@@ -1276,6 +1297,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
 
         // The audio is saved; let the screen return while it transcribes.
+        securedRecordingID = story.id
         isSecuringRecording = false
         clearFinishedCaptureState(keepPendingTask: true)
         loadStories()

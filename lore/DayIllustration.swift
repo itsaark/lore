@@ -48,6 +48,9 @@ final class DayIllustration {
     private(set) var memoryStoryId: UUID?
 
     var biographyKey: String { BiographyIdentity.key(dayKey: dayKey, memoryStoryId: memoryStoryId) }
+    var paintingRevision: PaintingRevision {
+        PaintingRevision(id: id, updatedAt: updatedAt, fingerprint: sourceFingerprint)
+    }
     @Attribute(.externalStorage) private(set) var imageData: Data? = nil
     @Attribute(.externalStorage) private(set) var thumbnailData: Data? = nil
     private(set) var pixelWidth: Int = 0
@@ -120,7 +123,9 @@ enum DayIllustrationRunner {
         in modelContext: ModelContext,
         now: Date = Date(),
         calendar: JournalCalendar = JournalCalendar(),
-        userDefaults: UserDefaults = .standard
+        userDefaults: UserDefaults = .standard,
+        generationChanged: @MainActor (String, Bool) -> Void = { _, _ in },
+        didSavePainting: @MainActor (String, PaintingRevision) -> Void = { _, _ in }
     ) async throws -> Int {
         try Task.checkCancellation()
         let todayKey = calendar.dayKey(for: now)
@@ -186,6 +191,8 @@ enum DayIllustrationRunner {
                 let request = makeRequest(for: entry)
                 pair = key
                 attempted += 1
+                generationChanged(biographyKey, true)
+                defer { generationChanged(biographyKey, false) }
                 let response = try await generator.generateDayIllustration(request)
                 let encoded = try await validatedImage(from: response, for: request)
                 try Task.checkCancellation()
@@ -206,6 +213,7 @@ enum DayIllustrationRunner {
                     )
                     if existing == nil { modelContext.insert(value) }
                     try save(modelContext)
+                    didSavePainting(biographyKey, value.paintingRevision)
                     written += 1
                 }
                 if failures.removeValue(forKey: key) != nil {

@@ -110,6 +110,37 @@ struct DayIllustrationRunnerTests {
         #expect(try fixture.illustrations().isEmpty)
     }
 
+    @Test func reportsGenerationPerKeyAndOnlyRegistersSavedPaintings() async throws {
+        let fixture = try Fixture()
+        let failed = "2026-11-17"
+        let painted = "2026-11-16"
+        fixture.addEntry(failed)
+        fixture.addEntry(painted)
+        try fixture.context.save()
+        await fixture.generator.setFailure(.transportUnavailable, for: failed)
+        var events: [String] = []
+        let session = PaintingRevealSession()
+
+        let count = try await DayIllustrationRunner.refresh(
+            generator: fixture.generator,
+            in: fixture.context,
+            now: fixture.calendar.date(forDayKey: "2026-11-18")!,
+            calendar: fixture.calendar,
+            userDefaults: fixture.defaults,
+            generationChanged: { key, active in events.append("\(key):\(active ? "start" : "end")") },
+            didSavePainting: { key, revision in
+                events.append("\(key):saved")
+                session.register(revision, for: key)
+            }
+        )
+
+        #expect(count == 1)
+        #expect(events == ["\(failed):start", "\(failed):end", "\(painted):start", "\(painted):saved", "\(painted):end"])
+        #expect(session.pendingRevision(for: failed) == nil)
+        let illustration = try #require(fixture.illustrations().first)
+        #expect(session.claim(illustration.paintingRevision, for: painted))
+    }
+
     @Test func keepsPaintingsBehindPhotosAndDeletesOrphans() async throws {
         let fixture = try Fixture()
         let day = "2026-11-17"

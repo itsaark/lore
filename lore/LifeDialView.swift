@@ -39,6 +39,7 @@ struct LifeDialView: View {
         NavigationStack {
             LifeDialScreen(
                 archive: archive,
+                todayKey: calendar.dayKey(for: now),
                 speechRecognizer: speechRecognizer,
                 close: { dismiss() },
                 openDay: { destination = .day($0) },
@@ -76,6 +77,7 @@ private struct LifeDialArchive {
     let content: Set<LifeDial.Selection>
     let pictures: [LifeDial.Selection: Picture]
     let memories: [LifeDial.Selection: [UUID]]
+    let biographyUnits: [String: [LifeDial.Selection]]
 
     struct Picture {
         let cover: DayCover
@@ -144,6 +146,9 @@ private struct LifeDialArchive {
         self.dial = dial
         content = occupied
         memories = memoriesByUnit
+        biographyUnits = unitsByMemory.reduce(into: unitsByDay) { result, memory in
+            result[BiographyIdentity.key(dayKey: "", memoryStoryId: memory.key)] = memory.value
+        }
         pictures = candidates.reduce(into: [:]) { result, bucket in
             if let id = LifeDial.pickPicture(from: bucket.value, for: bucket.key) { result[bucket.key] = sources[id] }
         }
@@ -152,6 +157,7 @@ private struct LifeDialArchive {
 
 private struct LifeDialScreen: View {
     let archive: LifeDialArchive
+    let todayKey: String
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
     let close: () -> Void
     let openDay: (String) -> Void
@@ -161,15 +167,18 @@ private struct LifeDialScreen: View {
     @Environment(\.displayScale) private var displayScale
     @ScaledMetric(relativeTo: .largeTitle) private var titleSize: CGFloat = 44
     @State private var motion: LifeDialMotion
+    @State private var recordButtonFrame = CGRect.zero
 
     init(
         archive: LifeDialArchive,
+        todayKey: String,
         speechRecognizer: SpeechRecognitionViewModel,
         close: @escaping () -> Void,
         openDay: @escaping (String) -> Void,
         openMemories: @escaping ([UUID], UUID) -> Void
     ) {
         self.archive = archive
+        self.todayKey = todayKey
         self.speechRecognizer = speechRecognizer
         self.close = close
         self.openDay = openDay
@@ -189,10 +198,7 @@ private struct LifeDialScreen: View {
                     .accessibilityHidden(isCapturing)
                     .padding(.bottom, 94)
 
-                if isCapturing {
-                    VoiceCaptureOverlay(speechRecognizer: speechRecognizer)
-                        .transition(.opacity)
-                }
+                CaptureSaveWave(speechRecognizer: speechRecognizer, source: recordButtonFrame)
 
                 VStack(spacing: 8) {
                     VoiceCaptureFeedback(speechRecognizer: speechRecognizer, showsPermissionHint: false)
@@ -201,12 +207,19 @@ private struct LifeDialScreen: View {
                         isAvailable: speechRecognizer.isAuthorized,
                         isRecording: speechRecognizer.isRecording,
                         isProcessing: speechRecognizer.isAwaitingRemoteTranscription,
+                        isWriting: WritingOrbVisibility.onRecordButton(
+                            isRecording: speechRecognizer.isRecording,
+                            isTranscribing: speechRecognizer.isAwaitingRemoteTranscription,
+                            todayKey: todayKey,
+                            writingKey: speechRecognizer.writingBiographyKey
+                        ),
                         accessibilityID: "lifeDialRecordButton"
                     ) {
                         speechRecognizer.toggleRecording(
                             remembering: archive.dial.rememberedTime(for: motion.selection, at: Date())
                         )
                     }
+                    .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { recordButtonFrame = $0 }
                 }
                 .padding(.bottom, 14)
             }
@@ -232,6 +245,7 @@ private struct LifeDialScreen: View {
                 let width = max(0, min(geometry.size.width - 32, geometry.size.height * 0.8))
                 let height = width * 1.25
                 let picture = archive.pictures[selection]
+                let paintingKey = picture?.cover.paintingKey ?? (picture == nil ? potentialPainting(for: selection) : nil)
                 let aspect = picture?.cover.aspectRatio ?? 0.8
                 let fillWidth = max(width, height * aspect)
                 let pixelSize = Int(min(
@@ -244,6 +258,14 @@ private struct LifeDialScreen: View {
                     open: pictureAction(for: selection, picture: picture),
                     accessibilityLabel: selection.level == .day ? "Open day" : "Open memory",
                     showsMemoryPlaceholder: archive.memories[selection] != nil && picture == nil,
+                    showsWritingOrb: WritingOrbVisibility.inDialPicture(
+                        hasPicture: picture != nil,
+                        selectionContainsWritingStory: isWriting(selection)
+                    ) && !isCapturing,
+                    paintingKey: paintingKey,
+                    isGeneratingPainting: paintingKey.map { speechRecognizer.generatingPaintingKeys.contains($0) } ?? false,
+                    paintingReveals: speechRecognizer.paintingReveals,
+                    isPresented: !isCapturing,
                     reduceMotion: reduceMotion
                 )
                 .frame(width: width, height: height)
@@ -283,6 +305,18 @@ private struct LifeDialScreen: View {
         .contentShape(Rectangle())
         .gesture(LifeDialScrubGesture(motion: motion))
         .gesture(LifeDialPinchGesture(motion: motion))
+    }
+
+    private func isWriting(_ selection: LifeDial.Selection) -> Bool {
+        guard let key = speechRecognizer.writingBiographyKey else { return false }
+        guard selection.level == .day || key.hasPrefix("memory:") else { return false }
+        return archive.biographyUnits[key]?.contains(selection) == true
+    }
+
+    private func potentialPainting(for selection: LifeDial.Selection) -> String? {
+        speechRecognizer.generatingPaintingKeys.first {
+            archive.biographyUnits[$0]?.contains(selection) == true
+        }
     }
 
     private func pictureAction(for selection: LifeDial.Selection, picture: LifeDialArchive.Picture?) -> (() -> Void)? {
@@ -339,6 +373,11 @@ private struct LifeDialPicture: View {
     let open: (() -> Void)?
     let accessibilityLabel: String
     let showsMemoryPlaceholder: Bool
+    let showsWritingOrb: Bool
+    let paintingKey: String?
+    let isGeneratingPainting: Bool
+    let paintingReveals: PaintingRevealSession
+    let isPresented: Bool
     let reduceMotion: Bool
 
     @State private var presenter = LifeDialPicturePresenter()
@@ -351,7 +390,12 @@ private struct LifeDialPicture: View {
         ZStack {
             shape.strokeBorder(LoreTheme.hairline, lineWidth: 0.5)
 
-            if showsMemoryPlaceholder {
+            if showsWritingOrb {
+                ThinkingOrb(state: .breathing, size: .px64, tint: LoreTheme.secondaryInk)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("Lore is writing")
+                    .transition(.opacity)
+            } else if showsMemoryPlaceholder {
                 Image(systemName: "quote.bubble")
                     .font(.system(size: 24, weight: .light))
                     .foregroundStyle(LoreTheme.tertiaryInk)
@@ -372,6 +416,20 @@ private struct LifeDialPicture: View {
                     .zIndex(Double(frame.sequence))
             }
         }
+        .overlay {
+            let frame = presenter.frame.flatMap { $0.key == request?.key ? $0 : nil }
+            PaintingReveal(
+                biographyKey: paintingKey,
+                expectedRevision: request?.key == presenter.failedKey ? nil : request?.key.paintingRevision,
+                revision: frame?.key.paintingRevision,
+                image: frame.map { Image(decorative: $0.image, scale: 1) },
+                isGenerating: isGeneratingPainting,
+                session: paintingReveals,
+                isPresented: isPresented
+            )
+            .clipShape(shape)
+        }
+        .animation(.easeInOut(duration: 0.24), value: showsWritingOrb)
         .contentShape(shape)
         .overlay {
             if let open, presenter.frame == nil || presenter.frame?.key == request?.key {
@@ -398,6 +456,7 @@ private final class LifeDialPicturePresenter {
         let id: UUID
         let updatedAt: Date
         let pixelSize: Int
+        let paintingRevision: PaintingRevision?
     }
 
     struct Request {
@@ -405,7 +464,10 @@ private final class LifeDialPicturePresenter {
         let cover: DayCover
 
         init(cover: DayCover, pixelSize: Int) {
-            key = Key(id: cover.id, updatedAt: cover.updatedAt, pixelSize: pixelSize)
+            key = Key(
+                id: cover.id, updatedAt: cover.updatedAt, pixelSize: pixelSize,
+                paintingRevision: cover.paintingRevision
+            )
             self.cover = cover
         }
     }
@@ -417,6 +479,7 @@ private final class LifeDialPicturePresenter {
     }
 
     private(set) var frame: Frame?
+    private(set) var failedKey: Key?
     @ObservationIgnored private let cache = LifeDialThumbnailCache()
     @ObservationIgnored private let clock = ContinuousClock()
     @ObservationIgnored private var pending: (request: Request?, reduceMotion: Bool)?
@@ -453,6 +516,7 @@ private final class LifeDialPicturePresenter {
                 newFrame = nil
             }
             guard !Task.isCancelled else { return }
+            failedKey = newFrame == nil ? update.request?.key : nil
             nextSwap = clock.now.advanced(by: .milliseconds(70))
             withAnimation(.easeInOut(duration: update.reduceMotion ? 0.18 : 0.3)) {
                 frame = newFrame

@@ -46,63 +46,14 @@ struct BreathingOrb: View {
         time: Double
     ) {
         let renderSize = Double(min(canvasSize.width, canvasSize.height))
-        let center = (
-            x: Double(canvasSize.width / 2),
-            y: Double(canvasSize.height / 2)
-        )
-        let sphereRadius = renderSize * 0.39
-        let wobbleAmplitude = 0.23 * Self.wobbleMultiplier
-        let baseRadius = sphereRadius / (1 + 0.85 * wobbleAmplitude)
-        let dotScale = pow(renderSize / 300, 0.6)
         let segmentCount = max(
             Self.baseSegmentCount,
-            Int(
-                (Double(Self.baseSegmentCount) * pow(renderSize / 64, 0.6))
-                    .rounded()
-            )
+            Int((Double(Self.baseSegmentCount) * pow(renderSize / 64, 0.6)).rounded())
         )
-
-        let dots = (0..<Self.laneCount).flatMap { lane -> [BreathingDot] in
-            let lanePosition = Double(lane) - Double(Self.laneCount - 1) / 2
-            let laneOffset = lanePosition * 0.075
-            let edge = abs(lanePosition) / max(1, Double(Self.laneCount - 1) / 2)
-            let normalization = sqrt(1 + laneOffset * laneOffset)
-            let angularStagger = renderSize > 64
-                ? (Double(lane) * 0.618_033_988_75).truncatingRemainder(dividingBy: 1)
-                : 0
-
-            return (0..<segmentCount).map { segment in
-                let angle = (Double(segment) + angularStagger)
-                    / Double(segmentCount)
-                    * 2
-                    * Double.pi
-                let wobble = (
-                    0.16 * sin(angle * 3 - time * 1.7 + Double(lane) * 0.22)
-                        + 0.07 * sin(angle * 5 + time * 1.1)
-                ) * Self.wobbleMultiplier
-                let radius = baseRadius * (1 + wobble)
-                let depthValue = laneOffset / normalization * radius
-                let depth = (depthValue / sphereRadius + 1) / 2
-                let dotRadius = max(
-                    0.3,
-                    (Self.dotRadiusBase + Self.dotRadiusDepth * depth)
-                        * (1 - 0.25 * edge)
-                        * dotScale
-                )
-
-                return BreathingDot(
-                    center: CGPoint(
-                        x: CGFloat(center.x + cos(angle) / normalization * radius),
-                        y: CGFloat(center.y - sin(angle) / normalization * radius)
-                    ),
-                    depth: depthValue,
-                    radius: dotRadius,
-                    white: 0.52 - 0.44 * depth + 0.18 * edge,
-                    opacity: 0.4 + 0.6 * depth
-                )
-            }
-        }
-        .sorted { $0.depth < $1.depth }
+        let dots = BreathingOrbGeometry.dots(
+            renderSize: renderSize, time: time, lanes: Self.laneCount,
+            segmentCount: segmentCount, radiusMultiplier: 0.956, staggersAngles: renderSize > 64
+        )
 
         for dot in dots {
             let white = min(max(dot.white, 0), 1)
@@ -126,9 +77,6 @@ struct BreathingOrb: View {
     private static let laneCount = 11
     private static let baseSegmentCount = 44
     private static let presetSpeed = 3.24
-    private static let wobbleMultiplier = 0.368
-    private static let dotRadiusBase = 1.1 * 0.956
-    private static let dotRadiusDepth = 1.7 * 0.956
 }
 
 final class BreathingOrbPhaseClock {
@@ -160,14 +108,6 @@ final class BreathingOrbPhaseClock {
 
         return phase
     }
-}
-
-private struct BreathingDot {
-    let center: CGPoint
-    let depth: Double
-    let radius: Double
-    let white: Double
-    let opacity: Double
 }
 
 #Preview("Breathing orb") {

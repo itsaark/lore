@@ -32,6 +32,16 @@ enum DayCover {
         return false
     }
 
+    var paintingRevision: PaintingRevision? {
+        if case .illustration(let illustration) = self { return illustration.paintingRevision }
+        return nil
+    }
+
+    var paintingKey: String? {
+        if case .illustration(let illustration) = self { return illustration.biographyKey }
+        return nil
+    }
+
     func data(for variant: DayPhotoImage.Variant) -> Data? {
         switch self {
         case .photo(let photo): variant == .full ? photo.imageData : photo.thumbnailData
@@ -61,13 +71,22 @@ final class DayPhotoImageCache: @unchecked Sendable {
     }
 
     static func key(for cover: DayCover, variant: DayPhotoImage.Variant) -> String {
-        "\(cover.id.uuidString)|\(cover.updatedAt.timeIntervalSinceReferenceDate)|\(variant.rawValue)"
+        "\(cover.id.uuidString)|\(cover.updatedAt.timeIntervalSinceReferenceDate)|\(cover.paintingRevision?.fingerprint ?? "")|\(variant.rawValue)"
     }
 
     static func decode(_ data: Data) async -> UIImage? {
         await Task.detached(priority: .userInitiated) {
             UIImage(data: data)?.preparingForDisplay()
         }.value
+    }
+
+    @MainActor
+    func load(_ cover: DayCover, variant: DayPhotoImage.Variant) async -> UIImage? {
+        let key = Self.key(for: cover, variant: variant)
+        if let cached = image(forKey: key) { return cached }
+        guard let data = cover.data(for: variant), let decoded = await Self.decode(data) else { return nil }
+        insert(decoded, forKey: key)
+        return decoded
     }
 }
 
@@ -115,6 +134,7 @@ struct DayPhotoImage: View {
                     Image(uiImage: image)
                         .resizable()
                         .aspectRatio(contentMode: contentMode)
+                        .id(cover.isIllustration ? ObjectIdentifier(image) : nil)
                         .transition(.opacity)
                 }
             }
@@ -142,12 +162,7 @@ struct DayPhotoImage: View {
     }
 
     private func decoded(_ variant: Variant) async -> UIImage? {
-        let key = DayPhotoImageCache.key(for: cover, variant: variant)
-        if let cached = DayPhotoImageCache.shared.image(forKey: key) { return cached }
-        guard let data = cover.data(for: variant),
-              let decoded = await DayPhotoImageCache.decode(data) else { return nil }
-        DayPhotoImageCache.shared.insert(decoded, forKey: key)
-        return decoded
+        await DayPhotoImageCache.shared.load(cover, variant: variant)
     }
 }
 

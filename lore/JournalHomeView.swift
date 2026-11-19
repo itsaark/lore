@@ -23,6 +23,7 @@ struct JournalHomeView: View {
     @State private var today = Date()
     @State private var dailyQuestionDayKey: String?
     @State private var dailyQuestion: DailyQuestionPresentation?
+    @State private var recordButtonFrame = CGRect.zero
 
     init(
         userProfile: UserProfile,
@@ -75,12 +76,15 @@ struct JournalHomeView: View {
                         Color.clear.frame(height: showsSupportMessage ? 168 : 112)
                     }
 
-                    if isCapturing {
-                        VoiceCaptureOverlay(speechRecognizer: speechRecognizer)
-                            .transition(.opacity)
-                    } else {
+                    if !isCapturing {
                         captureBarScrim
                     }
+
+                    CaptureSaveWave(
+                        speechRecognizer: speechRecognizer,
+                        source: recordButtonFrame,
+                        isOnCaptureScreen: path.isEmpty && !showsLifeDial && !showsSettings
+                    )
 
                     VStack(spacing: 8) {
                         Spacer()
@@ -191,8 +195,15 @@ struct JournalHomeView: View {
                 isAvailable: speechRecognizer.isAuthorized,
                 isRecording: speechRecognizer.isRecording,
                 isProcessing: speechRecognizer.isAwaitingRemoteTranscription,
+                isWriting: WritingOrbVisibility.onRecordButton(
+                    isRecording: speechRecognizer.isRecording,
+                    isTranscribing: speechRecognizer.isAwaitingRemoteTranscription,
+                    todayKey: todayKey,
+                    writingKey: speechRecognizer.writingBiographyKey
+                ),
                 action: { speechRecognizer.toggleRecording() }
             )
+            .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { recordButtonFrame = $0 }
 
             CaptureSideButton(title: "Story") {
                 path.append(JournalRoute.story)
