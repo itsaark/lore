@@ -27,13 +27,14 @@ enum LoreModelContainer {
         VocabularyEntry.self
     ])
 
-    /// Device-bound orchestration records. Audio files themselves live only
-    /// in this installation's sandbox, so their paths and retry jobs must not
-    /// be delivered to another phone by CloudKit.
+    /// Device-bound orchestration, audio references, and daily questions.
     static let localSchema = Schema([
         AudioAsset.self,
         ProcessingJob.self,
-        DailyBiographyGenerationSnapshot.self
+        DailyBiographyGenerationSnapshot.self,
+        DailyQuestionFollowUps.self,
+        DailyQuestionHistory.self,
+        DailyQuestionCapture.self
     ])
 
     static let schema = Schema([
@@ -54,6 +55,9 @@ enum LoreModelContainer {
         ReflectionTurn.self,
         DailyBiographyEntry.self,
         DailyBiographyGenerationSnapshot.self,
+        DailyQuestionFollowUps.self,
+        DailyQuestionHistory.self,
+        DailyQuestionCapture.self,
         StoryChapter.self,
         DayPhoto.self,
         DayIllustration.self,

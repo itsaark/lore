@@ -10,14 +10,16 @@ import SwiftData
 
 struct ContentView: View {
     let userProfile: UserProfile
+    let openedFromLink: Bool
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var speechRecognizer: SpeechRecognitionViewModel
     private let reflectionBackend: any LoreReflectionBackendClient
     private let opensSettings: Bool
 
-    init(userProfile: UserProfile) {
+    init(userProfile: UserProfile, openedFromLink: Bool = false) {
         self.userProfile = userProfile
+        self.openedFromLink = openedFromLink
         let remoteServices = LoreRemoteServices.configuredForCurrentBuild()
         _speechRecognizer = StateObject(
             wrappedValue: SpeechRecognitionViewModel(
@@ -36,7 +38,8 @@ struct ContentView: View {
             userProfile: userProfile,
             speechRecognizer: speechRecognizer,
             reflectionBackend: reflectionBackend,
-            opensSettings: opensSettings
+            opensSettings: opensSettings,
+            openedFromLink: openedFromLink
         )
         .onAppear {
             speechRecognizer.configure(

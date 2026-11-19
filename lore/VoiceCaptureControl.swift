@@ -7,6 +7,7 @@ struct VoiceCaptureButton: View {
     let isAvailable: Bool
     let isRecording: Bool
     let isProcessing: Bool
+    var accessibilityID = "recordVoiceNoteButton"
     let action: () -> Void
 
     private var accessibilityTitle: String {
@@ -39,7 +40,7 @@ struct VoiceCaptureButton: View {
         .accessibilityLabel(accessibilityTitle)
         .accessibilityHint(isRecording ? "Ends and saves this voice note" : "Begins a new voice note")
         .accessibilityValue(isRecording ? "Recording" : isProcessing ? "Processing" : "Not recording")
-        .accessibilityIdentifier("recordVoiceNoteButton")
+        .accessibilityIdentifier(accessibilityID)
         .sensoryFeedback(.impact(weight: .light), trigger: isRecording)
         .animation(.easeInOut(duration: 0.24), value: isRecording)
         .animation(.easeInOut(duration: 0.24), value: isProcessing)

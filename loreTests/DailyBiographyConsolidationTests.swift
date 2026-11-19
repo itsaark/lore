@@ -21,7 +21,7 @@ struct DailyBiographyConsolidationTests {
         let entry = try await DailyBiographyJobRunner.run(
             jobID: past.jobId,
             userProfile: fixture.profile,
-            generator: SuccessfulDailyBiographyGenerator(),
+            generator: SuccessfulDailyBiographyGenerator(includesFollowUps: true),
             in: fixture.context,
             now: fixture.now
         )
@@ -34,6 +34,10 @@ struct DailyBiographyConsolidationTests {
         #expect(fixture.pastStories[0].biographyProse == "Morning fragment.")
         #expect(fixture.pastStories[1].biographyProse == "Evening fragment.")
         #expect(try fixture.context.fetch(FetchDescriptor<DailyBiographyEntry>()).count == 1)
+        let followUps = try fixture.context.fetch(FetchDescriptor<DailyQuestionFollowUps>())
+        #expect(followUps.first?.sourceDayStoryID == entry.id)
+        #expect(followUps.first?.sourceFingerprint == entry.sourceFingerprint)
+        #expect(followUps.first?.questions == ["What did you hear that morning?"])
 
         let replay = try DailyBiographyJobRunner.prepareCompletedDays(
             initialState: .queued,
@@ -528,6 +532,7 @@ private struct SuccessfulDailyBiographyGenerator: DailyEntryGenerationService {
     /// Writes only from the first note, as the writer may when it merges or
     /// sets aside the others.
     var citesOnlyFirstNote = false
+    var includesFollowUps = false
 
     func generateDailyEntry(
         _ request: DailyEntryGenerationRequest
@@ -557,7 +562,10 @@ private struct SuccessfulDailyBiographyGenerator: DailyEntryGenerationService {
             uncertainties: [],
             sensitiveOmissions: [],
             qualityFlags: [],
-            followUpQuestions: [],
+            followUpQuestions: includesFollowUps ? [
+                .init(question: "What did you hear that morning?", reason: "A detail from the scene.", sourceReferences: sourceIds),
+                .init(question: "What? Why?", reason: "", sourceReferences: sourceIds)
+            ] : [],
             provenance: RemoteProcessingProvenance(
                 providerId: "fireworks",
                 modelAlias: "daily-entry-v1",

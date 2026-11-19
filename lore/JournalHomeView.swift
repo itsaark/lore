@@ -12,21 +12,28 @@ struct JournalHomeView: View {
     let userProfile: UserProfile
     @ObservedObject var speechRecognizer: SpeechRecognitionViewModel
     let reflectionBackend: any LoreReflectionBackendClient
+    let openedFromLink: Bool
 
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
+    @Query private var followUps: [DailyQuestionFollowUps]
     @State private var path = NavigationPath()
     @State private var showsSettings: Bool
     @State private var today = Date()
+    @State private var dailyQuestionDayKey: String?
+    @State private var dailyQuestion: DailyQuestionPresentation?
 
     init(
         userProfile: UserProfile,
         speechRecognizer: SpeechRecognitionViewModel,
         reflectionBackend: any LoreReflectionBackendClient,
-        opensSettings: Bool = false
+        opensSettings: Bool = false,
+        openedFromLink: Bool = false
     ) {
         self.userProfile = userProfile
         self.speechRecognizer = speechRecognizer
         self.reflectionBackend = reflectionBackend
+        self.openedFromLink = openedFromLink
         _showsSettings = State(initialValue: opensSettings)
     }
 
@@ -36,6 +43,17 @@ struct JournalHomeView: View {
 
     private var isCapturing: Bool {
         speechRecognizer.isRecording || speechRecognizer.isAwaitingRemoteTranscription
+    }
+
+    private var canShowDailyQuestion: Bool {
+        path.isEmpty && !showsSettings && !openedFromLink && !isCapturing && !speechRecognizer.isProcessingAudio
+    }
+
+    private var dailyQuestionSourceExists: Bool {
+        guard let dailyQuestion, let sourceID = dailyQuestion.sourceDayStoryID else { return true }
+        return followUps.contains {
+            $0.sourceDayStoryID == sourceID && $0.questions.contains(dailyQuestion.question.text)
+        }
     }
 
     var body: some View {
@@ -69,6 +87,20 @@ struct JournalHomeView: View {
                     // Keeps side-button captions clear of the home indicator.
                     .padding(.bottom, 14)
                 }
+                .accessibilityHidden(dailyQuestion != nil && canShowDailyQuestion)
+                .overlay {
+                    if let dailyQuestion, canShowDailyQuestion {
+                        DailyQuestionCard(
+                            question: dailyQuestion.question,
+                            isRecordAvailable: speechRecognizer.isAuthorized,
+                            record: { recordAnswer(to: dailyQuestion) },
+                            dismiss: { try? DailyQuestionStore.dismiss(dailyQuestion, in: modelContext) },
+                            finishDismissal: { clearDailyQuestion(dailyQuestion) }
+                        )
+                        .id(dailyQuestion.id)
+                        .transition(.opacity)
+                    }
+                }
             }
             .loreCanvas()
             .toolbar(.hidden, for: .navigationBar)
@@ -91,10 +123,51 @@ struct JournalHomeView: View {
             SettingsHomeView(userProfile: userProfile, speechRecognizer: speechRecognizer)
                 .presentationDragIndicator(.visible)
         }
-        .onChange(of: scenePhase) { _, newPhase in
-            guard newPhase == .active else { return }
-            today = Date()
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            refreshDailyQuestion(on: Date())
         }
+        .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in
+            refreshDailyQuestionAtRollover()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+            refreshDailyQuestionAtRollover()
+        }
+        .onChange(of: canShowDailyQuestion) { _, canShow in
+            if !canShow { dailyQuestion = nil }
+        }
+        .onChange(of: dailyQuestionSourceExists) { _, exists in
+            if !exists { dailyQuestion = nil }
+        }
+    }
+
+    private func refreshDailyQuestionAtRollover() {
+        let now = Date()
+        guard scenePhase == .active, JournalCalendar().dayKey(for: now) != dailyQuestionDayKey else { return }
+        refreshDailyQuestion(on: now)
+    }
+
+    private func refreshDailyQuestion(on date: Date) {
+        let calendar = JournalCalendar()
+        let dayKey = calendar.dayKey(for: date)
+        today = date
+        if dailyQuestionDayKey != dayKey {
+            dailyQuestion = nil
+            dailyQuestionDayKey = dayKey
+        }
+        guard canShowDailyQuestion, dailyQuestion == nil,
+              let question = try? DailyQuestionStore.claim(on: date, calendar: calendar, in: modelContext) else { return }
+        withAnimation(.easeOut(duration: 0.2)) { dailyQuestion = question }
+    }
+
+    private func recordAnswer(to question: DailyQuestionPresentation) {
+        guard dailyQuestion == question, canShowDailyQuestion, dailyQuestionSourceExists else { return }
+        withAnimation(.easeOut(duration: 0.18)) { dailyQuestion = nil }
+        speechRecognizer.toggleRecording(answering: question)
+    }
+
+    private func clearDailyQuestion(_ question: DailyQuestionPresentation) {
+        if dailyQuestion == question { dailyQuestion = nil }
     }
 
     private var captureOverlay: some View {
@@ -170,7 +243,7 @@ struct JournalHomeView: View {
                 isAvailable: speechRecognizer.isAuthorized,
                 isRecording: speechRecognizer.isRecording,
                 isProcessing: speechRecognizer.isAwaitingRemoteTranscription,
-                action: speechRecognizer.toggleRecording
+                action: { speechRecognizer.toggleRecording() }
             )
 
             CaptureSideButton(title: "Story") {

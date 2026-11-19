@@ -95,7 +95,8 @@ enum CloudArchiveReconciler {
         )
         deleted += try reconcileVocabulary(in: context)
 
-        if deleted > 0 {
+        let changedFollowUps = try DailyQuestionStore.reconcileFollowUps(in: context)
+        if deleted > 0 || changedFollowUps {
             try context.save()
         }
         return deleted

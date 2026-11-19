@@ -3,12 +3,14 @@ import SwiftData
 
 struct RootView: View {
     @Environment(\.modelContext) private var modelContext
+    @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var cloudArchiveStatus: CloudArchiveStatusMonitor
     @Query(sort: \UserProfile.createdAt, order: .forward) private var userProfiles: [UserProfile]
     @State private var didCheckLegacyData = false
     @State private var migrationError: String?
     @State private var didChooseFreshArchive = false
     @State private var showsFreshArchiveConfirmation = false
+    @State private var openedFromLink = false
 
     var body: some View {
         Group {
@@ -40,7 +42,7 @@ struct RootView: View {
                 .loreCanvas()
             } else if let userProfile = userProfiles.first {
                 if userProfile.hasRemoteProcessingConsent {
-                    ContentView(userProfile: userProfile)
+                    ContentView(userProfile: userProfile, openedFromLink: openedFromLink)
                 } else {
                     RemoteProcessingPermissionView {
                         userProfile.grantRemoteProcessingConsent()
@@ -58,6 +60,11 @@ struct RootView: View {
         }
         .task {
             migrateLegacyDataIfNeeded()
+        }
+        .onOpenURL { _ in openedFromLink = true }
+        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { _ in openedFromLink = true }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { openedFromLink = false }
         }
         .onChange(of: cloudArchiveStatus.status.lastSuccessfulImport) { _, importedAt in
             guard importedAt != nil else { return }

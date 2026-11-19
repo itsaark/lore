@@ -90,6 +90,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var captureEngine: VoiceCaptureEngine?
     private var recordingStartTime: Date?
     private var currentRecordingAudioFileURL: URL?
+    private var currentDailyQuestion: DailyQuestionPresentation?
     private var pendingSaveTask: Task<Void, Never>?
     /// The route chosen when the in-flight capture began transcribing.
     private var activeCaptureRoute: SpeechTranscriptionRoute?
@@ -167,11 +168,11 @@ class SpeechRecognitionViewModel: ObservableObject {
     // MARK: - Public Methods
     
     /// Toggles recording state
-    func toggleRecording() {
+    func toggleRecording(answering question: DailyQuestionPresentation? = nil) {
         if isRecording {
             stopRecording()
         } else {
-            startRecording()
+            startRecording(answering: question)
         }
     }
     
@@ -811,6 +812,9 @@ class SpeechRecognitionViewModel: ObservableObject {
             )
             try Self.deleteStoryMetadata(for: savedStory, in: modelContext)
             try Self.deleteTranscriptSupportData(for: savedStory, in: modelContext)
+            if let capture = try DailyQuestionCapture.fetch(for: savedStory.id, in: modelContext) {
+                modelContext.delete(capture)
+            }
 
             // Drop the old chapter even if remote rewriting is currently gated.
             try Self.deleteChapter(forDayKey: dayKey, in: modelContext)
@@ -1081,7 +1085,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
     
     /// Starts speech recognition
-    private func startRecording() {
+    private func startRecording(answering question: DailyQuestionPresentation?) {
         print("🎤 Attempting to start recording...")
 
         guard pendingSaveTask == nil && !isAwaitingRemoteTranscription else {
@@ -1110,6 +1114,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         do {
             try setupAudioSession()
             try startAudioCapture()
+            currentDailyQuestion = question
             print("✅ Recording started successfully")
             if resolvedRoute == .onDevice, let localTranscriber {
                 // Hide the cold model load behind the recording.
@@ -1190,6 +1195,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         } else {
             discardCurrentAudioFile()
             recordingStartTime = nil
+            currentDailyQuestion = nil
         }
 
         isProcessingAudio = false
@@ -1236,7 +1242,8 @@ class SpeechRecognitionViewModel: ObservableObject {
                 startTime: startTime,
                 endTime: endTime,
                 audioFileURL: audioFileURL,
-                modelContext: modelContext
+                modelContext: modelContext,
+                question: currentDailyQuestion
             )
         } catch {
             pendingSaveTask = nil
@@ -1295,6 +1302,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
         recordingStartTime = nil
         currentRecordingAudioFileURL = nil
+        currentDailyQuestion = nil
     }
 
     private func beginRecordingSaveBackgroundTask() {
@@ -1423,7 +1431,8 @@ class SpeechRecognitionViewModel: ObservableObject {
         startTime: Date,
         endTime: Date,
         audioFileURL: URL,
-        modelContext: ModelContext
+        modelContext: ModelContext,
+        question: DailyQuestionPresentation? = nil
     ) throws -> (story: Story, job: ProcessingJob) {
         guard audioFileURL.isFileURL,
               FileManager.default.fileExists(atPath: audioFileURL.path) else {
@@ -1455,6 +1464,9 @@ class SpeechRecognitionViewModel: ObservableObject {
         modelContext.insert(metadata)
         modelContext.insert(audioAsset)
         modelContext.insert(job)
+        if let question {
+            modelContext.insert(DailyQuestionCapture(storyID: story.id, presentation: question))
+        }
 
         do {
             try modelContext.save()
@@ -1791,6 +1803,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         )
 
         do {
+            try DailyQuestionStore.markAnswered(storyID: story.id, transcript: story.text, in: modelContext)
             try modelContext.save()
         } catch {
             modelContext.rollback()

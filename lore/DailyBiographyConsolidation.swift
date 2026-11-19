@@ -392,6 +392,9 @@ enum DailyBiographyJobRunner {
                 )
                 modelContext.insert(entry)
             }
+            try DailyQuestionStore.saveFollowUps(
+                for: entry, response: response, request: package.request, in: modelContext
+            )
             // The day's story now covers these notes; they have no separate
             // per-note entry to wait for.
             for story in package.stories where story.processingStatus == "awaitingModel" {
@@ -457,6 +460,7 @@ enum DailyBiographyJobRunner {
         let illustrations = removedDays.isEmpty ? [] : try modelContext.fetch(FetchDescriptor<DayIllustration>())
             .filter { removedDays.contains($0.dayKey) }
 
+        try DailyQuestionStore.removeFollowUps(for: Set(entries.map(\.id)), in: modelContext)
         entries.forEach(modelContext.delete)
         illustrations.forEach(modelContext.delete)
         snapshots.forEach(modelContext.delete)
