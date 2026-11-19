@@ -196,8 +196,8 @@ private struct LifeDialScreen: View {
     }
 
     private func header(_ labels: LifeDial.Labels) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 5) {
+        ZStack(alignment: .topTrailing) {
+            VStack(alignment: .center, spacing: 5) {
                 Text(labels.title)
                     .font(LoreTheme.display(min(titleSize, 56)))
                     .foregroundStyle(LoreTheme.ink)
@@ -213,7 +213,10 @@ private struct LifeDialScreen: View {
                     .contentTransition(.opacity)
                     .accessibilityHidden(labels.subtitle.isEmpty)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 48) // keeps the centred title clear of the close button
+            .padding(.top, 6)
+            .frame(maxWidth: .infinity, alignment: .center)
             .animation(.easeOut(duration: 0.18), value: labels)
 
             Button(action: close) {
