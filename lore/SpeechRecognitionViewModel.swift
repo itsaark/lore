@@ -76,6 +76,11 @@ class SpeechRecognitionViewModel: ObservableObject {
     @Published var isProcessingAudio = false
     @Published private(set) var transcriptionRoute: SpeechTranscriptionRoute = .deferred(reason: .networkUnknown)
     @Published private(set) var isAwaitingRemoteTranscription = false
+    /// True only from Stop until the audio is safely saved on this iPhone
+    /// (well under a second). The capture overlay follows this, not the
+    /// transcription, so the screen returns right away while the note is
+    /// transcribed in the background.
+    @Published private(set) var isSecuringRecording = false
     
     // MARK: - Private Properties
     private let metadataService: any MetadataService
@@ -184,6 +189,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     func clearText() {
         isProcessingAudio = false
         isAwaitingRemoteTranscription = false
+        isSecuringRecording = false
         errorMessage = nil
         captureFeedbackMessage = nil
     }
@@ -1193,10 +1199,12 @@ class SpeechRecognitionViewModel: ObservableObject {
             // overlay never sees a gap, fades out, and then reappears once
             // the async save starts.
             isAwaitingRemoteTranscription = true
+            isSecuringRecording = true
             beginRecordingSaveBackgroundTask()
             pendingSaveTask = Task { [weak self] in
                 guard !Task.isCancelled else {
                     self?.isAwaitingRemoteTranscription = false
+                    self?.isSecuringRecording = false
                     self?.endRecordingSaveBackgroundTask()
                     return
                 }
@@ -1228,6 +1236,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         defer { endRecordingSaveBackgroundTask() }
         guard let startTime = recordingStartTime else {
             isAwaitingRemoteTranscription = false
+            isSecuringRecording = false
             return
         }
 
@@ -1236,6 +1245,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         guard let modelContext, let audioFileURL else {
             pendingSaveTask = nil
             isAwaitingRemoteTranscription = false
+            isSecuringRecording = false
             setError("Lore could not secure this recording locally. The audio was kept on this iPhone.")
             return
         }
@@ -1260,10 +1270,13 @@ class SpeechRecognitionViewModel: ObservableObject {
         } catch {
             pendingSaveTask = nil
             isAwaitingRemoteTranscription = false
+            isSecuringRecording = false
             setError("Failed to save the recording before transcription. The audio was kept on this iPhone: \(error.localizedDescription)")
             return
         }
 
+        // The audio is saved; let the screen return while it transcribes.
+        isSecuringRecording = false
         clearFinishedCaptureState(keepPendingTask: true)
         loadStories()
         Task { await enrichCaptureMetadata(for: story, captureDate: startTime) }

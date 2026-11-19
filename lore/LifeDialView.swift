@@ -56,7 +56,7 @@ struct LifeDialView: View {
                 }
             }
         }
-        .interactiveDismissDisabled(speechRecognizer.isRecording || speechRecognizer.isAwaitingRemoteTranscription)
+        .interactiveDismissDisabled(speechRecognizer.isRecording || speechRecognizer.isSecuringRecording)
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
             now = Date()
         }
@@ -178,7 +178,7 @@ private struct LifeDialScreen: View {
     }
 
     private var isCapturing: Bool {
-        speechRecognizer.isRecording || speechRecognizer.isAwaitingRemoteTranscription
+        speechRecognizer.isRecording || speechRecognizer.isSecuringRecording
     }
 
     var body: some View {

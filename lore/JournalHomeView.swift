@@ -43,11 +43,12 @@ struct JournalHomeView: View {
     }
 
     private var isCapturing: Bool {
-        speechRecognizer.isRecording || speechRecognizer.isAwaitingRemoteTranscription
+        speechRecognizer.isRecording || speechRecognizer.isSecuringRecording
     }
 
     private var canShowDailyQuestion: Bool {
-        path.isEmpty && !showsSettings && !showsLifeDial && !openedFromLink && !isCapturing && !speechRecognizer.isProcessingAudio
+        path.isEmpty && !showsSettings && !showsLifeDial && !openedFromLink && !isCapturing
+            && !speechRecognizer.isAwaitingRemoteTranscription && !speechRecognizer.isProcessingAudio
     }
 
     private var dailyQuestionSourceExists: Bool {
