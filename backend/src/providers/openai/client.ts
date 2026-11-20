@@ -17,8 +17,8 @@ const STYLE_PROMPT = `An original oil painting in the manner of Claude Monet's l
 brushstrokes, visible impasto, soft edges, shimmering reflected light, atmosphere over detail,
 a luminous palette drawn from the scene's own colours. Quiet and reflective in mood, as if
 remembered. Paint exactly the scene described below, its activity, setting and figures as
-written; add no other people. Any figure is small, seen from a distance or from behind, with
-no recognisable face. No text, letters, numbers, signatures, watermarks, logos, or frames.
+written: if it says a man, paint a man, not a woman; add no other people. Any figure is small,
+seen from a distance or from behind, with no recognisable face. No text, letters, numbers, signatures, watermarks, logos, or frames.
 Portrait canvas.`;
 
 const ImageGenerationSchema = z.object({

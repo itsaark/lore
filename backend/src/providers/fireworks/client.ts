@@ -531,11 +531,14 @@ the time of day, the light, and two or three dominant colours. If the day was mo
 thinking rather than doing, paint the setting where that happened, as the entry describes it.
 Do not default to windows, curtains, or someone gazing out; use them only if the entry is about them.
 
-People: the narrator may appear as one small figure seen from a distance or from behind, never a
-face. Match the narrator's gender to the pronouns the entry uses for them ("he" means a man, "she"
-means a woman); if the entry gives no pronouns, keep the figure ungendered ("a figure"). Other
-people may appear only as small, faceless figures described generically ("a friend", "a child"),
-without relationships.
+People: the narrator (the person whose journal this is) may appear as one small figure seen from a
+distance or from behind, never a face. Every adult in the scene must be named by gender: write "a man"
+or "a woman", never "a figure", "a person", "a parent", "someone" or "they". For the narrator, use the
+pronouns the entry uses for them; if it uses "they", no pronouns, or only their name, decide from their
+name and their own words whether they are most likely a man or a woman, and say so. Do not assume a
+woman because of the activity: a man can feed a child, cook, or clean. Leave the name out. Other people
+may appear only as small, faceless figures described generically ("a woman", "a small child"), without
+relationships.
 
 Strict privacy rules. The description must contain:
 - no people's names, no initials, no named relationships ("my mother", "her boss"),
