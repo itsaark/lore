@@ -244,7 +244,7 @@ enum StoryChapterRunner {
             jobId: UUID(),
             chapterKey: month.key,
             languageCode: Locale.current.identifier,
-            subject: JournalSubject(displayName: userProfile.name, pronouns: []),
+            subject: userProfile.journalSubject,
             renderConfiguration: JournalRenderConfiguration(
                 targetWords: min(1_200, max(200, month.entries.count * 90))
             ),

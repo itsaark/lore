@@ -295,8 +295,8 @@ final class LabJournalModel: ObservableObject {
     @Published var errorMessage: String?
 
     let store = LabJournalStore()
-    /// The narrator's name from their profile, set by the view.
-    var subjectName = "the narrator"
+    /// The narrator's subject details from their profile, set by the view.
+    var subject = JournalSubject(displayName: "the narrator", pronouns: [])
     private let backend: LoreBackendHTTPClient?
 
     init() {
@@ -368,7 +368,7 @@ final class LabJournalModel: ObservableObject {
         persist(input)
         runningInputIDs.insert(inputID)
 
-        let subject = subjectName
+        let subject = self.subject
         Task {
             await withTaskGroup(of: (UUID, LabJournalOutput).self) { group in
                 for output in run.outputs {
@@ -453,7 +453,7 @@ final class LabJournalModel: ObservableObject {
     private nonisolated static func request(
         for input: LabJournalInput,
         candidate: LabJournalCandidate,
-        subject: String
+        subject: JournalSubject
     ) -> LabDailyEntryRequest {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
@@ -483,7 +483,7 @@ final class LabJournalModel: ObservableObject {
                 transcriptVersionId: input.id,
                 capturedLocalDate: formatter.string(from: input.capturedDate),
                 languageCode: "en-US",
-                subject: JournalSubject(displayName: subject, pronouns: []),
+                subject: subject,
                 // v1 keeps its original settings so it reproduces the old production voice.
                 renderConfiguration: isV2
                     ? JournalRenderConfiguration(tone: "narrative_restrained", targetWords: 200)

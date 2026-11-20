@@ -12,6 +12,7 @@ struct OnboardingView: View {
     }
 
     @State private var name = ""
+    @State private var narratorPronouns: NarratorPronouns?
     @State private var hometown = ""
     @State private var birthYear = ""
     @State private var spokenLanguageCodes = SpokenLanguageCatalog.defaultSelection()
@@ -117,15 +118,24 @@ struct OnboardingView: View {
                     detail: "Your stories will be written about you."
                 )
 
-                ProfileField(
-                    title: "Name",
-                    placeholder: "Aark",
-                    text: $name,
-                    keyboardType: .default,
-                    textContentType: .name,
-                    isFocused: $isFieldFocused,
-                    onSubmit: advanceIfPossible
-                )
+                VStack(spacing: 12) {
+                    ProfileField(
+                        title: "Name",
+                        placeholder: "Aark",
+                        text: $name,
+                        keyboardType: .default,
+                        textContentType: .name,
+                        isFocused: $isFieldFocused,
+                        onSubmit: advanceIfPossible
+                    )
+
+                    LabeledContent("Pronouns") {
+                        NarratorPronounsPicker(selection: $narratorPronouns)
+                            .labelsHidden()
+                            .tint(LoreTheme.ink)
+                    }
+                    .foregroundStyle(LoreTheme.ink)
+                }
             }
 
         case .hometown:
@@ -292,6 +302,7 @@ struct OnboardingView: View {
             name: trimmedName,
             hometown: trimmedHometown,
             birthYear: parsedBirthYear,
+            narratorPronouns: narratorPronouns,
             remoteProcessingConsentedAt: Date()
         )
         profile.setSpokenLanguages(spokenLanguageCodes)

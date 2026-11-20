@@ -48,14 +48,21 @@ struct ContentView: View {
             )
             LoreOnDeviceServices.startModelDownloadIfEligible(for: userProfile)
         }
-        .onChange(of: userProfile.updatedAt) { _, _ in
-            speechRecognizer.refreshRemoteProcessingPolicy()
-            LoreOnDeviceServices.startModelDownloadIfEligible(for: userProfile)
+        .onChange(of: userProfile.hasRemoteProcessingConsent) { _, _ in
+            refreshProcessingSettings()
+        }
+        .onChange(of: userProfile.spokenLanguageCodes) { _, _ in
+            refreshProcessingSettings()
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
             speechRecognizer.resumeBackgroundProcessing()
         }
+    }
+
+    private func refreshProcessingSettings() {
+        speechRecognizer.refreshRemoteProcessingPolicy()
+        LoreOnDeviceServices.startModelDownloadIfEligible(for: userProfile)
     }
 }
 

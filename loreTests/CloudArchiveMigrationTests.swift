@@ -149,7 +149,8 @@ struct CloudArchiveMigrationTests {
                 id: profileID,
                 name: "Aark",
                 hometown: "Hyderabad",
-                birthYear: 1994
+                birthYear: 1994,
+                narratorPronouns: .he
             ))
             context.insert(Story(
                 id: storyID,
@@ -245,6 +246,7 @@ struct CloudArchiveMigrationTests {
         #expect(profiles.count == 1)
         #expect(profiles.first?.id == profileID)
         #expect(profiles.first?.name == "Aark")
+        #expect(profiles.first?.narratorPronouns == .he)
         #expect(stories.count == 1)
         #expect(stories.first?.id == storyID)
         #expect(stories.first?.text == "The durable source transcript.")

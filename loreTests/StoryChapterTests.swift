@@ -13,6 +13,7 @@ struct StoryChapterTests {
             ("2026-07-02", "fp-a"), ("2026-07-20", "fp-b"), ("2026-08-01", "fp-c"), ("2026-08-04", "fp-today")
         ])
         let generator = RecordingChapterGenerator()
+        fixture.profile.narratorPronouns = .she
 
         let written = try await StoryChapterRunner.refresh(
             userProfile: fixture.profile,
@@ -23,6 +24,7 @@ struct StoryChapterTests {
         )
 
         #expect(written == 2)
+        #expect(generator.requests.map(\.subject.pronouns) == [["she", "her", "hers"], ["she", "her", "hers"]])
         let chapters = try fixture.context.fetch(FetchDescriptor<StoryChapter>())
             .sorted { $0.chapterKey < $1.chapterKey }
         #expect(chapters.map(\.chapterKey) == ["2026-07", "2026-08"])
@@ -32,7 +34,7 @@ struct StoryChapterTests {
         #expect(generator.requests.flatMap { $0.sourceDays.map(\.id) }.contains("2026-08-04") == false)
     }
 
-    @Test func unchangedMonthsAreNotRewritten() async throws {
+    @Test func unchangedMonthsAreNotRewrittenWhenPronounsChange() async throws {
         let fixture = try makeFixture(days: [("2026-07-02", "fp-a")])
         let generator = RecordingChapterGenerator()
 
@@ -40,6 +42,7 @@ struct StoryChapterTests {
             userProfile: fixture.profile, generator: generator,
             in: fixture.context, now: now, calendar: utcCalendar
         )
+        fixture.profile.narratorPronouns = .they
         let second = try await StoryChapterRunner.refresh(
             userProfile: fixture.profile, generator: generator,
             in: fixture.context, now: now, calendar: utcCalendar
@@ -183,8 +186,7 @@ private final class RecordingChapterGenerator: DailyEntryGenerationService, @unc
     init(citation: String? = nil) { self.citation = citation }
 
     var requests: [StoryChapterGenerationRequest] {
-        lock.lock(); defer { lock.unlock() }
-        return recorded
+        lock.withLock { recorded }
     }
 
     func generateDailyEntry(
@@ -196,7 +198,7 @@ private final class RecordingChapterGenerator: DailyEntryGenerationService, @unc
     func generateStoryChapter(
         _ request: StoryChapterGenerationRequest
     ) async throws -> StoryChapterGenerationResponse {
-        lock.lock(); recorded.append(request); lock.unlock()
+        lock.withLock { recorded.append(request) }
         let ids = citation.map { [$0] } ?? request.sourceDays.map(\.id)
         return StoryChapterGenerationResponse(
             schemaVersion: StoryChapterGenerationRequest.currentSchemaVersion,

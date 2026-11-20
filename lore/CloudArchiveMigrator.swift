@@ -76,6 +76,7 @@ enum CloudArchiveMigrator {
                 name: value.name,
                 hometown: value.hometown,
                 birthYear: value.birthYear,
+                narratorPronouns: value.narratorPronouns,
                 remoteProcessingConsentedAt: value.remoteProcessingConsentedAt,
                 createdAt: value.createdAt,
                 updatedAt: value.updatedAt

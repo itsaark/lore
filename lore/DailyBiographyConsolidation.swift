@@ -654,7 +654,7 @@ enum DailyBiographyJobRunner {
             capturedLocalDate: capturedDay,
             rememberedTime: rememberedTime,
             languageCode: first.1.languageCode ?? Locale.current.identifier,
-            subject: JournalSubject(displayName: userProfile.name, pronouns: []),
+            subject: userProfile.journalSubject,
             renderConfiguration: JournalRenderConfiguration(targetWords: min(600, max(160, tuples.count * 120))),
             sourceSegments: segments
         )

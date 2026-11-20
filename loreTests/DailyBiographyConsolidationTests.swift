@@ -7,6 +7,23 @@ import Testing
 @Suite(.serialized)
 @MainActor
 struct DailyBiographyConsolidationTests {
+    @Test(arguments: zip(
+        [nil, .he, .she, .they] as [NarratorPronouns?],
+        [[], ["he", "him", "his"], ["she", "her", "hers"], ["they", "them", "their"]]
+    ))
+    func writerRequestEncodesProfilePronouns(pronouns: NarratorPronouns?, expected: [String]) throws {
+        let fixture = try makeFixture()
+        fixture.profile.narratorPronouns = pronouns
+        let request = try RemoteGenerationRequestFactory.makeRequest(
+            for: fixture.currentStory, userProfile: fixture.profile, in: fixture.context
+        )
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let body = try #require(JSONSerialization.jsonObject(with: encoder.encode(request)) as? [String: Any])
+        let subject = try #require(body["subject"] as? [String: Any])
+        #expect(subject["pronouns"] as? [String] == expected)
+    }
+
     @Test func completedDayCombinesEveryTranscriptOnceAndKeepsSources() async throws {
         let fixture = try makeFixture()
         let prepared = try DailyBiographyJobRunner.prepareCompletedDays(
@@ -48,7 +65,7 @@ struct DailyBiographyConsolidationTests {
         #expect(!replay.contains { $0.dayKey == "2026-08-03" })
     }
 
-    @Test func ordinaryDayFingerprintRemainsByteIdenticalAndReusesItsEntry() async throws {
+    @Test func ordinaryDayFingerprintRemainsByteIdenticalWhenPronounsChange() async throws {
         let fixture = try makeFixture()
         let dayKey = "2026-08-03"
         let job = try #require(DailyBiographyJobRunner.prepareCompletedDays(
@@ -66,10 +83,25 @@ struct DailyBiographyConsolidationTests {
             in: fixture.context, now: fixture.now
         )
         #expect(entry.sourceFingerprint == legacyFingerprint)
+        fixture.profile.narratorPronouns = .she
         let pending = try DailyBiographyJobRunner.prepareCompletedDays(
             initialState: .queued, in: fixture.context, now: fixture.now
         )
         #expect(!pending.contains { $0.dayKey == dayKey })
+        let saved = try #require(fixture.context.fetch(FetchDescriptor<DailyBiographyEntry>()).first)
+        #expect(saved.id == entry.id)
+        #expect(saved.sourceFingerprint == legacyFingerprint)
+
+        // Recompute the fingerprint from the same sources with pronouns set.
+        fixture.context.delete(saved)
+        let replay = try #require(DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued, in: fixture.context, now: fixture.now
+        ).first { $0.dayKey == dayKey })
+        let regenerated = try await DailyBiographyJobRunner.run(
+            jobID: replay.jobId, userProfile: fixture.profile, generator: SuccessfulDailyBiographyGenerator(),
+            in: fixture.context, now: fixture.now
+        )
+        #expect(regenerated.sourceFingerprint == legacyFingerprint)
     }
 
     @Test func aBackdatedDayNoteJoinsAndRewritesThatDay() async throws {
@@ -84,6 +116,7 @@ struct DailyBiographyConsolidationTests {
             in: fixture.context, now: fixture.now
         )
         let oldFingerprint = original.sourceFingerprint
+        fixture.profile.narratorPronouns = .they
         let note = Story(
             text: "I remembered a detail later.", date: fixture.now, duration: 5,
             rememberedTime: RememberedTime(precision: .day, startDate: key, endDate: key)
@@ -106,6 +139,7 @@ struct DailyBiographyConsolidationTests {
         #expect(rewritten.memoryStoryId == nil)
         #expect(rewritten.prose.contains(note.text))
         #expect(await generator.requests.last?.capturedLocalDate == key)
+        #expect(await generator.requests.map(\.subject.pronouns) == [[], ["they", "them", "their"]])
         #expect(await generator.requests.last?.rememberedTime == nil)
         let index = JournalDayContent.index(stories: [note], dailyEntries: [rewritten], storyDayKeys: [:])
         #expect(index[key]?.stories.map(\.id) == [note.id])
@@ -130,6 +164,7 @@ struct DailyBiographyConsolidationTests {
         #expect(memories.allSatisfy { $0.sourceStoryIds.count == 1 })
 
         let generator = RecordingBiographyGenerator()
+        fixture.profile.narratorPronouns = .he
         var entries: [DailyBiographyEntry] = []
         for memory in memories {
             entries.append(try await DailyBiographyJobRunner.run(
@@ -143,6 +178,7 @@ struct DailyBiographyConsolidationTests {
         #expect(requests.count == 2)
         for request in requests {
             #expect(request.capturedLocalDate == "2026-08-18")
+            #expect(request.subject.pronouns == ["he", "him", "his"])
             #expect(request.sourceSegments.count == 1)
             let encoder = JSONEncoder()
             encoder.keyEncodingStrategy = .convertToSnakeCase

@@ -15,6 +15,7 @@ struct DayIllustrationGenerationRequest: Codable, Equatable, Sendable {
     var languageCode: String
     var title: String
     var prose: String
+    var narratorPronouns: NarratorPronouns?
     var retentionPolicy = RemoteRetentionPolicy()
 }
 
@@ -156,6 +157,7 @@ enum DayIllustrationRunner {
 
     @discardableResult
     static func refresh(
+        userProfile: UserProfile,
         generator: any DailyEntryGenerationService,
         in modelContext: ModelContext,
         repainting targetKey: String? = nil,
@@ -229,7 +231,7 @@ enum DayIllustrationRunner {
                 }
                 print("[DayIllustration] \(biographyKey): requesting a painting")
 
-                let request = makeRequest(for: entry)
+                let request = makeRequest(for: entry, narratorPronouns: userProfile.narratorPronouns)
                 pair = key
                 attempted += 1
                 generationChanged(biographyKey, true)
@@ -351,14 +353,18 @@ enum DayIllustrationRunner {
         "\(biographyKey)|\(fingerprint)"
     }
 
-    private static func makeRequest(for entry: DailyBiographyEntry) -> DayIllustrationGenerationRequest {
+    private static func makeRequest(
+        for entry: DailyBiographyEntry,
+        narratorPronouns: NarratorPronouns?
+    ) -> DayIllustrationGenerationRequest {
         let prose = entry.prose.trimmingCharacters(in: .whitespacesAndNewlines)
         return DayIllustrationGenerationRequest(
             jobId: UUID(),
             dayKey: entry.dayKey,
             languageCode: Locale.current.identifier,
             title: String(decoding: entry.title.utf16.prefix(DayIllustrationGenerationRequest.maximumTitleLength), as: UTF16.self),
-            prose: String(decoding: prose.utf16.prefix(DayIllustrationGenerationRequest.maximumProseLength), as: UTF16.self)
+            prose: String(decoding: prose.utf16.prefix(DayIllustrationGenerationRequest.maximumProseLength), as: UTF16.self),
+            narratorPronouns: narratorPronouns
         )
     }
 

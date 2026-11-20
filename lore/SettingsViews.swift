@@ -718,6 +718,8 @@ private struct JournalStyleSettingsView: View {
             Section {
                 LabeledContent("Name", value: userProfile.name)
                     .loreListRow()
+                NarratorPronounsPicker(selection: $userProfile.narratorPronouns)
+                    .loreListRow()
                 TextField("Hometown", text: $userProfile.hometown)
                     .textContentType(.addressCity)
                     .autocorrectionDisabled()
@@ -734,6 +736,20 @@ private struct JournalStyleSettingsView: View {
         .onChange(of: userProfile.hometown) { _, _ in
             userProfile.updatedAt = Date()
         }
+    }
+}
+
+struct NarratorPronounsPicker: View {
+    @Binding var selection: NarratorPronouns?
+
+    var body: some View {
+        Picker("Pronouns", selection: $selection) {
+            Text("Not set").tag(nil as NarratorPronouns?)
+            Text("He").tag(NarratorPronouns.he)
+            Text("She").tag(NarratorPronouns.she)
+            Text("They").tag(NarratorPronouns.they)
+        }
+        .pickerStyle(.menu)
     }
 }
 

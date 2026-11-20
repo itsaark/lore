@@ -1,12 +1,27 @@
 import Foundation
 import SwiftData
 
+enum NarratorPronouns: String, Codable, Sendable {
+    case he
+    case she
+    case they
+
+    var writerPronouns: [String] {
+        switch self {
+        case .he: ["he", "him", "his"]
+        case .she: ["she", "her", "hers"]
+        case .they: ["they", "them", "their"]
+        }
+    }
+}
+
 @Model
 final class UserProfile {
     var id: UUID = UUID()
     @Attribute(.allowsCloudEncryption) var name: String = ""
     @Attribute(.allowsCloudEncryption) var hometown: String = ""
     @Attribute(.allowsCloudEncryption) var birthYear: Int = 0
+    @Attribute(.allowsCloudEncryption) private var narratorPronounsValue: String?
     var remoteProcessingConsentedAt: Date?
     /// BCP-47 language codes the person speaks to Lore (e.g. "en", "es").
     /// Empty means not asked yet; callers fall back to the device languages.
@@ -26,6 +41,7 @@ final class UserProfile {
         name: String,
         hometown: String,
         birthYear: Int,
+        narratorPronouns: NarratorPronouns? = nil,
         remoteProcessingConsentedAt: Date? = nil,
         createdAt: Date = Date(),
         updatedAt: Date = Date()
@@ -34,12 +50,26 @@ final class UserProfile {
         self.name = name
         self.hometown = hometown
         self.birthYear = birthYear
+        self.narratorPronounsValue = narratorPronouns?.rawValue
         self.remoteProcessingConsentedAt = remoteProcessingConsentedAt
         self.remoteTextProcessingConsentedAt = nil
         self.remoteAudioUploadConsentedAt = nil
         self.allowsCellularRemoteProcessing = true
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    var narratorPronouns: NarratorPronouns? {
+        get { narratorPronounsValue.flatMap(NarratorPronouns.init(rawValue:)) }
+        set {
+            guard narratorPronounsValue != newValue?.rawValue else { return }
+            narratorPronounsValue = newValue?.rawValue
+            updatedAt = Date()
+        }
+    }
+
+    var journalSubject: JournalSubject {
+        JournalSubject(displayName: name, pronouns: narratorPronouns?.writerPronouns ?? [])
     }
 
     var hasRemoteProcessingConsent: Bool {

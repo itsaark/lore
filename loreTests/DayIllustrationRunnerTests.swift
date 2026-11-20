@@ -69,6 +69,7 @@ struct DayIllustrationRunnerTests {
         #expect(try await fixture.refresh() == 1)
         let original = try #require(fixture.illustrations().first)
         let originalFingerprint = original.sourceFingerprint
+        fixture.profile.narratorPronouns = .she
         #expect(try await fixture.refresh() == 0)
 
         fixture.context.delete(entry)
@@ -78,7 +79,7 @@ struct DayIllustrationRunnerTests {
         #expect(values.count == 1)
         #expect(values.first?.id == original.id)
         #expect(values.first?.sourceFingerprint != originalFingerprint)
-        #expect(await fixture.generator.requests.count == 2)
+        #expect(await fixture.generator.requests.map(\.narratorPronouns) == [nil, .she])
     }
 
     @Test func repaintTargetsOneMemoryAndBypassesUnchangedFingerprintAndBackoff() async throws {
@@ -104,6 +105,7 @@ struct DayIllustrationRunnerTests {
 
         fixture.addMemory(start: entry.dayKey, recorded: "2026-11-18", prose: "Another scene that year.")
         fixture.addEntry("2026-11-17")
+        fixture.profile.narratorPronouns = .they
         let session = PaintingRevealSession()
         var generationStates: [Bool] = []
         let written = try await fixture.refresh(
@@ -125,6 +127,7 @@ struct DayIllustrationRunnerTests {
         #expect(session.claim(painting.paintingRevision, for: key))
         let requests = await fixture.generator.requests
         #expect(requests.map(\.prose) == [entry.prose, entry.prose, entry.prose])
+        #expect(requests.map(\.narratorPronouns) == [nil, nil, .they])
         #expect(Set(requests.map(\.jobId)).count == 3)
     }
 
@@ -227,6 +230,7 @@ struct DayIllustrationRunnerTests {
         let session = PaintingRevealSession()
 
         let count = try await DayIllustrationRunner.refresh(
+            userProfile: fixture.profile,
             generator: fixture.generator,
             in: fixture.context,
             now: fixture.calendar.date(forDayKey: "2026-11-18")!,
@@ -278,7 +282,7 @@ struct DayIllustrationRunnerTests {
     @Test func requestContainsOnlyTheContractFieldsAndNoProfileName() async throws {
         let fixture = try Fixture()
         let name = "Private Test Name"
-        fixture.context.insert(UserProfile(name: name, hometown: "Portland", birthYear: 1990))
+        fixture.profile.name = name
         fixture.addEntry("2026-11-17", combinedTranscript: "My name is \(name).")
         #expect(try await fixture.refresh() == 1)
 
@@ -298,6 +302,7 @@ struct DayIllustrationRunnerTests {
     @MainActor
     private final class Fixture {
         let container: ModelContainer
+        let profile = UserProfile(name: "Maya", hometown: "Portland", birthYear: 1990)
         let generator: RecordingIllustrationGenerator
         let suiteName = "DayIllustrationRunnerTests-\(UUID().uuidString)"
         let defaults: UserDefaults
@@ -380,6 +385,7 @@ struct DayIllustrationRunnerTests {
         ) async throws -> Int {
             try context.save()
             return try await DayIllustrationRunner.refresh(
+                userProfile: profile,
                 generator: generator,
                 in: context,
                 repainting: key,

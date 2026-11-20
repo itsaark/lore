@@ -911,7 +911,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
 
     private func generateDayIllustrations(repainting key: String? = nil, now: Date) async {
-        guard let modelContext else { return }
+        guard let modelContext, let userProfile else { return }
         let availability = remoteWorkAvailability(requiresAudioUpload: false)
         guard availability == .permitted else {
             print("[DayIllustration] skipped: remote work \(availability)")
@@ -919,6 +919,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         }
         do {
             try await DayIllustrationRunner.refresh(
+                userProfile: userProfile,
                 generator: remoteDailyEntryGenerator,
                 in: modelContext,
                 repainting: key,

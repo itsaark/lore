@@ -63,7 +63,11 @@ struct LabJournalHomeView: View {
         }
         .onAppear {
             model.load()
-            if let name = profiles.first?.name, !name.isEmpty { model.subjectName = name }
+            if let profile = profiles.first {
+                var subject = profile.journalSubject
+                if subject.displayName.isEmpty { subject.displayName = model.subject.displayName }
+                model.subject = subject
+            }
         }
         .alert(
             "Journal Lab",
@@ -501,7 +505,7 @@ private struct LabJournalOutputCard: View {
     }
 
     private var checks: some View {
-        let names = output.unsupportedNames(source: input.text, subject: model.subjectName)
+        let names = output.unsupportedNames(source: input.text, subject: model.subject.displayName)
         var parts = ["\(output.wordCount) words"]
         if let latency = output.latencyMilliseconds { parts.append(String(format: "%.1f s", Double(latency) / 1_000)) }
         if let prompt = output.promptTokens, let completion = output.completionTokens {

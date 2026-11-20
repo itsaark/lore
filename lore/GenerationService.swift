@@ -134,7 +134,7 @@ enum RemoteGenerationRequestFactory {
             transcriptVersionId: currentVersion.id,
             capturedLocalDate: dateFormatter.string(from: story.date),
             languageCode: artifact.languageCode ?? locale.identifier,
-            subject: JournalSubject(displayName: userProfile.name, pronouns: []),
+            subject: userProfile.journalSubject,
             sourceSegments: [segment]
         )
     }

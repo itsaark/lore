@@ -136,9 +136,11 @@ struct LoreBackendHTTPClientTests {
         #expect((object["retention_policy"] as? [String: Any])?["mode"] as? String == "request_ephemeral")
     }
 
-    @Test func dayIllustrationUsesTheFrozenRouteAndLongTimeout() async throws {
+    @Test(arguments: [nil, .he, .she, .they] as [NarratorPronouns?])
+    func dayIllustrationUsesTheFrozenRouteAndLongTimeout(pronouns: NarratorPronouns?) async throws {
         let request = DayIllustrationGenerationRequest(
-            jobId: UUID(), dayKey: "2026-11-17", languageCode: "en_US", title: "Rain", prose: "Rain crossed the window."
+            jobId: UUID(), dayKey: "2026-11-17", languageCode: "en_US", title: "Rain",
+            prose: "Rain crossed the window.", narratorPronouns: pronouns
         )
         func provenance(provider: String, alias: String) -> String {
             """
@@ -169,6 +171,9 @@ struct LoreBackendHTTPClientTests {
         let client = try makeClient(transport: transport)
         let result = try await client.generateDayIllustration(request)
         let recorded = try #require(await capture.last)
+        let body = try #require(JSONSerialization.jsonObject(with: recorded.body) as? [String: Any])
+        #expect(body.keys.contains("narrator_pronouns") == (pronouns != nil))
+        #expect(body["narrator_pronouns"] as? String == pronouns?.rawValue)
         #expect(recorded.request.url?.absoluteString == "https://lore.example/api/v1/day-illustrations")
         #expect(recorded.request.httpMethod == "POST")
         #expect(recorded.request.timeoutInterval >= 160)
