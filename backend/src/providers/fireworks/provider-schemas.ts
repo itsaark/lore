@@ -4,6 +4,7 @@ import {
   DailyEntryGenerationResponseSchema,
   GroundedJournalEntrySchema
 } from "../../contracts/daily-entry.js";
+import { MemoryAnchorSchema } from "../../contracts/memory-anchor.js";
 import { z as reflectionZ } from "zod";
 
 const DailyEntryContentSchema = DailyEntryGenerationResponseSchema.omit({
@@ -79,6 +80,12 @@ export const FireworksDaySceneJsonSchema = z.toJSONSchema(
   }),
   { target: "draft-7" }
 );
+
+export const FireworksMemoryAnchorOutputSchema = z.object({ anchor: MemoryAnchorSchema }).strict();
+
+export const FireworksMemoryAnchorJsonSchema = z.toJSONSchema(FireworksMemoryAnchorOutputSchema, {
+  target: "draft-7"
+});
 
 export const FireworksChatCompletionSchema = z.object({
   id: z.string().min(1),

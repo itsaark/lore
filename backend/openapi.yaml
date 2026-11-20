@@ -120,7 +120,10 @@ paths:
           application/json:
             schema:
               type: object
-              description: DailyEntryGenerationRequest v1.0; canonical validation lives in src/contracts/daily-entry.ts.
+              description: >-
+                DailyEntryGenerationRequest v1.0. Remembered time can be a dated range or the strict
+                object {precision: as_spoken} for a memory placed in time by the speaker's own words.
+                Canonical validation lives in src/contracts/daily-entry.ts.
       responses:
         "200":
           description: Schema-validated grounded daily entry.
@@ -129,6 +132,33 @@ paths:
               schema:
                 type: object
                 description: DailyEntryGenerationResponse v1.0; canonical validation lives in src/contracts/daily-entry.ts.
+        "409":
+          $ref: "#/components/responses/ApiError"
+        default:
+          $ref: "#/components/responses/ApiError"
+  /v1/memory-anchors:
+    post:
+      operationId: createMemoryAnchor
+      description: >-
+        Identifies the speaker's time reference when a note mainly recalls an earlier time.
+        The Idempotency-Key must equal memory-anchor:<job_id lowercased>.
+      security: [{ bearerSession: [] }]
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        description: The JSON body may be at most 200,000 bytes.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemoryAnchorRequest"
+      responses:
+        "200":
+          description: A structured time reference or an anchor of kind none, with Fireworks provenance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MemoryAnchorResponse"
         "409":
           $ref: "#/components/responses/ApiError"
         default:
@@ -394,6 +424,70 @@ components:
     RemoteTranscriptionResponse:
       type: object
       description: Canonical strict schema lives in src/contracts/transcription.ts.
+    MemoryAnchorRequest:
+      type: object
+      additionalProperties: false
+      required: [schema_version, prompt_version, job_id, captured_local_date, language_code, transcript, retention_policy]
+      properties:
+        schema_version: { const: "1.0" }
+        prompt_version: { const: memory-anchor-v1 }
+        job_id: { type: string, format: uuid }
+        captured_local_date: { type: string, format: date }
+        language_code: { type: string, minLength: 2, maxLength: 35 }
+        transcript: { type: string, minLength: 1, maxLength: 20000 }
+        retention_policy:
+          $ref: "#/components/schemas/RetentionPolicy"
+    MemoryAnchorResponse:
+      type: object
+      additionalProperties: false
+      required: [schema_version, prompt_version, job_id, request_id, anchor, provenance]
+      properties:
+        schema_version: { const: "1.0" }
+        prompt_version: { const: memory-anchor-v1 }
+        job_id: { type: string, format: uuid }
+        request_id: { type: string, minLength: 1, maxLength: 200 }
+        anchor:
+          description: Range endpoints are inclusive and ordered. Calendar years may be no later than the captured year.
+          oneOf:
+            - type: object
+              additionalProperties: false
+              required: [kind]
+              properties:
+                kind: { const: none }
+            - type: object
+              additionalProperties: false
+              required: [kind, start_year, end_year]
+              properties:
+                kind: { const: year }
+                start_year: { type: integer, minimum: 1900 }
+                end_year: { type: integer, minimum: 1900 }
+            - type: object
+              additionalProperties: false
+              required: [kind, min_years, max_years]
+              properties:
+                kind: { const: years_ago }
+                min_years: { type: integer, minimum: 1, maximum: 100 }
+                max_years: { type: integer, minimum: 1, maximum: 100 }
+            - type: object
+              additionalProperties: false
+              required: [kind, start_age, end_age]
+              properties:
+                kind: { const: age }
+                start_age: { type: integer, minimum: 0, maximum: 120 }
+                end_age: { type: integer, minimum: 0, maximum: 120 }
+            - type: object
+              additionalProperties: false
+              required: [kind, stage]
+              properties:
+                kind: { const: life_stage }
+                stage: { enum: [early_childhood, school_years, teenage_years, college_years, first_jobs] }
+        provenance:
+          type: object
+          description: ProcessingProvenance as defined in src/contracts/common.ts.
+          required: [provider_id, model_alias]
+          properties:
+            provider_id: { const: fireworks }
+            model_alias: { const: memory-anchor-v1 }
     DayIllustrationGenerationRequest:
       type: object
       additionalProperties: false

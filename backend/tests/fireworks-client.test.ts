@@ -122,6 +122,31 @@ describe("FireworksClient daily-entry prompts", () => {
   });
 
   describe.each(DAILY_ENTRY_PROMPT_VERSIONS)("%s with remembered_time", (promptVersion) => {
+    it("writes an undated memory using the speaker's own time reference", async () => {
+      const fetchMock = vi.fn<typeof fetch>(async () => Response.json(validCompletion()));
+      const client = new FireworksClient({ config, fetch: fetchMock });
+
+      await client.generateDailyEntry("req_as_spoken", {
+        ...dailyRequest,
+        prompt_version: promptVersion,
+        remembered_time: { precision: "as_spoken" },
+        render_configuration: { ...dailyRequest.render_configuration, tense: "present" }
+      });
+
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const { messages } = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+      const prompt = messages[1].content;
+      expect(prompt).toContain("The notes were spoken on 2026-07-16 and recall an earlier time in the speaker's life.");
+      expect(prompt).toContain("Write one coherent entry as a memory set in that time, in the past tense.");
+      expect(prompt).toContain(`Refer to when it happened only with the speaker's own words, such as "when he was ten".`);
+      expect(prompt).toContain("Never state a calendar year, month, or season the speaker did not say.");
+      expect(prompt).toContain("Leave the day of recording out of the entry. Give the memory a title drawn from the events recalled.");
+      expect(prompt).toContain('"tense":"past"');
+      expect(prompt).toContain("Every sentence cites the segment IDs it draws on");
+      expect(prompt).not.toContain("The period they recall is");
+      expect(prompt).not.toContain("ONE coherent entry for the whole day");
+    });
+
     it.each([
       ["week", "2003-11-16", "2003-11-22", "the week of 16 November 2003"],
       ["month", "2003-11-01", "2003-11-30", "November 2003"],

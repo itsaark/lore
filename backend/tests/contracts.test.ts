@@ -60,6 +60,25 @@ describe("wire contracts", () => {
     expect(DailyEntryLabRequestSchema.parse({ ...request, lab_model: "glm-5p3" }).remembered_time).toEqual(rememberedTime);
   });
 
+  it("accepts undated remembered time in daily-entry and Lab requests", () => {
+    const rememberedTime = { precision: "as_spoken" };
+    const request = { ...dailyEntryRequest(), remembered_time: rememberedTime };
+
+    expect(DailyEntryGenerationRequestSchema.parse(request).remembered_time).toEqual(rememberedTime);
+    expect(DailyEntryLabRequestSchema.parse({ ...request, lab_model: "glm-5p3" }).remembered_time).toEqual(rememberedTime);
+  });
+
+  it("rejects a start date on as_spoken remembered time", () => {
+    const request = {
+      ...dailyEntryRequest(),
+      remembered_time: { precision: "as_spoken", start_date: "2003-01-01" }
+    };
+
+    expect(DailyEntryGenerationRequestSchema.safeParse(request).error?.issues).toMatchObject([
+      { code: "unrecognized_keys", path: ["remembered_time"], keys: ["start_date"] }
+    ]);
+  });
+
   it.each([
     ["2003-11-16", "2003-11-15", "end_date"],
     ["2026-07-17", "2026-07-23", "start_date"]

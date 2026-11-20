@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const SafeLogEventSchema = z.object({
+const ProcessingLogEventSchema = z.object({
   event: z.enum(["request_started", "request_completed", "request_failed", "provider_started", "provider_completed", "provider_failed"]),
   request_id: z.string().regex(/^[A-Za-z0-9_.:-]{1,200}$/),
   route: z.enum([
@@ -35,6 +35,14 @@ const SafeLogEventSchema = z.object({
     "daily-entry-lab"
   ]).optional()
 }).strict();
+
+const MemoryAnchorLogEventSchema = z.object({
+  route: z.literal("memory_anchor"),
+  status: ProcessingLogEventSchema.shape.status.unwrap(),
+  duration_ms: ProcessingLogEventSchema.shape.duration_ms.unwrap()
+}).strict();
+
+const SafeLogEventSchema = z.union([ProcessingLogEventSchema, MemoryAnchorLogEventSchema]);
 
 export type SafeLogEvent = z.input<typeof SafeLogEventSchema>;
 
