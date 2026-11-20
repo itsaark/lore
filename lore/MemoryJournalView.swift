@@ -84,7 +84,8 @@ struct MemoryJournalView: View {
                     session: speechRecognizer.paintingReveals,
                     accessibilityLabel: "Painting inspired by this memory",
                     canRepaint: canRepaint,
-                    repaint: { await speechRecognizer.repaintPainting(for: key) }
+                    repaint: { await speechRecognizer.repaintPainting(for: key) },
+                    sceneDescription: painting?.sceneDescription
                 )
                 .id(key)
             }

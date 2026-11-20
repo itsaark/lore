@@ -9,8 +9,12 @@ struct JournalPaintingHero: View {
     let accessibilityLabel: String
     let canRepaint: Bool
     let repaint: @MainActor () async -> Void
+    /// The de-identified scene the image model was given. Shown only in
+    /// debug builds, to check what left the phone for this painting.
+    var sceneDescription: String? = nil
 
     @State private var painting: DecodedPainting?
+    @State private var showsScene = false
     @State private var failedRevision: PaintingRevision?
 
     private struct DecodedPainting {
@@ -58,7 +62,38 @@ struct JournalPaintingHero: View {
                         Label("Repaint", systemImage: "paintbrush")
                     }
                 }
+                #if DEBUG
+                if let sceneDescription, !sceneDescription.isEmpty {
+                    Button { showsScene = true } label: {
+                        Label("Show scene", systemImage: "text.quote")
+                    }
+                }
+                #endif
             }
+            #if DEBUG
+            .sheet(isPresented: $showsScene) {
+                NavigationStack {
+                    ScrollView {
+                        Text(sceneDescription ?? "")
+                            .font(.body)
+                            .foregroundStyle(LoreTheme.ink)
+                            .textSelection(.enabled)
+                            .padding(20)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .background(LoreTheme.canvas)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarLeading) {
+                            Button("Copy") { UIPasteboard.general.string = sceneDescription }
+                        }
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { showsScene = false }
+                        }
+                    }
+                }
+                .presentationDetents([.medium])
+            }
+            #endif
             .task(id: cover?.paintingRevision) { await load() }
     }
 

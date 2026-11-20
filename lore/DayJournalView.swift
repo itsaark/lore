@@ -180,7 +180,8 @@ struct DayJournalView: View {
                             session: speechRecognizer.paintingReveals,
                             accessibilityLabel: "Painting inspired by this day",
                             canRepaint: canRepaint,
-                            repaint: { await speechRecognizer.repaintPainting(for: dayKey) }
+                            repaint: { await speechRecognizer.repaintPainting(for: dayKey) },
+                            sceneDescription: painting?.sceneDescription
                         )
                         .overlay {
                             if isSavingPhoto { savingIndicator }
