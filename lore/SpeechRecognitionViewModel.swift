@@ -90,6 +90,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     private let metadataService: any MetadataService
     private let transcriptionPolicy: SpeechTranscriptionPolicy
     private let remoteDailyEntryGenerator: any DailyEntryGenerationService
+    private let memoryAnchorBackend: any LoreBackendProcessingClient
     private let remoteTranscriber: any RemoteSpeechTranscribing
     private let localTranscriber: (any LocalSpeechTranscribing)?
     private let onDeviceModelStore: OnDeviceSpeechModelStore?
@@ -119,6 +120,7 @@ class SpeechRecognitionViewModel: ObservableObject {
     private var isRefreshingDayIllustrations = false
     private var modelContext: ModelContext?
     private var userProfile: UserProfile?
+    private var recordedStoryDayKeys: [UUID: String] = [:]
     private var hasLoadedStories = false
     private var microphonePermissionGranted = false
     private static let audioRetentionInterval: TimeInterval = 7 * 24 * 60 * 60
@@ -131,6 +133,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         remoteDailyEntryGenerator: any DailyEntryGenerationService = RemoteDailyEntryGenerationService(
             backend: UnconfiguredLoreBackendProcessingClient()
         ),
+        memoryAnchorBackend: any LoreBackendProcessingClient = UnconfiguredLoreBackendProcessingClient(),
         remoteTranscriber: any RemoteSpeechTranscribing = UnavailableRemoteSpeechTranscriber(),
         localTranscriber: (any LocalSpeechTranscribing)? = nil,
         onDeviceModelStore: OnDeviceSpeechModelStore? = nil,
@@ -141,6 +144,7 @@ class SpeechRecognitionViewModel: ObservableObject {
         self.metadataService = metadataService
         self.transcriptionPolicy = transcriptionPolicy
         self.remoteDailyEntryGenerator = remoteDailyEntryGenerator
+        self.memoryAnchorBackend = memoryAnchorBackend
         self.remoteTranscriber = remoteTranscriber
         self.localTranscriber = localTranscriber
         self.onDeviceModelStore = onDeviceModelStore
@@ -589,6 +593,10 @@ class SpeechRecognitionViewModel: ObservableObject {
 
         var currentJobIds: Set<UUID> = []
         do {
+            try await MemoryAnchorInference.finishPending(
+                in: modelContext, profile: userProfile, backend: memoryAnchorBackend,
+                isPermitted: { remoteWorkAvailability(requiresAudioUpload: false) == .permitted }
+            )
             let preparedDays = try DailyBiographyJobRunner.prepareCompletedDays(
                 initialState: initialState,
                 in: modelContext,
@@ -632,7 +640,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             if !retried.isEmpty { try modelContext.save() }
             for day in preparedDays {
                 guard let job = jobs.first(where: { $0.id == day.jobId }) else { continue }
-                print("[DayStory] \(day.dayKey): \(job.state) attempts=\(job.attemptCount) error=\(job.lastErrorCode ?? "none")\(retried.contains { $0 === job } ? " (retrying now)" : "")")
+                print("[DayStory] \(job.id): \(job.state) attempts=\(job.attemptCount) error=\(job.lastErrorCode ?? "none")\(retried.contains { $0 === job } ? " (retrying now)" : "")")
             }
 
             for job in jobs where job.modelContext != nil && !job.isDeleted {
@@ -686,7 +694,8 @@ class SpeechRecognitionViewModel: ObservableObject {
                 await refreshStoryChaptersAndDayIllustrations(now: now)
             }
         } catch {
-            print("Failed to recover daily-biography jobs: \(error)")
+            let failure = error as NSError
+            print("Failed to recover daily-biography jobs (\(failure.domain) \(failure.code)).")
         }
         return currentJobIds
     }
@@ -854,6 +863,62 @@ class SpeechRecognitionViewModel: ObservableObject {
         story.effectiveDayKey(recordedDayKey: storyDayKeys[story.id] ?? JournalCalendar().dayKey(for: story.date))
     }
 
+    func memoryTimeOptions(for story: Story) -> (periods: [LifeDial.Period], years: ClosedRange<Int>) {
+        let recordedDay = recordedStoryDayKeys[story.id]
+            ?? JournalCalendar.recordedDayKey(for: story.date, timezone: nil)
+        let capturedYear = MemoryAnchorResolver.year(of: recordedDay) ?? 1
+        let birthYear = userProfile?.birthYear ?? 0
+        let firstYear = (1...capturedYear).contains(birthYear) ? birthYear : 1
+        return (LifeDial.draftPeriods(birthYear: birthYear, through: capturedYear), firstYear...capturedYear)
+    }
+
+    @discardableResult
+    func correctRememberedTime(of story: Story, to choice: MemoryTimeChoice) -> Bool {
+        guard let modelContext, let savedStory = stories.first(where: { $0.id == story.id }) else { return false }
+        do {
+            try Self.applyRememberedTimeCorrection(choice, to: savedStory, in: modelContext)
+        } catch {
+            modelContext.rollback()
+            setError("Lore could not save when this note happened.")
+            return false
+        }
+        loadStories()
+        Task { await resumePendingDailyBiographyJobs() }
+        return true
+    }
+
+    static func applyRememberedTimeCorrection(
+        _ choice: MemoryTimeChoice,
+        to story: Story,
+        in modelContext: ModelContext,
+        at date: Date = Date()
+    ) throws {
+        let recordedDay = try recordedDay(for: story, in: modelContext)
+        let time = choice.rememberedTime(recordedDay: recordedDay)
+        guard choice == .today || time != nil else { return }
+        if story.rememberedTime != time || story.rememberedTimeRequiresPrivacy != choice.isPrivate {
+            try DailyBiographyJobRunner.deleteSupportData(containing: story.id, in: modelContext)
+            if let oldDay = story.effectiveDayKey(recordedDayKey: recordedDay) {
+                try deleteChapter(forDayKey: oldDay, in: modelContext)
+            }
+        }
+        story.rememberedTime = time
+        story.rememberedTimeSource = .user
+        story.rememberedTimeIsPrivate = time == nil ? nil : choice.isPrivate
+        story.rememberedTimeUpdatedAt = date
+        story.memoryAnchorState = .done
+        story.updatedAt = date
+        try modelContext.save()
+    }
+
+    private static func recordedDay(for story: Story, in modelContext: ModelContext) throws -> String {
+        guard let metadataID = story.metadataId else {
+            return JournalCalendar.recordedDayKey(for: story.date, timezone: nil)
+        }
+        let metadata = try modelContext.fetch(FetchDescriptor<StoryMetadata>()).first { $0.id == metadataID }
+        return JournalCalendar.recordedDayKey(for: story.date, timezone: metadata?.timezone)
+    }
+
     private static func deleteChapter(forDayKey dayKey: String, in modelContext: ModelContext) throws {
         let monthKey = String(dayKey.prefix(7))
         let chapters = try modelContext.fetch(FetchDescriptor<StoryChapter>(
@@ -957,7 +1022,7 @@ class SpeechRecognitionViewModel: ObservableObject {
                 metadata.map { ($0.id, $0) },
                 uniquingKeysWith: { current, _ in current }
             )
-            storyDayKeys = Dictionary(stories.compactMap { story in
+            let recordedDays = stories.map { story in
                 let timezone = story.metadataId
                     .flatMap { metadataById[$0] }
                     .flatMap { TimeZone(identifier: $0.timezone) }
@@ -967,7 +1032,11 @@ class SpeechRecognitionViewModel: ObservableObject {
                 formatter.locale = Locale(identifier: "en_US_POSIX")
                 formatter.timeZone = timezone
                 formatter.dateFormat = "yyyy-MM-dd"
-                return story.effectiveDayKey(recordedDayKey: formatter.string(from: story.date)).map { (story.id, $0) }
+                return (story, formatter.string(from: story.date))
+            }
+            recordedStoryDayKeys = Dictionary(recordedDays.map { story, day in (story.id, day) }, uniquingKeysWith: { current, _ in current })
+            storyDayKeys = Dictionary(recordedDays.compactMap { story, recordedDay in
+                story.effectiveDayKey(recordedDayKey: recordedDay).map { (story.id, $0) }
             }, uniquingKeysWith: { current, _ in current })
             dailyBiographyEntries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>(
                 sortBy: [SortDescriptor(\.calendarDate, order: .forward)]
@@ -980,6 +1049,7 @@ class SpeechRecognitionViewModel: ObservableObject {
             stories = []
             dailyBiographyEntries = []
             storyChapters = []
+            recordedStoryDayKeys = [:]
             storyDayKeys = [:]
         }
     }
@@ -1508,6 +1578,12 @@ class SpeechRecognitionViewModel: ObservableObject {
             rememberedTime: rememberedTime
         )
         story.processingStatus = "transcriptionPending"
+        if rememberedTime == nil {
+            story.memoryAnchorState = .pending
+        } else {
+            story.rememberedTimeSource = .pinned
+            story.memoryAnchorState = .done
+        }
         let audioAsset = makeAudioAsset(
             storyID: story.id,
             fileURL: audioFileURL,

@@ -37,6 +37,10 @@ struct StoryDetailView: View {
                         .font(LoreTheme.caption())
                         .foregroundStyle(LoreTheme.secondaryInk)
                         .accessibilityLabel("Duration: \(story.formattedDuration)")
+
+                    if currentStory.sourceKind == .note {
+                        MemoryWhenMenu(story: currentStory, speechRecognizer: speechRecognizer)
+                    }
                 }
 
                 if let biographyProse = displayContent.biographyDetailText {

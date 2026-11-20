@@ -136,6 +136,44 @@ struct LoreBackendHTTPClientTests {
         #expect((object["retention_policy"] as? [String: Any])?["mode"] as? String == "request_ephemeral")
     }
 
+    @Test(arguments: zip(
+        [#"{"kind":"none"}"#, #"{"kind":"year","start_year":2001,"end_year":2003}"#,
+         #"{"kind":"years_ago","min_years":3,"max_years":5}"#,
+         #"{"kind":"age","start_age":7,"end_age":8}"#, #"{"kind":"life_stage","stage":"college_years"}"#],
+        [MemoryAnchor.none, .year(start: 2001, end: 2003), .yearsAgo(min: 3, max: 5),
+         .age(start: 7, end: 8), .lifeStage(.collegeYears)]
+    ))
+    func memoryAnchorUsesOnlyTheContractFieldsAndDecodesEachKind(anchorJSON: String, expected: MemoryAnchor) async throws {
+        let jobId = UUID()
+        let responseData = Data("""
+        {"schema_version":"1.0","prompt_version":"memory-anchor-v1","job_id":"\(jobId)","request_id":"req_anchor",
+         "anchor":\(anchorJSON), "provenance":\(provenance(provider: "fireworks", modelAlias: "memory-anchor-v1", modelId: "test-model"))}
+        """.utf8)
+        let capture = LoreRequestCapture()
+        let transport = LoreBackendHTTPTransport { request, _ in
+            await capture.record(request, body: request.httpBody ?? Data())
+            let url = try #require(request.url)
+            return (responseData, try #require(HTTPURLResponse(
+                url: url, statusCode: 200, httpVersion: nil,
+                headerFields: ["Content-Type": "application/json", "X-Request-ID": "req_anchor"]
+            )))
+        }
+        let request = MemoryAnchorRequest(jobId: jobId, capturedLocalDate: "2026-11-19", languageCode: "en-US", transcript: "A recollection.")
+        let result = try await makeClient(transport: transport).inferMemoryAnchor(request)
+        let sent = try #require(await capture.last)
+        let wire = try #require(JSONSerialization.jsonObject(with: sent.body) as? [String: Any])
+        #expect(sent.request.url?.absoluteString == "https://lore.example/api/v1/memory-anchors")
+        #expect(sent.request.httpMethod == "POST")
+        #expect(sent.request.value(forHTTPHeaderField: "Authorization") == "Bearer production-session")
+        #expect(sent.request.value(forHTTPHeaderField: "Idempotency-Key") == "memory-anchor:\(jobId.uuidString.lowercased())")
+        #expect(Set(wire.keys) == ["schema_version", "prompt_version", "job_id", "captured_local_date",
+                                  "language_code", "transcript", "retention_policy"])
+        #expect(wire["prompt_version"] as? String == "memory-anchor-v1")
+        #expect(wire["job_id"] as? String == jobId.uuidString.lowercased())
+        #expect(wire["captured_local_date"] as? String == "2026-11-19")
+        #expect(result.anchor == expected)
+    }
+
     @Test(arguments: [nil, .he, .she, .they] as [NarratorPronouns?])
     func dayIllustrationUsesTheFrozenRouteAndLongTimeout(pronouns: NarratorPronouns?) async throws {
         let request = DayIllustrationGenerationRequest(

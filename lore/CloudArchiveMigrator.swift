@@ -103,7 +103,11 @@ enum CloudArchiveMigrator {
                 sourceKind: value.sourceKind,
                 createdAt: value.createdAt,
                 updatedAt: value.updatedAt,
-                rememberedTime: value.rememberedTime
+                rememberedTime: value.rememberedTime,
+                rememberedTimeSource: value.rememberedTimeSource,
+                rememberedTimeIsPrivate: value.rememberedTimeIsPrivate,
+                rememberedTimeUpdatedAt: value.rememberedTimeUpdatedAt,
+                memoryAnchorState: value.memoryAnchorState
             ))
         }
 

@@ -49,6 +49,30 @@ struct DayIllustrationRunnerTests {
         #expect(await fixture.generator.requests.last?.dayKey == "2026-11-16")
     }
 
+    @Test func privateAgeMemoryPaintingUsesTheRecordingDayWithoutSendingResolvedDates() async throws {
+        let fixture = try Fixture()
+        let resolved = try #require(MemoryAnchorResolver.resolve(
+            .age(start: 7, end: 7), recordedDay: "2026-11-17", birthYear: 1990
+        ))
+        let note = fixture.addMemory(start: resolved.time.startDate, recorded: "2026-11-17", prose: "The creek beside the house.")
+        note.rememberedTime = resolved.time
+        note.rememberedTimeSource = .inferred
+        note.rememberedTimeIsPrivate = resolved.isPrivate
+        note.memoryAnchorState = .done
+
+        #expect(try await fixture.refresh() == 1)
+        let request = try #require(await fixture.generator.requests.first)
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let data = try encoder.encode(request)
+        let wire = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(wire["day_key"] as? String == "2026-11-17")
+        let json = String(decoding: data, as: UTF8.self)
+        #expect(!json.contains(resolved.time.startDate))
+        #expect(!json.contains(resolved.time.endDate))
+        #expect(try fixture.illustrations().first?.dayKey == resolved.time.startDate)
+    }
+
     @Test func capsAttemptsAtThreeNewestFirstEvenWhenAnAttemptFails() async throws {
         let fixture = try Fixture()
         for day in ["2026-11-10", "2026-11-14", "2026-11-13", "2026-11-15"] {

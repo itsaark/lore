@@ -24,6 +24,7 @@ struct ContentView: View {
         _speechRecognizer = StateObject(
             wrappedValue: SpeechRecognitionViewModel(
                 remoteDailyEntryGenerator: remoteServices.dailyEntryGenerator,
+                memoryAnchorBackend: remoteServices.memoryAnchorBackend,
                 remoteTranscriber: remoteServices.speechTranscriber,
                 localTranscriber: LoreOnDeviceServices.speechTranscriber,
                 onDeviceModelStore: .shared

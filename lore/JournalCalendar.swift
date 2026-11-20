@@ -78,6 +78,12 @@ struct JournalCalendar {
         monthTitleFormatter = monthTitle
     }
 
+    static func recordedDayKey(for date: Date, timezone: String?) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = timezone.flatMap(TimeZone.init(identifier:)) ?? .current
+        return JournalCalendar(calendar: calendar).dayKey(for: date)
+    }
+
     func dayKey(for date: Date) -> String {
         dayKeyFormatter.string(from: date)
     }

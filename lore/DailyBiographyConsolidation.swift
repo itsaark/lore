@@ -519,7 +519,7 @@ enum DailyBiographyJobRunner {
         )
         var sourcesByBiography: [String: [Source]] = [:]
 
-        for story in stories {
+        for story in stories where story.memoryAnchorState != .pending {
             let timezone = story.metadataId
                 .flatMap { metadataById[$0] }
                 .flatMap { TimeZone(identifier: $0.timezone) }
@@ -617,6 +617,9 @@ enum DailyBiographyJobRunner {
             try modelContext.fetch(FetchDescriptor<StoryMetadata>()).map { ($0.id, $0) },
             uniquingKeysWith: { current, _ in current }
         )
+        guard tuples.allSatisfy({ $0.0.memoryAnchorState != .pending }) else {
+            throw DailyBiographyJobRunnerError.jobNotReady
+        }
         let segments = tuples.map { story, _, version in
             let timezone = story.metadataId
                 .flatMap { metadataById[$0] }
@@ -637,11 +640,14 @@ enum DailyBiographyJobRunner {
         // anchor. Daily consolidation uses the earliest source as that stable
         // anchor while every transcript remains independently identified in
         // sourceSegments and in the durable local snapshot above.
-        let rememberedTime = first.0.rememberedTime.flatMap(DailyEntryGenerationRequest.RememberedRange.init)
-        guard (snapshot.memoryStoryId == nil && rememberedTime == nil)
-                || (snapshot.memoryStoryId == first.0.id && rememberedTime != nil && tuples.count == 1
-                    && snapshot.dayKey == rememberedTime?.startDate) else {
+        let localTime = first.0.rememberedTime.flatMap { $0.isCoarse ? $0 : nil }
+        guard (snapshot.memoryStoryId == nil && tuples.allSatisfy({ $0.0.rememberedTime?.isCoarse != true }))
+                || (snapshot.memoryStoryId == first.0.id && localTime != nil && tuples.count == 1
+                    && snapshot.dayKey == localTime?.startDate) else {
             throw DailyBiographyJobRunnerError.sourceNotFound
+        }
+        let rememberedTime = localTime.flatMap { time in
+            first.0.rememberedTimeRequiresPrivacy ? .asSpoken : DailyEntryGenerationRequest.RememberedRange(time)
         }
         let capturedDay = snapshot.memoryStoryId == nil ? snapshot.dayKey : localDayKey(
             for: first.0.date, timezone: snapshot.timezoneIdentifiers.first.flatMap(TimeZone.init(identifier:)) ?? .current
@@ -736,6 +742,7 @@ enum DailyBiographyJobRunner {
         var components = [key]
         if let memoryTime {
             components += [memoryTime.precision.rawValue, memoryTime.startDate, memoryTime.endDate]
+            if sources.first?.story.rememberedTimeRequiresPrivacy == true { components.append("as_spoken") }
         }
         let source = (components + sources.map {
             "\($0.story.id.uuidString.lowercased()):\($0.version.id.uuidString.lowercased())"

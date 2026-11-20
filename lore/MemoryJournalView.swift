@@ -18,7 +18,9 @@ struct MemoryJournalView: View {
     }
 
     private var stories: [Story] {
-        storyIds.compactMap { id in speechRecognizer.stories.first { $0.id == id } }
+        storyIds.compactMap { id in
+            speechRecognizer.stories.first { $0.id == id && $0.rememberedTime?.isCoarse == true }
+        }
     }
 
     var body: some View {
@@ -75,6 +77,9 @@ struct MemoryJournalView: View {
                 .font(LoreTheme.display(32))
                 .foregroundStyle(LoreTheme.ink)
                 .accessibilityAddTraits(.isHeader)
+
+            MemoryWhenMenu(story: story, speechRecognizer: speechRecognizer)
+                .id(story.id)
 
             if painting != nil || isGenerating {
                 JournalPaintingHero(

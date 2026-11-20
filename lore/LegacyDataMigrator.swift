@@ -7,13 +7,26 @@ struct LegacyStoryPayload: Codable, Equatable {
     let date: Date
     let duration: TimeInterval
     let rememberedTime: RememberedTime?
+    let rememberedTimeSource: RememberedTimeSource?
+    let rememberedTimeIsPrivate: Bool?
+    let rememberedTimeUpdatedAt: Date?
+    let memoryAnchorState: MemoryAnchorState?
 
-    init(id: UUID = UUID(), text: String, date: Date, duration: TimeInterval, rememberedTime: RememberedTime? = nil) {
+    init(
+        id: UUID = UUID(), text: String, date: Date, duration: TimeInterval,
+        rememberedTime: RememberedTime? = nil, rememberedTimeSource: RememberedTimeSource? = nil,
+        rememberedTimeIsPrivate: Bool? = nil, rememberedTimeUpdatedAt: Date? = nil,
+        memoryAnchorState: MemoryAnchorState? = nil
+    ) {
         self.id = id
         self.text = text
         self.date = date
         self.duration = duration
         self.rememberedTime = rememberedTime
+        self.rememberedTimeSource = rememberedTimeSource
+        self.rememberedTimeIsPrivate = rememberedTimeIsPrivate
+        self.rememberedTimeUpdatedAt = rememberedTimeUpdatedAt
+        self.memoryAnchorState = memoryAnchorState
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -22,6 +35,7 @@ struct LegacyStoryPayload: Codable, Equatable {
         case date
         case duration
         case rememberedTime
+        case rememberedTimeSource, rememberedTimeIsPrivate, rememberedTimeUpdatedAt, memoryAnchorState
     }
 
     init(from decoder: Decoder) throws {
@@ -32,6 +46,10 @@ struct LegacyStoryPayload: Codable, Equatable {
         date = try container.decode(Date.self, forKey: .date)
         duration = try container.decode(TimeInterval.self, forKey: .duration)
         rememberedTime = try container.decodeIfPresent(RememberedTime.self, forKey: .rememberedTime)
+        rememberedTimeSource = try container.decodeIfPresent(RememberedTimeSource.self, forKey: .rememberedTimeSource)
+        rememberedTimeIsPrivate = try container.decodeIfPresent(Bool.self, forKey: .rememberedTimeIsPrivate)
+        rememberedTimeUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .rememberedTimeUpdatedAt)
+        memoryAnchorState = try container.decodeIfPresent(MemoryAnchorState.self, forKey: .memoryAnchorState)
     }
 }
 struct LegacyUserProfilePayload: Codable, Equatable {
@@ -125,7 +143,11 @@ enum LegacyDataMigrator {
                     rawTranscriptExpiresAt: nil,
                     createdAt: legacyStory.date,
                     updatedAt: legacyStory.date,
-                    rememberedTime: legacyStory.rememberedTime
+                    rememberedTime: legacyStory.rememberedTime,
+                    rememberedTimeSource: legacyStory.rememberedTimeSource,
+                    rememberedTimeIsPrivate: legacyStory.rememberedTimeIsPrivate,
+                    rememberedTimeUpdatedAt: legacyStory.rememberedTimeUpdatedAt,
+                    memoryAnchorState: legacyStory.memoryAnchorState
                 )
             )
         }

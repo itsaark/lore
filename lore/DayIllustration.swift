@@ -185,6 +185,9 @@ enum DayIllustrationRunner {
 
         let stories = try modelContext.fetch(FetchDescriptor<Story>())
         let recordedDates = Dictionary(stories.map { ($0.id, $0.date) }, uniquingKeysWith: min)
+        let storiesByID = Dictionary(stories.map { ($0.id, $0) }, uniquingKeysWith: { current, candidate in
+            current.updatedAt >= candidate.updatedAt ? current : candidate
+        })
         let eligible = entriesByKey.values.compactMap { entry -> Candidate? in
             guard targetKey == nil || entry.biographyKey == targetKey else { return nil }
             let recordedAt = entry.memoryStoryId.flatMap { recordedDates[$0] }
@@ -229,9 +232,11 @@ enum DayIllustrationRunner {
                     print("[DayIllustration] \(biographyKey): has a photo")
                     continue
                 }
+                guard let request = makeRequest(
+                    for: entry, memoryStory: entry.memoryStoryId.flatMap { storiesByID[$0] },
+                    narratorPronouns: userProfile.narratorPronouns
+                ) else { continue }
                 print("[DayIllustration] \(biographyKey): requesting a painting")
-
-                let request = makeRequest(for: entry, narratorPronouns: userProfile.narratorPronouns)
                 pair = key
                 attempted += 1
                 generationChanged(biographyKey, true)
@@ -355,12 +360,23 @@ enum DayIllustrationRunner {
 
     private static func makeRequest(
         for entry: DailyBiographyEntry,
+        memoryStory: Story?,
         narratorPronouns: NarratorPronouns?
-    ) -> DayIllustrationGenerationRequest {
+    ) -> DayIllustrationGenerationRequest? {
+        var dayKey = entry.dayKey
+        if entry.memoryStoryId != nil {
+            guard let story = memoryStory, story.modelContext != nil, !story.isDeleted,
+                  story.rememberedTime?.isCoarse == true,
+                  story.rememberedTime?.startDate == entry.dayKey,
+                  story.memoryAnchorState != .pending else { return nil }
+            if story.rememberedTimeRequiresPrivacy {
+                dayKey = JournalCalendar.recordedDayKey(for: story.date, timezone: entry.timezoneIdentifiers.first)
+            }
+        }
         let prose = entry.prose.trimmingCharacters(in: .whitespacesAndNewlines)
         return DayIllustrationGenerationRequest(
             jobId: UUID(),
-            dayKey: entry.dayKey,
+            dayKey: dayKey,
             languageCode: Locale.current.identifier,
             title: String(decoding: entry.title.utf16.prefix(DayIllustrationGenerationRequest.maximumTitleLength), as: UTF16.self),
             prose: String(decoding: prose.utf16.prefix(DayIllustrationGenerationRequest.maximumProseLength), as: UTF16.self),

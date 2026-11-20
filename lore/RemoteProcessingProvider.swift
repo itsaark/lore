@@ -243,15 +243,61 @@ struct JournalPriorFact: Codable, Equatable, Identifiable, Sendable {
     var sourceReferences: [String]
 }
 
+struct MemoryAnchorRequest: Encodable, Equatable, Sendable {
+    static let currentSchemaVersion = "1.0"
+    static let currentPromptVersion = "memory-anchor-v1"
+
+    var schemaVersion = Self.currentSchemaVersion
+    var promptVersion = Self.currentPromptVersion
+    let jobId: UUID
+    let capturedLocalDate: String
+    let languageCode: String
+    let transcript: String
+    var retentionPolicy = RemoteRetentionPolicy()
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, promptVersion, jobId, capturedLocalDate, languageCode, transcript, retentionPolicy
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(schemaVersion, forKey: .schemaVersion)
+        try values.encode(promptVersion, forKey: .promptVersion)
+        try values.encode(jobId.uuidString.lowercased(), forKey: .jobId)
+        try values.encode(capturedLocalDate, forKey: .capturedLocalDate)
+        try values.encode(languageCode, forKey: .languageCode)
+        try values.encode(transcript, forKey: .transcript)
+        try values.encode(retentionPolicy, forKey: .retentionPolicy)
+    }
+}
+
+struct MemoryAnchorResponse: Decodable, Equatable, Sendable {
+    let schemaVersion: String
+    let promptVersion: String
+    let jobId: UUID
+    let requestId: String
+    let anchor: MemoryAnchor
+    let provenance: RemoteProcessingProvenance
+}
+
 struct DailyEntryGenerationRequest: Codable, Equatable, Sendable {
     struct RememberedRange: Codable, Equatable, Sendable {
         enum Precision: String, Codable, Sendable {
             case week, month, year, span
+            case asSpoken = "as_spoken"
         }
 
         let precision: Precision
-        let startDate: String
-        let endDate: String
+        let startDate: String?
+        let endDate: String?
+
+        static let asSpoken = Self()
+
+        private init() {
+            precision = .asSpoken
+            startDate = nil
+            endDate = nil
+        }
 
         init?(_ time: RememberedTime) {
             switch time.precision {
@@ -451,6 +497,7 @@ enum LoreBackendProcessingError: Error, LocalizedError, Equatable {
 /// ship in the app bundle.
 protocol LoreBackendProcessingClient: Sendable {
     func transcribe(_ request: RemoteTranscriptionRequest) async throws -> RemoteTranscriptionResponse
+    func inferMemoryAnchor(_ request: MemoryAnchorRequest) async throws -> MemoryAnchorResponse
     func generateDailyEntry(
         _ request: DailyEntryGenerationRequest
     ) async throws -> DailyEntryGenerationResponse
@@ -463,6 +510,10 @@ protocol LoreBackendProcessingClient: Sendable {
 }
 
 extension LoreBackendProcessingClient {
+    func inferMemoryAnchor(_ request: MemoryAnchorRequest) async throws -> MemoryAnchorResponse {
+        throw LoreBackendProcessingError.notConfigured
+    }
+
     /// Clients that predate chapters report them as unconfigured.
     func generateStoryChapter(
         _ request: StoryChapterGenerationRequest

@@ -68,6 +68,7 @@ struct LoreRemoteServices {
     private static let productionOrigin = "https://lore-tan.vercel.app"
 
     let dailyEntryGenerator: any DailyEntryGenerationService
+    let memoryAnchorBackend: any LoreBackendProcessingClient
     let speechTranscriber: any RemoteSpeechTranscribing
     let reflectionBackend: any LoreReflectionBackendClient
     #if DEBUG
@@ -106,6 +107,7 @@ struct LoreRemoteServices {
             )
             var services = Self(
                 dailyEntryGenerator: RemoteDailyEntryGenerationService(backend: backend),
+                memoryAnchorBackend: backend,
                 speechTranscriber: LoreBackendRemoteSpeechTranscriber(backend: backend),
                 reflectionBackend: backend
             )
@@ -123,6 +125,7 @@ struct LoreRemoteServices {
         let backend = UnconfiguredLoreBackendProcessingClient()
         return Self(
             dailyEntryGenerator: RemoteDailyEntryGenerationService(backend: backend),
+            memoryAnchorBackend: backend,
             speechTranscriber: UnavailableRemoteSpeechTranscriber(),
             reflectionBackend: UnconfiguredLoreReflectionBackendClient()
         )

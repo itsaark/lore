@@ -21,9 +21,24 @@ enum CloudArchiveReconciler {
             key: \.id,
             prefers: { $0.updatedAt >= $1.updatedAt },
             merge: { winner, duplicate in
-                // Capture context is immutable. An older build may save a
-                // newer transcript without knowing those capture fields.
-                if winner.rememberedTime == nil { winner.rememberedTime = duplicate.rememberedTime }
+                let newerCorrection = duplicate.rememberedTimeSource == .user
+                    && (winner.rememberedTimeSource != .user
+                        || (duplicate.rememberedTimeUpdatedAt ?? duplicate.updatedAt)
+                            > (winner.rememberedTimeUpdatedAt ?? winner.updatedAt))
+                let missingCaptureFields = winner.rememberedTimeSource != .user
+                    && duplicate.rememberedTime != nil
+                    && (winner.rememberedTime == nil
+                        || (winner.rememberedTime == duplicate.rememberedTime
+                            && winner.rememberedTimeSource == nil && duplicate.rememberedTimeSource != nil))
+                if newerCorrection || missingCaptureFields {
+                    winner.rememberedTime = duplicate.rememberedTime
+                    winner.rememberedTimeSource = duplicate.rememberedTimeSource
+                    winner.rememberedTimeIsPrivate = duplicate.rememberedTimeIsPrivate
+                    winner.rememberedTimeUpdatedAt = duplicate.rememberedTimeUpdatedAt
+                }
+                if winner.memoryAnchorState == nil || duplicate.memoryAnchorState == .done {
+                    winner.memoryAnchorState = duplicate.memoryAnchorState
+                }
             },
             in: context
         )

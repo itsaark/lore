@@ -6,6 +6,14 @@ enum StorySourceKind: String, Codable, CaseIterable, Sendable {
     case reflection
 }
 
+enum RememberedTimeSource: String, Codable, Sendable {
+    case pinned, inferred, user
+}
+
+enum MemoryAnchorState: String, Codable, Sendable {
+    case pending, done
+}
+
 /// Inclusive local Gregorian dates. Day keys preserve the selected dates
 /// when the phone changes time zone or the archive syncs to another device.
 struct RememberedTime: Codable, Equatable, Sendable {
@@ -29,6 +37,10 @@ final class Story {
     @Attribute(.allowsCloudEncryption) private(set) var rememberedTimePrecision: String?
     @Attribute(.allowsCloudEncryption) private(set) var rememberedTimeStart: String?
     @Attribute(.allowsCloudEncryption) private(set) var rememberedTimeEnd: String?
+    @Attribute(.allowsCloudEncryption) private var rememberedTimeSourceValue: String?
+    @Attribute(.allowsCloudEncryption) var rememberedTimeIsPrivate: Bool?
+    @Attribute(.allowsCloudEncryption) var rememberedTimeUpdatedAt: Date?
+    @Attribute(.allowsCloudEncryption) private var memoryAnchorStateValue: String?
     @Attribute(.allowsCloudEncryption) var duration: TimeInterval = 0
     var rawTranscriptExpiresAt: Date?
     var metadataId: UUID?
@@ -52,7 +64,11 @@ final class Story {
         sourceKind: StorySourceKind = .note,
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        rememberedTime: RememberedTime? = nil
+        rememberedTime: RememberedTime? = nil,
+        rememberedTimeSource: RememberedTimeSource? = nil,
+        rememberedTimeIsPrivate: Bool? = nil,
+        rememberedTimeUpdatedAt: Date? = nil,
+        memoryAnchorState: MemoryAnchorState? = nil
     ) {
         self.id = id
         self.text = text
@@ -67,6 +83,28 @@ final class Story {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.rememberedTime = rememberedTime
+        self.rememberedTimeSource = rememberedTimeSource
+        self.rememberedTimeIsPrivate = rememberedTimeIsPrivate
+        self.rememberedTimeUpdatedAt = rememberedTimeUpdatedAt
+        self.memoryAnchorState = memoryAnchorState
+    }
+
+    /// Existing remembered dates with no explicit source were pinned on capture.
+    var rememberedTimeSource: RememberedTimeSource? {
+        get { rememberedTimeSourceValue.flatMap(RememberedTimeSource.init(rawValue:)) }
+        set { rememberedTimeSourceValue = newValue?.rawValue }
+    }
+
+    /// A nil state belongs to captures made before anchor inference shipped.
+    var memoryAnchorState: MemoryAnchorState? {
+        get { memoryAnchorStateValue.flatMap(MemoryAnchorState.init(rawValue:)) }
+        set { memoryAnchorStateValue = newValue?.rawValue }
+    }
+
+    var rememberedTimeRequiresPrivacy: Bool {
+        if let rememberedTimeIsPrivate { return rememberedTimeIsPrivate }
+        return rememberedTimeSource == .inferred
+            || (rememberedTimeSource == .user && rememberedTime?.precision == .period)
     }
 
     var rememberedTime: RememberedTime? {

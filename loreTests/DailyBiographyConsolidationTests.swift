@@ -145,6 +145,146 @@ struct DailyBiographyConsolidationTests {
         #expect(index[key]?.stories.map(\.id) == [note.id])
     }
 
+    @Test func waitsForTheRecoveredAnchorThenFilesAndCorrectsTheMemory() async throws {
+        let fixture = try makeFixture()
+        let captured = try #require(ISO8601DateFormatter().date(from: "2026-08-04T02:00:00Z"))
+        let capturedDay = "2026-08-03"
+        let note = Story(text: "I remember the creek at age seven.", date: captured, duration: 4, memoryAnchorState: .pending)
+        insertTranscribedNote(note, in: fixture.context, timezone: "America/Los_Angeles")
+        try SpeechRecognitionViewModel.applyUserCorrection("The creek beside our house.", to: note, in: fixture.context)
+        let writer = RecordingBiographyGenerator()
+        let originalJob = try #require(DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued, in: fixture.context, now: fixture.now
+        ).first { $0.dayKey == capturedDay })
+        let original = try await DailyBiographyJobRunner.run(
+            jobID: originalJob.jobId, userProfile: fixture.profile, generator: writer, in: fixture.context, now: fixture.now
+        )
+        let originalFingerprint = original.sourceFingerprint
+        let anchor = TestMemoryAnchorBackend(anchor: .age(start: 7, end: 7)) {
+            let pendingJobs = try DailyBiographyJobRunner.prepareCompletedDays(initialState: .queued, in: fixture.context)
+            #expect(!pendingJobs.contains { $0.dayKey == capturedDay || $0.sourceStoryIds.contains(note.id) })
+            #expect(original.sourceFingerprint == originalFingerprint)
+            #expect(note.memoryAnchorState == .pending)
+        }
+        let viewModel = makeViewModel(for: fixture, connection: .wifi, generator: writer, anchorBackend: anchor)
+        await viewModel.resumePendingDailyBiographyJobs(now: fixture.now)
+        try await waitForRewrite { viewModel.dailyBiographyEntries.contains { $0.memoryStoryId == note.id } }
+
+        let anchorRequests = await anchor.requests
+        #expect(anchorRequests.map(\.jobId) == [note.id])
+        #expect(anchorRequests.map(\.capturedLocalDate) == [capturedDay])
+        #expect(anchorRequests.map(\.transcript) == ["I remember the creek at age seven."])
+        #expect(note.memoryAnchorState == .done)
+        #expect(note.rememberedTimeSource == .inferred)
+        #expect(note.rememberedTimeRequiresPrivacy)
+        #expect(original.sourceFingerprint == originalFingerprint)
+        let writerRequests = await writer.requests
+        let request = try #require(writerRequests.first { $0.noteId == note.id })
+        let encoder = JSONEncoder()
+        encoder.keyEncodingStrategy = .convertToSnakeCase
+        let data = try encoder.encode(request)
+        let wire = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(wire["remembered_time"] as? [String: String] == ["precision": "as_spoken"])
+        #expect(wire["captured_local_date"] as? String == capturedDay)
+        let requestText = String(decoding: data, as: UTF8.self)
+        #expect(!requestText.contains("1997-01-01"))
+        #expect(!requestText.contains("1998-12-31"))
+        let memory = try #require(viewModel.dailyBiographyEntries.first { $0.memoryStoryId == note.id })
+        #expect(memory.dayKey == "1997-01-01")
+        fixture.context.insert(DayIllustration(dayKey: memory.dayKey, memoryStoryId: note.id, at: fixture.now))
+        try fixture.context.save()
+
+        try #require(viewModel.correctRememberedTime(of: note, to: .today))
+        #expect(note.rememberedTimeSource == .user)
+        #expect(note.rememberedTime == nil)
+        #expect(!viewModel.dailyBiographyEntries.contains { $0.memoryStoryId == note.id })
+        #expect(try !fixture.context.fetch(FetchDescriptor<DayIllustration>()).contains { $0.memoryStoryId == note.id })
+        try await waitForRewrite { original.sourceStoryIds.contains(note.id) }
+        #expect(original.sourceFingerprint != originalFingerprint)
+        #expect(await anchor.requests.count == 1)
+
+        let period = try #require(viewModel.memoryTimeOptions(for: note).periods.first)
+        try #require(viewModel.correctRememberedTime(of: note, to: .period(period)))
+        try await waitForRewrite { viewModel.dailyBiographyEntries.contains { $0.memoryStoryId == note.id } }
+        #expect(await writer.requests.last { $0.noteId == note.id }?.rememberedTime == .asSpoken)
+        try #require(viewModel.correctRememberedTime(of: note, to: .year(2004)))
+        try await waitForRewrite { viewModel.dailyBiographyEntries.contains { $0.memoryStoryId == note.id && $0.dayKey == "2004-01-01" } }
+        #expect(await writer.requests.last { $0.noteId == note.id }?.rememberedTime?.startDate == "2004-01-01")
+        #expect(await anchor.requests.count == 1)
+    }
+
+    @Test func anExistingJobCannotWriteWhileItsSourceWaitsForAnAnchor() async throws {
+        let fixture = try makeFixture()
+        let prepared = try #require(DailyBiographyJobRunner.prepareCompletedDays(
+            initialState: .queued, in: fixture.context
+        ).first { $0.sourceStoryIds == [fixture.currentStory.id] })
+        fixture.currentStory.memoryAnchorState = .pending
+        try fixture.context.save()
+        let writer = RecordingBiographyGenerator()
+        do {
+            try await DailyBiographyJobRunner.run(
+                jobID: prepared.jobId, userProfile: fixture.profile, generator: writer, in: fixture.context
+            )
+            Issue.record("A day story ran while its source was waiting for an anchor.")
+        } catch DailyBiographyJobRunnerError.jobNotReady {}
+        #expect(await writer.requests.isEmpty)
+    }
+
+    @Test(arguments: [true, false])
+    func failedOrDisallowedAnchoringFilesAsTodayAndDoesNotRetry(permitted: Bool) async throws {
+        let fixture = try makeFixture()
+        let note = fixture.currentStory
+        note.memoryAnchorState = .pending
+        try fixture.context.save()
+        let backend = TestMemoryAnchorBackend(anchor: nil)
+        try await MemoryAnchorInference.finishPending(
+            in: fixture.context, profile: fixture.profile, backend: backend, isPermitted: { permitted }
+        )
+        #expect(note.memoryAnchorState == .done)
+        #expect(note.rememberedTime == nil)
+        let prepared = try DailyBiographyJobRunner.prepareCompletedDays(initialState: .queued, in: fixture.context)
+        #expect(prepared.first { $0.dayKey == "2026-08-04" }?.sourceStoryIds == [note.id])
+        try await MemoryAnchorInference.finishPending(
+            in: fixture.context, profile: fixture.profile, backend: backend, isPermitted: { true }
+        )
+        #expect(await backend.requests.count == (permitted ? 1 : 0))
+    }
+
+    @Test func anchorDeadlineFilesToTodayEvenWhileTheLookupIsBlocked() async throws {
+        let fixture = try makeFixture()
+        let note = fixture.currentStory
+        note.memoryAnchorState = .pending
+        let backend = TestMemoryAnchorBackend(anchor: .year(start: 2001, end: 2001)) {
+            try await Task.sleep(for: .seconds(1))
+        }
+        try await MemoryAnchorInference.finishPending(
+            in: fixture.context, profile: fixture.profile, backend: backend, timeout: .milliseconds(10),
+            isPermitted: { true }
+        )
+        #expect(note.memoryAnchorState == .done)
+        #expect(note.rememberedTime == nil)
+    }
+
+    @Test func anExplicitCorrectionWinsOverAnInFlightAnchorAndSkipsFutureLookups() async throws {
+        let fixture = try makeFixture()
+        let note = fixture.currentStory
+        note.memoryAnchorState = .pending
+        let backend = TestMemoryAnchorBackend(anchor: .year(start: 2001, end: 2001)) {
+            try SpeechRecognitionViewModel.applyRememberedTimeCorrection(.today, to: note, in: fixture.context)
+        }
+        try await MemoryAnchorInference.finishPending(
+            in: fixture.context, profile: fixture.profile, backend: backend, isPermitted: { true }
+        )
+        #expect(note.memoryAnchorState == .done)
+        #expect(note.rememberedTime == nil)
+        #expect(note.rememberedTimeSource == .user)
+        #expect(fixture.pastStories.allSatisfy { $0.memoryAnchorState == nil })
+        try await MemoryAnchorInference.finishPending(
+            in: fixture.context, profile: fixture.profile, backend: backend, isPermitted: { true }
+        )
+        #expect(await backend.requests.map(\.jobId) == [note.id])
+    }
+
     @Test func coarseMemoriesAreIndependentOfDaysAndChaptersAndRewriteAfterEditing() async throws {
         let fixture = try makeFixture()
         let now = try #require(ISO8601DateFormatter().date(from: "2026-08-18T18:00:00Z"))
@@ -452,21 +592,26 @@ struct DailyBiographyConsolidationTests {
         job.markFailed(errorCode: "remote_transcription_failed", at: now)
         try fixture.context.save()
 
+        let anchor = TestMemoryAnchorBackend(anchor: MemoryAnchor.none)
         let viewModel = makeViewModel(
             for: fixture,
             connection: .wifi,
-            transcriber: DailyBiographyTestTranscriber()
+            transcriber: DailyBiographyTestTranscriber(),
+            anchorBackend: anchor
         )
         await viewModel.resumePendingDailyBiographyJobs()
         let initial = try #require(viewModel.dailyBiographyEntries.first { $0.dayKey == dayKey })
         let initialID = initial.id
         #expect(initial.sourceStoryIds == [existing.id])
+        #expect(await anchor.requests.isEmpty)
 
         viewModel.retryTranscription(for: pending)
         try await waitForRewrite {
             viewModel.dailyBiographyEntries.first { $0.dayKey == dayKey }?.sourceStoryIds == [existing.id, pending.id]
         }
         #expect(initial.combinedTranscript.contains("The delayed voice note."))
+        #expect(await anchor.requests.map(\.jobId) == [pending.id])
+        #expect(pending.memoryAnchorState == .done)
 
         viewModel.updateStory(pending, withText: "The corrected voice note.")
         try await waitForRewrite {
@@ -475,6 +620,7 @@ struct DailyBiographyConsolidationTests {
         }
         #expect(viewModel.dailyBiographyEntries.first { $0.dayKey == dayKey }?.id == initialID)
         #expect(!initial.combinedTranscript.contains("The delayed voice note."))
+        #expect(await anchor.requests.count == 1)
     }
 
     @Test func invalidProviderResponseCanResumeWithinTheAttemptCeiling() async throws {
@@ -584,10 +730,12 @@ struct DailyBiographyConsolidationTests {
         for fixture: DailyBiographyFixture,
         connection: SpeechNetworkConnection,
         generator: any DailyEntryGenerationService = SuccessfulDailyBiographyGenerator(),
-        transcriber: any RemoteSpeechTranscribing = UnavailableRemoteSpeechTranscriber()
+        transcriber: any RemoteSpeechTranscribing = UnavailableRemoteSpeechTranscriber(),
+        anchorBackend: any LoreBackendProcessingClient = UnconfiguredLoreBackendProcessingClient()
     ) -> SpeechRecognitionViewModel {
         let viewModel = SpeechRecognitionViewModel(
             remoteDailyEntryGenerator: generator,
+            memoryAnchorBackend: anchorBackend,
             remoteTranscriber: transcriber,
             networkConnectionProvider: FixedSpeechNetworkConnectionProvider(connection),
             requestsMicrophonePermissionOnInit: false
@@ -725,7 +873,6 @@ private struct SuccessfulDailyBiographyGenerator: DailyEntryGenerationService {
     ) async throws -> DailyEntryGenerationResponse {
         let segments = citesOnlyFirstNote ? Array(request.sourceSegments.prefix(1)) : request.sourceSegments
         let sourceIds = segments.map(\.id)
-        let processedAt = Date(timeIntervalSince1970: 1_800_000_000)
         return DailyEntryGenerationResponse(
             schemaVersion: "1.0",
             promptVersion: DailyEntryGenerationRequest.currentPromptVersion,
@@ -752,21 +899,56 @@ private struct SuccessfulDailyBiographyGenerator: DailyEntryGenerationService {
                 .init(question: "What did you hear that morning?", reason: "A detail from the scene.", sourceReferences: sourceIds),
                 .init(question: "What? Why?", reason: "", sourceReferences: sourceIds)
             ] : [],
-            provenance: RemoteProcessingProvenance(
-                providerId: "fireworks",
-                modelAlias: "daily-entry-v1",
-                modelId: "test-model",
-                modelPolicyVersion: "test-policy",
-                providerRequestId: "daily-biography-test",
-                processedAt: processedAt,
-                processingDurationMilliseconds: 8,
-                retentionAttestation: RemoteRetentionAttestation(
-                    mode: .zeroDataRetention,
-                    maximumRetentionSeconds: 0,
-                    policyVersion: "test-policy",
-                    attestedAt: processedAt
-                )
+            provenance: Self.testProvenance
+        )
+    }
+
+    static var testProvenance: RemoteProcessingProvenance {
+        let processedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        return RemoteProcessingProvenance(
+            providerId: "fireworks",
+            modelAlias: "daily-entry-v1",
+            modelId: "test-model",
+            modelPolicyVersion: "test-policy",
+            providerRequestId: "daily-biography-test",
+            processedAt: processedAt,
+            processingDurationMilliseconds: 8,
+            retentionAttestation: RemoteRetentionAttestation(
+                mode: .zeroDataRetention,
+                maximumRetentionSeconds: 0,
+                policyVersion: "test-policy",
+                attestedAt: processedAt
             )
         )
+    }
+}
+
+private actor TestMemoryAnchorBackend: LoreBackendProcessingClient {
+    let anchor: MemoryAnchor?
+    let beforeResponse: @MainActor @Sendable () async throws -> Void
+    private(set) var requests: [MemoryAnchorRequest] = []
+
+    init(anchor: MemoryAnchor?, beforeResponse: @escaping @MainActor @Sendable () async throws -> Void = {}) {
+        self.anchor = anchor
+        self.beforeResponse = beforeResponse
+    }
+
+    func inferMemoryAnchor(_ request: MemoryAnchorRequest) async throws -> MemoryAnchorResponse {
+        requests.append(request)
+        try await beforeResponse()
+        guard let anchor else { throw LoreBackendProcessingError.transportUnavailable }
+        return MemoryAnchorResponse(
+            schemaVersion: request.schemaVersion, promptVersion: request.promptVersion,
+            jobId: request.jobId, requestId: "anchor-test", anchor: anchor,
+            provenance: SuccessfulDailyBiographyGenerator.testProvenance
+        )
+    }
+
+    func transcribe(_ request: RemoteTranscriptionRequest) async throws -> RemoteTranscriptionResponse {
+        throw LoreBackendProcessingError.notConfigured
+    }
+
+    func generateDailyEntry(_ request: DailyEntryGenerationRequest) async throws -> DailyEntryGenerationResponse {
+        throw LoreBackendProcessingError.notConfigured
     }
 }

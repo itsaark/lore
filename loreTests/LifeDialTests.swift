@@ -61,6 +61,8 @@ struct LifeDialTests {
         )
 
         #expect(capture.story.rememberedTime?.startDate == "2003-01-01")
+        #expect(capture.story.rememberedTimeSource == .pinned)
+        #expect(capture.story.memoryAnchorState == .done)
         #expect(capture.story.date == dial.today)
         #expect(capture.job.storyId == capture.story.id)
     }

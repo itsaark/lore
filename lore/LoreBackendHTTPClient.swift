@@ -137,6 +137,31 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
         return result
     }
 
+    func inferMemoryAnchor(_ request: MemoryAnchorRequest) async throws -> MemoryAnchorResponse {
+        try Task.checkCancellation()
+        guard request.schemaVersion == MemoryAnchorRequest.currentSchemaVersion,
+              request.promptVersion == MemoryAnchorRequest.currentPromptVersion,
+              Self.isValidLanguageCode(request.languageCode),
+              !request.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              request.retentionPolicy.mode == .zeroDataRetention,
+              request.retentionPolicy.maximumRetentionSeconds == 0 else {
+            throw LoreBackendProcessingError.invalidRequest
+        }
+        let result: MemoryAnchorResponse = try await postJSON(
+            request,
+            path: "v1/memory-anchors",
+            idempotencyKey: "memory-anchor:\(request.jobId.uuidString.lowercased())",
+            maximumBodyBytes: Self.maximumDailyEntryBodyBytes,
+            timeout: 15
+        )
+        guard result.schemaVersion == request.schemaVersion,
+              result.promptVersion == request.promptVersion,
+              result.jobId == request.jobId else {
+            throw LoreBackendProcessingError.invalidResponse(requestId: result.requestId)
+        }
+        return result
+    }
+
     func generateDailyEntry(
         _ request: DailyEntryGenerationRequest
     ) async throws -> DailyEntryGenerationResponse {
@@ -327,6 +352,7 @@ struct LoreBackendHTTPClient: LoreBackendProcessingClient, Sendable {
             idempotencyKey: idempotencyKey,
             timeout: timeout
         )
+        guard !Task.isCancelled else { throw LoreBackendProcessingError.cancelled }
         urlRequest.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         urlRequest.httpBody = body
         let (data, response) = try await perform(urlRequest)
@@ -867,6 +893,7 @@ private protocol LoreRequestIdentifiedResponse {
 }
 
 extension RemoteTranscriptionResponse: LoreRequestIdentifiedResponse {}
+extension MemoryAnchorResponse: LoreRequestIdentifiedResponse {}
 extension DailyEntryGenerationResponse: LoreRequestIdentifiedResponse {}
 extension DayIllustrationGenerationResponse: LoreRequestIdentifiedResponse {}
 extension ReflectionResponse: LoreRequestIdentifiedResponse {}

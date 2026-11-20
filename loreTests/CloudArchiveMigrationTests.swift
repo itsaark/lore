@@ -17,12 +17,25 @@ struct CloudArchiveMigrationTests {
         let captured = Date(timeIntervalSince1970: 1_800_000_000)
         let old = LegacyStoryPayload(text: "Ordinary", date: captured, duration: 1)
         let pinned = LegacyStoryPayload(text: "Remembered", date: captured, duration: 2, rememberedTime: memory)
-        defaults.set(try JSONEncoder().encode([old, pinned]), forKey: "SavedStories")
+        let inferred = LegacyStoryPayload(
+            text: "An earlier memory", date: captured, duration: 2, rememberedTime: memory,
+            rememberedTimeSource: .inferred, rememberedTimeIsPrivate: true,
+            rememberedTimeUpdatedAt: captured, memoryAnchorState: .done
+        )
+        defaults.set(try JSONEncoder().encode([old, pinned, inferred]), forKey: "SavedStories")
         try LegacyDataMigrator.migrateIfNeeded(modelContext: context, userDefaults: defaults)
 
         let stories = try context.fetch(FetchDescriptor<Story>())
         #expect(stories.first { $0.id == old.id }?.rememberedTime == nil)
         #expect(stories.first { $0.id == pinned.id }?.rememberedTime == memory)
+        #expect(stories.first { $0.id == pinned.id }?.rememberedTimeSource == nil)
+        #expect(stories.first { $0.id == old.id }?.memoryAnchorState == nil)
+        let migrated = try #require(stories.first { $0.id == inferred.id })
+        #expect(migrated.rememberedTime == memory)
+        #expect(migrated.rememberedTimeSource == .inferred)
+        #expect(migrated.rememberedTimeIsPrivate == true)
+        #expect(migrated.rememberedTimeUpdatedAt == captured)
+        #expect(migrated.memoryAnchorState == .done)
         #expect(stories.allSatisfy { $0.date == captured })
     }
 
@@ -82,7 +95,11 @@ struct CloudArchiveMigrationTests {
             date: older,
             duration: 1,
             updatedAt: older,
-            rememberedTime: memory
+            rememberedTime: memory,
+            rememberedTimeSource: .inferred,
+            rememberedTimeIsPrivate: true,
+            rememberedTimeUpdatedAt: older,
+            memoryAnchorState: .done
         ))
         context.insert(Story(
             id: storyID,
@@ -115,8 +132,39 @@ struct CloudArchiveMigrationTests {
         #expect(stories.count == 1)
         #expect(stories.first?.text == "Newest text")
         #expect(stories.first?.rememberedTime == memory)
+        #expect(stories.first?.rememberedTimeSource == .inferred)
+        #expect(stories.first?.rememberedTimeIsPrivate == true)
+        #expect(stories.first?.rememberedTimeUpdatedAt == older)
+        #expect(stories.first?.memoryAnchorState == .done)
         #expect(vocabulary.count == 1)
         #expect(vocabulary.first?.replacement == "Hyderabad")
+    }
+
+    @MainActor
+    @Test func reconciliationKeepsAnExplicitTodayCorrectionAlongsideANewerTranscript() throws {
+        let container = try LoreModelContainer.make(inMemory: true)
+        let context = container.mainContext
+        let captured = Date(timeIntervalSince1970: 1_800_000_000)
+        let storyID = UUID()
+        let correction = captured.addingTimeInterval(10)
+        context.insert(Story(
+            id: storyID, text: "Old text", date: captured, duration: 1, updatedAt: correction,
+            rememberedTimeSource: .user, rememberedTimeUpdatedAt: correction, memoryAnchorState: .done
+        ))
+        context.insert(Story(
+            id: storyID, text: "New transcript", date: captured, duration: 1, updatedAt: correction.addingTimeInterval(60),
+            rememberedTime: memory, rememberedTimeSource: .user, rememberedTimeIsPrivate: true,
+            rememberedTimeUpdatedAt: captured, memoryAnchorState: .done
+        ))
+        try context.save()
+        #expect(try CloudArchiveReconciler.reconcile(in: context) == 1)
+        let story = try #require(context.fetch(FetchDescriptor<Story>()).first)
+        #expect(story.text == "New transcript")
+        #expect(story.rememberedTime == nil)
+        #expect(story.rememberedTimeSource == .user)
+        #expect(story.rememberedTimeUpdatedAt == correction)
+        #expect(story.rememberedTimeIsPrivate == nil)
+        #expect(story.memoryAnchorState == .done)
     }
 
     @Test func legacyArchiveMovesIntoSplitStoresWithoutLosingTextOrLocalJobs() throws {
@@ -159,7 +207,11 @@ struct CloudArchiveMigrationTests {
                 duration: 42,
                 title: "A day worth keeping",
                 sourceKind: .reflection,
-                rememberedTime: memory
+                rememberedTime: memory,
+                rememberedTimeSource: .inferred,
+                rememberedTimeIsPrivate: true,
+                rememberedTimeUpdatedAt: Date(timeIntervalSince1970: 1_800_000_010),
+                memoryAnchorState: .done
             ))
             context.insert(archiveEntry(memoryStoryId: storyID))
             context.insert(DayIllustration(dayKey: memory.startDate, memoryStoryId: storyID, at: .now))
@@ -252,6 +304,10 @@ struct CloudArchiveMigrationTests {
         #expect(stories.first?.text == "The durable source transcript.")
         #expect(stories.first?.sourceKind == .reflection)
         #expect(stories.first?.rememberedTime == memory)
+        #expect(stories.first?.rememberedTimeSource == .inferred)
+        #expect(stories.first?.rememberedTimeIsPrivate == true)
+        #expect(stories.first?.rememberedTimeUpdatedAt == Date(timeIntervalSince1970: 1_800_000_010))
+        #expect(stories.first?.memoryAnchorState == .done)
         let entries = try context.fetch(FetchDescriptor<DailyBiographyEntry>())
         #expect(entries.first?.memoryStoryId == storyID)
         let paintings = try context.fetch(FetchDescriptor<DayIllustration>())
