@@ -67,7 +67,8 @@ struct MemoryJournalView: View {
     private func memory(_ story: Story) -> some View {
         let entry = speechRecognizer.dailyBiographyEntries.first { $0.memoryStoryId == story.id }
         let key = BiographyIdentity.key(dayKey: "", memoryStoryId: story.id)
-        let cover = illustrations.first { $0.memoryStoryId == story.id }.map(DayCover.illustration)
+        let painting = illustrations.first { $0.memoryStoryId == story.id }
+        let canRepaint = DayIllustrationRunner.canRepaint(painting, entry: entry, recordedAt: story.date)
         let isGenerating = speechRecognizer.generatingPaintingKeys.contains(key)
         return VStack(alignment: .leading, spacing: 24) {
             Text(entry?.title ?? "Still writing")
@@ -75,13 +76,15 @@ struct MemoryJournalView: View {
                 .foregroundStyle(LoreTheme.ink)
                 .accessibilityAddTraits(.isHeader)
 
-            if cover != nil || isGenerating {
+            if painting != nil || isGenerating {
                 JournalPaintingHero(
                     biographyKey: key,
-                    cover: cover,
+                    cover: painting.map(DayCover.illustration),
                     isGenerating: isGenerating,
                     session: speechRecognizer.paintingReveals,
-                    accessibilityLabel: "Painting inspired by this memory"
+                    accessibilityLabel: "Painting inspired by this memory",
+                    canRepaint: canRepaint,
+                    repaint: { await speechRecognizer.repaintPainting(for: key) }
                 )
                 .id(key)
             }

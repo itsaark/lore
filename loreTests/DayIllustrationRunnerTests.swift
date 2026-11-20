@@ -81,6 +81,111 @@ struct DayIllustrationRunnerTests {
         #expect(await fixture.generator.requests.count == 2)
     }
 
+    @Test func repaintTargetsOneMemoryAndBypassesUnchangedFingerprintAndBackoff() async throws {
+        let fixture = try Fixture()
+        let memory = fixture.addMemory(start: "2003-01-01", recorded: "2026-11-17", prose: "A childhood scene.")
+        let entry = try #require(fixture.context.fetch(FetchDescriptor<DailyBiographyEntry>()).first)
+        let key = entry.biographyKey
+        #expect(try await fixture.refresh() == 1)
+
+        let painting = try #require(fixture.illustrations().first)
+        let originalRevision = painting.paintingRevision
+        let originalImage = painting.imageData
+        #expect(DayIllustrationRunner.canRepaint(
+            painting, entry: entry, recordedAt: memory.date, now: fixture.now, calendar: fixture.calendar
+        ))
+
+        await fixture.generator.setFailure(.rejected(code: "generation_rejected", retryable: false, retryAfterSeconds: nil), for: entry.dayKey)
+        #expect(try await fixture.refresh(repainting: key) == 0)
+        await fixture.generator.setFailure(nil, for: entry.dayKey)
+        await fixture.generator.setJPEG(Fixture.jpeg(color: .black))
+        #expect(try await fixture.refresh() == 0)
+        #expect(await fixture.generator.requests.count == 2)
+
+        fixture.addMemory(start: entry.dayKey, recorded: "2026-11-18", prose: "Another scene that year.")
+        fixture.addEntry("2026-11-17")
+        let session = PaintingRevealSession()
+        var generationStates: [Bool] = []
+        let written = try await fixture.refresh(
+            repainting: key,
+            generationChanged: { changedKey, active in
+                #expect(changedKey == key)
+                generationStates.append(active)
+                if active { #expect(painting.imageData == originalImage) }
+            },
+            didSavePainting: { savedKey, revision in session.register(revision, for: savedKey) }
+        )
+
+        #expect(written == 1)
+        #expect(try fixture.illustrations().map(\.id) == [originalRevision.id])
+        #expect(painting.sourceFingerprint == originalRevision.fingerprint)
+        #expect(painting.paintingRevision != originalRevision)
+        #expect(painting.imageData != originalImage)
+        #expect(generationStates == [true, false])
+        #expect(session.claim(painting.paintingRevision, for: key))
+        let requests = await fixture.generator.requests
+        #expect(requests.map(\.prose) == [entry.prose, entry.prose, entry.prose])
+        #expect(Set(requests.map(\.jobId)).count == 3)
+    }
+
+    @Test func failedRepaintKeepsTheSavedPaintingAndDoesNotRegisterAReveal() async throws {
+        let fixture = try Fixture()
+        let day = "2026-11-17"
+        fixture.addEntry(day)
+        #expect(try await fixture.refresh() == 1)
+        let painting = try #require(fixture.illustrations().first)
+        let revision = painting.paintingRevision
+        let image = painting.imageData
+        let thumbnail = painting.thumbnailData
+        await fixture.generator.setJPEG(Data([0xFF, 0xD8, 0x00]))
+        var generationStates: [Bool] = []
+
+        #expect(try await fixture.refresh(
+            repainting: day,
+            generationChanged: { _, active in generationStates.append(active) },
+            didSavePainting: { _, _ in Issue.record("A failed repaint must not register a reveal") }
+        ) == 0)
+
+        let readContext = ModelContext(fixture.container)
+        let stored = try #require(readContext.fetch(FetchDescriptor<DayIllustration>()).first)
+        #expect(stored.paintingRevision == revision)
+        #expect(stored.imageData == image)
+        #expect(stored.thumbnailData == thumbnail)
+        #expect(generationStates == [true, false])
+        #expect(await fixture.generator.requests.count == 2)
+    }
+
+    @Test func repaintIsUnavailableForExpiredOrPhotoCoveredPaintings() async throws {
+        let fixture = try Fixture()
+        let expiredDay = fixture.addEntry("2026-10-19")
+        let photoDay = fixture.addEntry("2026-11-17")
+        let memory = fixture.addMemory(start: "2003-01-01", recorded: "2026-10-19", prose: "A childhood scene.")
+        #expect(try await fixture.refresh() == 3)
+        let expiredMemory = try #require(fixture.context.fetch(FetchDescriptor<DailyBiographyEntry>())
+            .first { $0.memoryStoryId == memory.id })
+        let paintings = try fixture.illustrations()
+        let later = try #require(fixture.calendar.date(forDayKey: "2026-11-19"))
+        try fixture.addPhoto(photoDay.dayKey)
+
+        let dayPainting = try #require(paintings.first { $0.biographyKey == expiredDay.biographyKey })
+        #expect(DayIllustrationRunner.canRepaint(dayPainting, entry: expiredDay, now: fixture.now, calendar: fixture.calendar))
+        for entry in [expiredDay, photoDay, expiredMemory] {
+            let painting = try #require(paintings.first { $0.biographyKey == entry.biographyKey })
+            let revision = painting.paintingRevision
+            #expect(!DayIllustrationRunner.canRepaint(
+                painting,
+                entry: entry,
+                recordedAt: entry.memoryStoryId == nil ? nil : memory.date,
+                hasPhoto: entry.biographyKey == photoDay.biographyKey,
+                now: later,
+                calendar: fixture.calendar
+            ))
+            #expect(try await fixture.refresh(repainting: entry.biographyKey, now: later) == 0)
+            #expect(painting.paintingRevision == revision)
+        }
+        #expect(await fixture.generator.requests.count == 3)
+    }
+
     @Test func refusesToRetryARejectedFingerprintAndTriesTheChangedEntry() async throws {
         let fixture = try Fixture()
         let day = "2026-11-17"
@@ -199,6 +304,7 @@ struct DayIllustrationRunnerTests {
         let calendar: JournalCalendar
 
         var context: ModelContext { container.mainContext }
+        var now: Date { calendar.date(forDayKey: "2026-11-18")! }
 
         init(jpeg: Data? = nil) throws {
             container = try LoreModelContainer.make(inMemory: true)
@@ -207,14 +313,17 @@ struct DayIllustrationRunnerTests {
             utc.timeZone = TimeZone(secondsFromGMT: 0)!
             calendar = JournalCalendar(calendar: utc)
 
+            generator = RecordingIllustrationGenerator(jpeg: jpeg ?? Self.jpeg(color: .gray))
+        }
+
+        static func jpeg(color: UIColor) -> Data {
             let format = UIGraphicsImageRendererFormat()
             format.scale = 1
-            let jpegData = jpeg ?? UIGraphicsImageRenderer(size: CGSize(width: 32, height: 48), format: format)
+            return UIGraphicsImageRenderer(size: CGSize(width: 32, height: 48), format: format)
                 .jpegData(withCompressionQuality: 0.9) { context in
-                    UIColor.gray.setFill()
+                    color.setFill()
                     context.fill(CGRect(x: 0, y: 0, width: 32, height: 48))
                 }
-            generator = RecordingIllustrationGenerator(jpeg: jpegData)
         }
 
         deinit { UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName) }
@@ -263,14 +372,22 @@ struct DayIllustrationRunnerTests {
             try DayPhotoStore.addPhotos([encoded], for: day, in: context)
         }
 
-        func refresh() async throws -> Int {
+        func refresh(
+            repainting key: String? = nil,
+            now: Date? = nil,
+            generationChanged: @MainActor (String, Bool) -> Void = { _, _ in },
+            didSavePainting: @MainActor (String, PaintingRevision) -> Void = { _, _ in }
+        ) async throws -> Int {
             try context.save()
             return try await DayIllustrationRunner.refresh(
                 generator: generator,
                 in: context,
-                now: calendar.date(forDayKey: "2026-11-18")!,
+                repainting: key,
+                now: now ?? self.now,
                 calendar: calendar,
-                userDefaults: defaults
+                userDefaults: defaults,
+                generationChanged: generationChanged,
+                didSavePainting: didSavePainting
             )
         }
 
@@ -281,11 +398,13 @@ struct DayIllustrationRunnerTests {
 }
 
 private actor RecordingIllustrationGenerator: DailyEntryGenerationService {
-    private let jpeg: Data
+    private var jpeg: Data
     private var failures: [String: LoreBackendProcessingError] = [:]
     private(set) var requests: [DayIllustrationGenerationRequest] = []
 
     init(jpeg: Data) { self.jpeg = jpeg }
+
+    func setJPEG(_ jpeg: Data) { self.jpeg = jpeg }
 
     func setFailure(_ failure: LoreBackendProcessingError?, for dayKey: String) {
         failures[dayKey] = failure

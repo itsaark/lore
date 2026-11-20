@@ -896,23 +896,34 @@ class SpeechRecognitionViewModel: ObservableObject {
     }
 
     func refreshDayIllustrations(now: Date = Date()) async {
-        guard let modelContext, !isRefreshingDayIllustrations else {
-            print("[DayIllustration] skipped: no context or already running")
+        guard !isRefreshingDayIllustrations else {
+            print("[DayIllustration] skipped: a refresh is already running")
             return
         }
+        isRefreshingDayIllustrations = true
+        defer { isRefreshingDayIllustrations = false }
+        await generateDayIllustrations(now: now)
+    }
+
+    func repaintPainting(for key: String) async {
+        guard !generatingPaintingKeys.contains(key) else { return }
+        await generateDayIllustrations(repainting: key, now: Date())
+    }
+
+    private func generateDayIllustrations(repainting key: String? = nil, now: Date) async {
+        guard let modelContext else { return }
         let availability = remoteWorkAvailability(requiresAudioUpload: false)
         guard availability == .permitted else {
             print("[DayIllustration] skipped: remote work \(availability)")
             return
         }
-        isRefreshingDayIllustrations = true
-        defer { isRefreshingDayIllustrations = false }
-
         do {
             try await DayIllustrationRunner.refresh(
                 generator: remoteDailyEntryGenerator,
                 in: modelContext,
+                repainting: key,
                 now: now,
+                canStartGeneration: { !generatingPaintingKeys.contains($0) },
                 generationChanged: { key, isGenerating in
                     if isGenerating {
                         generatingPaintingKeys.insert(key)

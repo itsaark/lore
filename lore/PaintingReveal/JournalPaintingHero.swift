@@ -7,6 +7,8 @@ struct JournalPaintingHero: View {
     let isGenerating: Bool
     let session: PaintingRevealSession
     let accessibilityLabel: String
+    let canRepaint: Bool
+    let repaint: @MainActor () async -> Void
 
     @State private var painting: DecodedPainting?
     @State private var failedRevision: PaintingRevision?
@@ -35,7 +37,8 @@ struct JournalPaintingHero: View {
                     image: image,
                     isGenerating: isGenerating,
                     session: session,
-                    tracksScrollVisibility: true
+                    tracksScrollVisibility: true,
+                    keepsImageVisibleWhileLoading: true
                 )
             }
             .aspectRatio(ratio, contentMode: .fit)
@@ -46,6 +49,16 @@ struct JournalPaintingHero: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(accessibilityLabel)
             .accessibilityAddTraits(.isImage)
+            .contextMenu {
+                if canRepaint, !isGenerating {
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Task { await repaint() }
+                    } label: {
+                        Label("Repaint", systemImage: "paintbrush")
+                    }
+                }
+            }
             .task(id: cover?.paintingRevision) { await load() }
     }
 

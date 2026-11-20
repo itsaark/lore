@@ -163,20 +163,24 @@ struct DayJournalView: View {
     @ViewBuilder
     private func photoSection(for entry: DailyBiographyEntry?) -> some View {
         let ordered = orderedPhotos
+        let painting = illustrations.first
         let isGeneratingPainting = speechRecognizer.generatingPaintingKeys.contains(dayKey)
         Group {
             if ordered.isEmpty {
                 if dayKey < journalCalendar.dayKey(for: Date()),
                    let entry,
                    !entry.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                   illustrations.first != nil || isGeneratingPainting {
+                   painting != nil || isGeneratingPainting {
+                    let canRepaint = DayIllustrationRunner.canRepaint(painting, entry: entry, calendar: journalCalendar)
                     VStack(alignment: .leading, spacing: 14) {
                         JournalPaintingHero(
                             biographyKey: dayKey,
-                            cover: illustrations.first.map(DayCover.illustration),
+                            cover: painting.map(DayCover.illustration),
                             isGenerating: isGeneratingPainting,
                             session: speechRecognizer.paintingReveals,
-                            accessibilityLabel: "Painting inspired by this day"
+                            accessibilityLabel: "Painting inspired by this day",
+                            canRepaint: canRepaint,
+                            repaint: { await speechRecognizer.repaintPainting(for: dayKey) }
                         )
                         .overlay {
                             if isSavingPhoto { savingIndicator }

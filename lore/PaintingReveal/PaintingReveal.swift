@@ -11,6 +11,7 @@ struct PaintingReveal: View {
     let session: PaintingRevealSession
     var isPresented = true
     var tracksScrollVisibility = false
+    var keepsImageVisibleWhileLoading = false
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -44,13 +45,14 @@ struct PaintingReveal: View {
         )
         let waiting = isGenerating || (pending != nil && pending == expectedRevision)
         let reveal = activeReveal.flatMap { $0.revision == revision ? $0 : nil }
+        let loadingOpacity = keepsImageVisibleWhileLoading && image != nil ? 0.35 : 1.0
 
         Color.clear
             .overlay {
                 if visible && (waiting || reveal != nil) {
                     if reduceMotion {
                         if waiting {
-                            LoreTheme.surface.transition(.opacity)
+                            LoreTheme.surface.opacity(loadingOpacity).transition(.opacity)
                         }
                     } else {
                         TimelineView(.animation) { timeline in
@@ -58,6 +60,7 @@ struct PaintingReveal: View {
                                 min(1, max(0, timeline.date.timeIntervalSince($0.start) / Self.duration))
                             } ?? 0
                             mosaic(time: timeline.date.timeIntervalSince(epoch), progress: progress, showingImage: reveal != nil)
+                                .opacity(reveal == nil ? loadingOpacity : 1)
                         }
                     }
                 }

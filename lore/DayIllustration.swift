@@ -117,68 +117,109 @@ enum DayIllustrationRunner {
         var biographyKey: String { BiographyIdentity.key(dayKey: dayKey, memoryStoryId: memoryStoryId) }
     }
 
+    private struct EligibilityWindow {
+        let now: Date
+        let calendar: JournalCalendar
+        let todayKey: String
+        let earliestDate: Date
+        let earliestKey: String
+
+        init(now: Date, calendar: JournalCalendar) {
+            self.now = now
+            self.calendar = calendar
+            todayKey = calendar.dayKey(for: now)
+            earliestDate = calendar.calendar.date(byAdding: .day, value: -30, to: now) ?? now
+            earliestKey = calendar.dayKey(for: earliestDate)
+        }
+
+        func eligibleDate(for entry: DailyBiographyEntry, recordedAt: Date?) -> String? {
+            if entry.memoryStoryId != nil {
+                guard let recordedAt, recordedAt >= earliestDate, recordedAt <= now else { return nil }
+                return calendar.dayKey(for: recordedAt)
+            }
+            guard entry.dayKey >= earliestKey, entry.dayKey < todayKey else { return nil }
+            return entry.dayKey
+        }
+    }
+
+    static func canRepaint(
+        _ painting: DayIllustration?,
+        entry: DailyBiographyEntry?,
+        recordedAt: Date? = nil,
+        hasPhoto: Bool = false,
+        now: Date = Date(),
+        calendar: JournalCalendar = JournalCalendar()
+    ) -> Bool {
+        guard let entry, hasProse(entry), !hasPhoto, matchesPainting(painting, entry: entry) else { return false }
+        return EligibilityWindow(now: now, calendar: calendar).eligibleDate(for: entry, recordedAt: recordedAt) != nil
+    }
+
     @discardableResult
     static func refresh(
         generator: any DailyEntryGenerationService,
         in modelContext: ModelContext,
+        repainting targetKey: String? = nil,
         now: Date = Date(),
         calendar: JournalCalendar = JournalCalendar(),
         userDefaults: UserDefaults = .standard,
+        canStartGeneration: @MainActor (String) -> Bool = { _ in true },
         generationChanged: @MainActor (String, Bool) -> Void = { _, _ in },
         didSavePainting: @MainActor (String, PaintingRevision) -> Void = { _, _ in }
     ) async throws -> Int {
         try Task.checkCancellation()
-        let todayKey = calendar.dayKey(for: now)
-        let earliestDate = calendar.calendar.date(byAdding: .day, value: -30, to: now) ?? now
-        let earliestKey = calendar.dayKey(for: earliestDate)
+        let window = EligibilityWindow(now: now, calendar: calendar)
         let entries = try modelContext.fetch(FetchDescriptor<DailyBiographyEntry>(
             sortBy: [SortDescriptor(\.updatedAt, order: .reverse)]
         ))
         let entriesByKey = Dictionary(entries.map { ($0.biographyKey, $0) }, uniquingKeysWith: { latest, _ in latest })
-        let illustrations = try modelContext.fetch(FetchDescriptor<DayIllustration>())
-        let orphaned = illustrations.filter { entriesByKey[$0.biographyKey] == nil }
-        if !orphaned.isEmpty {
-            orphaned.forEach(modelContext.delete)
-            try save(modelContext)
+        if targetKey == nil {
+            let illustrations = try modelContext.fetch(FetchDescriptor<DayIllustration>())
+            let orphaned = illustrations.filter { entriesByKey[$0.biographyKey] == nil }
+            if !orphaned.isEmpty {
+                orphaned.forEach(modelContext.delete)
+                try save(modelContext)
+            }
         }
 
         let stories = try modelContext.fetch(FetchDescriptor<Story>())
         let recordedDates = Dictionary(stories.map { ($0.id, $0.date) }, uniquingKeysWith: min)
         let eligible = entriesByKey.values.compactMap { entry -> Candidate? in
-            if let memoryStoryId = entry.memoryStoryId {
-                guard let recorded = recordedDates[memoryStoryId], recorded >= earliestDate, recorded <= now else {
-                    return nil
-                }
-                return Candidate(dayKey: entry.dayKey, memoryStoryId: memoryStoryId, eligibleDate: calendar.dayKey(for: recorded))
-            }
-            guard entry.dayKey >= earliestKey, entry.dayKey < todayKey else { return nil }
-            return Candidate(dayKey: entry.dayKey, memoryStoryId: nil, eligibleDate: entry.dayKey)
+            guard targetKey == nil || entry.biographyKey == targetKey else { return nil }
+            let recordedAt = entry.memoryStoryId.flatMap { recordedDates[$0] }
+            guard let date = window.eligibleDate(for: entry, recordedAt: recordedAt) else { return nil }
+            return Candidate(dayKey: entry.dayKey, memoryStoryId: entry.memoryStoryId, eligibleDate: date)
         }
         let candidates = eligible.sorted { ($0.eligibleDate, $0.biographyKey) > ($1.eligibleDate, $1.biographyKey) }
-        let recentPairs = Set(candidates.compactMap { entriesByKey[$0.biographyKey].map(failureKey(for:)) })
-        let storedFailures = userDefaults.dictionary(forKey: failureCountsKey) as? [String: Int] ?? [:]
-        var failures = storedFailures.filter { recentPairs.contains($0.key) }
-        if failures != storedFailures { userDefaults.set(failures, forKey: failureCountsKey) }
+        let isRepaint = targetKey != nil
+        if !isRepaint {
+            let recentPairs = Set(candidates.compactMap { entriesByKey[$0.biographyKey].map(failureKey(for:)) })
+            let failures = failureCounts(in: userDefaults)
+            let recentFailures = failures.filter { recentPairs.contains($0.key) }
+            if recentFailures != failures { userDefaults.set(recentFailures, forKey: failureCountsKey) }
+        }
 
         var attempted = 0
         var written = 0
-        print("[DayIllustration] today \(todayKey); eligible entries: \(candidates.count)")
+        print("[DayIllustration] today \(window.todayKey); eligible entries: \(candidates.count)")
         for candidate in candidates {
             guard attempted < generationLimit else { break }
             try Task.checkCancellation()
 
             let biographyKey = candidate.biographyKey
+            guard canStartGeneration(biographyKey) else { continue }
             var pair: String?
             do {
-                guard let entry = try entry(for: candidate, in: modelContext),
-                      !entry.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                guard let entry = try entry(for: candidate, in: modelContext), hasProse(entry) else { continue }
                 let fingerprint = fingerprint(for: entry)
                 let key = failureKey(biographyKey: biographyKey, fingerprint: fingerprint)
-                guard failures[key, default: 0] < failureLimit else {
-                    print("[DayIllustration] \(biographyKey): skipped after \(failures[key, default: 0]) failures")
+                let failureCount = failureCounts(in: userDefaults)[key, default: 0]
+                guard isRepaint || failureCount < failureLimit else {
+                    print("[DayIllustration] \(biographyKey): skipped after \(failureCount) failures")
                     continue
                 }
-                guard try illustration(for: candidate, in: modelContext)?.sourceFingerprint != fingerprint else {
+                let previous = try illustration(for: candidate, in: modelContext)
+                guard !isRepaint || matchesPainting(previous, entry: entry) else { continue }
+                guard isRepaint || previous?.sourceFingerprint != fingerprint else {
                     print("[DayIllustration] \(biographyKey): already painted")
                     continue
                 }
@@ -199,23 +240,27 @@ enum DayIllustrationRunner {
 
                 // The entry may have changed or been deleted while the image was being painted.
                 guard let current = try self.entry(for: candidate, in: modelContext),
-                      !current.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                      self.fingerprint(for: current) == fingerprint else { continue }
+                      hasProse(current), self.fingerprint(for: current) == fingerprint,
+                      try current.memoryStoryId != nil || !hasPhoto(for: current.dayKey, in: modelContext) else { continue }
                 let existing = try illustration(for: candidate, in: modelContext)
-                if existing?.sourceFingerprint != fingerprint {
+                guard !isRepaint || matchesPainting(existing, entry: current) else { continue }
+                if isRepaint || existing?.sourceFingerprint != fingerprint {
                     let value = existing ?? DayIllustration(dayKey: current.dayKey, memoryStoryId: current.memoryStoryId, at: now)
+                    // A repaint needs a new cache and reveal revision even with the same fingerprint.
+                    let updatedAt = isRepaint ? max(now, value.updatedAt.addingTimeInterval(0.001)) : now
                     value.replace(
                         with: encoded,
                         sceneDescription: response.scene.description,
                         sourceFingerprint: fingerprint,
                         providerModelId: response.provenance.modelId,
-                        at: now
+                        at: updatedAt
                     )
                     if existing == nil { modelContext.insert(value) }
                     try save(modelContext)
                     didSavePainting(biographyKey, value.paintingRevision)
                     written += 1
                 }
+                var failures = failureCounts(in: userDefaults)
                 if failures.removeValue(forKey: key) != nil {
                     userDefaults.set(failures, forKey: failureCountsKey)
                 }
@@ -231,6 +276,7 @@ enum DayIllustrationRunner {
                 break
             } catch {
                 if let pair {
+                    var failures = failureCounts(in: userDefaults)
                     failures[pair] = isNonRetryable(error) ? failureLimit : failures[pair, default: 0] + 1
                     userDefaults.set(failures, forKey: failureCountsKey)
                 }
@@ -238,6 +284,21 @@ enum DayIllustrationRunner {
             }
         }
         return written
+    }
+
+    private static func hasProse(_ entry: DailyBiographyEntry) -> Bool {
+        !entry.prose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private static func matchesPainting(_ painting: DayIllustration?, entry: DailyBiographyEntry) -> Bool {
+        guard let painting, painting.dayKey == entry.dayKey, painting.biographyKey == entry.biographyKey else {
+            return false
+        }
+        return painting.imageData?.isEmpty == false || painting.thumbnailData?.isEmpty == false
+    }
+
+    private static func failureCounts(in defaults: UserDefaults) -> [String: Int] {
+        defaults.dictionary(forKey: failureCountsKey) as? [String: Int] ?? [:]
     }
 
     private static func save(_ context: ModelContext) throws {
