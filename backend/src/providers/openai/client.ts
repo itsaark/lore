@@ -15,10 +15,11 @@ import { LoreApiError } from "../../http/errors.js";
 
 const STYLE_PROMPT = `An original oil painting in the manner of Claude Monet's late Impressionism: loose, broken
 brushstrokes, visible impasto, soft edges, shimmering reflected light, atmosphere over detail,
-a luminous palette of lilac, sea-green, rose, pale gold and blue-grey. Composed with the quiet
-interiority of a Virginia Woolf novel: a single held moment, light moving across a room, a window,
-a garden or the sea, a feeling more than an event. No text, letters, numbers, signatures,
-watermarks, logos, or frames. No recognisable faces. Portrait canvas.`;
+a luminous palette drawn from the scene's own colours. Quiet and reflective in mood, as if
+remembered. Paint exactly the scene described below, its activity, setting and figures as
+written; add no other people. Any figure is small, seen from a distance or from behind, with
+no recognisable face. No text, letters, numbers, signatures, watermarks, logos, or frames.
+Portrait canvas.`;
 
 const ImageGenerationSchema = z.object({
   data: z.tuple([z.object({ b64_json: DayIllustrationImageSchema.shape.data_base64 })])

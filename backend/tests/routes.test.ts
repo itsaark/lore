@@ -6,6 +6,7 @@ import { handleTranscription } from "../api/v1/transcriptions.js";
 import { issueSessionToken } from "../src/auth/session-token.js";
 import { MemoryAuthStateStore, type AppAttestKeyRecord } from "../src/auth/state-store.js";
 import { PROVIDER_POLICY_VERSION, type AppAttestRuntimeConfig } from "../src/config.js";
+import { boundedDayScene } from "../src/providers/fireworks/client.js";
 
 const baseTime = new Date("2026-08-03T20:00:00.000Z");
 const keyRef = "a".repeat(64);
@@ -468,10 +469,11 @@ describe("day illustrations", () => {
       model: "gpt-image-2.6-flare",
       prompt: `An original oil painting in the manner of Claude Monet's late Impressionism: loose, broken
 brushstrokes, visible impasto, soft edges, shimmering reflected light, atmosphere over detail,
-a luminous palette of lilac, sea-green, rose, pale gold and blue-grey. Composed with the quiet
-interiority of a Virginia Woolf novel: a single held moment, light moving across a room, a window,
-a garden or the sea, a feeling more than an event. No text, letters, numbers, signatures,
-watermarks, logos, or frames. No recognisable faces. Portrait canvas.\n\nScene: ${dayScene}`,
+a luminous palette drawn from the scene's own colours. Quiet and reflective in mood, as if
+remembered. Paint exactly the scene described below, its activity, setting and figures as
+written; add no other people. Any figure is small, seen from a distance or from behind, with
+no recognisable face. No text, letters, numbers, signatures, watermarks, logos, or frames.
+Portrait canvas.\n\nScene: ${dayScene}`,
       size: "1024x1536",
       quality: "medium",
       complexity: "low",
@@ -556,9 +558,28 @@ watermarks, logos, or frames. No recognisable faces. Portrait canvas.\n\nScene: 
     expect(releaseLease).toHaveBeenCalledOnce();
   });
 
-  it("rejects digits in the scene before calling OpenAI", async () => {
+  it("drops sentences with digits from the scene before calling OpenAI", async () => {
     const harness = await authenticatedHarness();
-    const provider = vi.fn<typeof fetch>().mockResolvedValueOnce(daySceneCompletion(`${dayScene} It is 6 PM.`));
+    const provider = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(daySceneCompletion(`${dayScene} It is 6 PM.`))
+      .mockResolvedValueOnce(Response.json({ data: [{ b64_json: "/9j/2Q==" }] }));
+    const response = await handleDayIllustration(dayIllustrationRequest(harness.token), {
+      environment: dayIllustrationEnvironment,
+      fetch: provider,
+      auth: harness.auth
+    });
+
+    expect(response.status).toBe(200);
+    const imageBody = JSON.parse(String(provider.mock.calls[1]![1]?.body));
+    expect(imageBody.prompt).toContain(`Scene: ${dayScene}`);
+    expect(imageBody.prompt).not.toContain("6 PM");
+  });
+
+  it("rejects a scene that is only digits before calling OpenAI, and lets the app retry", async () => {
+    const harness = await authenticatedHarness();
+    const provider = vi.fn<typeof fetch>().mockResolvedValueOnce(
+      daySceneCompletion("At 6 PM the light is gold on a blue cup and a grey table, 2 chairs.")
+    );
     const response = await handleDayIllustration(dayIllustrationRequest(harness.token), {
       environment: dayIllustrationEnvironment,
       fetch: provider,
@@ -567,7 +588,7 @@ watermarks, logos, or frames. No recognisable faces. Portrait canvas.\n\nScene: 
 
     expect(response.status).toBe(422);
     await expect(response.json()).resolves.toMatchObject({
-      error: { code: "invalid_provider_response", retryable: false }
+      error: { code: "invalid_provider_response", retryable: true }
     });
     expect(provider).toHaveBeenCalledOnce();
   });
@@ -604,7 +625,9 @@ watermarks, logos, or frames. No recognisable faces. Portrait canvas.\n\nScene: 
     expect(response.status).toBe(200);
     expect(provider).toHaveBeenCalledTimes(3);
     expect(JSON.parse(String(provider.mock.calls[1]![1]?.body)).model).toBe("accounts/fireworks/models/glm-5p3");
-    const description = longScene.slice(0, 800).trimEnd();
+    const description = boundedDayScene(longScene);
+    expect(description.length).toBeLessThanOrEqual(800);
+    expect(description.endsWith(".")).toBe(true);
     expect(JSON.parse(String(provider.mock.calls[2]![1]?.body)).prompt.endsWith(`\n\nScene: ${description}`)).toBe(true);
     await expect(response.json()).resolves.toMatchObject({ scene: { description } });
   });

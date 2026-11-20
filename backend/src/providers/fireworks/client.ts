@@ -336,11 +336,12 @@ export class FireworksClient {
       return { ...completion, scene: output.data.scene };
     });
 
-    if (/\p{Decimal_Number}/u.test(run.scene)) {
-      throw new LoreApiError("invalid_provider_response", 422, false, undefined, null, "provider_scene_contains_digits");
+    const description = boundedDayScene(run.scene);
+    if (description.length < DAY_SCENE_MIN_CHARACTERS) {
+      throw new LoreApiError("invalid_provider_response", 422, true, undefined, null, "provider_scene_unusable");
     }
     return {
-      description: run.scene.slice(0, DAY_SCENE_MAX_CHARACTERS).trimEnd(),
+      description,
       provenance: this.provenance(run.modelId, run.providerRequestId, run.startedAt, DAY_SCENE_MODEL_ALIAS)
     };
   }
@@ -500,26 +501,52 @@ export class FireworksClient {
   }
 }
 
-const DAY_SCENE_SYSTEM_PROMPT = `You turn one day of someone's private journal into a description of a single painting.
-The painting is a placeholder cover for that day: an abstract, impressionist reflection of it,
-not an illustration of events.
+const DAY_SCENE_MIN_CHARACTERS = 40;
 
-Write the scene the way Virginia Woolf saw a moment: from the inside, through light, weather,
-rooms, windows, water, flowers, the sea, the passing of an hour. Choose ONE or at most TWO things
-from the day to carry its feeling: the weather or quality of light, the mood, a setting (a kitchen
-at dusk, a rain-wet street, a garden, a shoreline), or a single ordinary object (a cup, an open
-window, a coat on a chair, a bicycle, a vase). Give the time of day, the light, and two or three
-dominant colours.
+/**
+ * Keeps only whole sentences without digits, within the length limit. A stray
+ * "3pm" drops that one sentence instead of the whole painting, and a long
+ * scene ends at a full stop rather than mid-phrase.
+ */
+export function boundedDayScene(scene: string): string {
+  const sentences = scene.match(/[^.!?]+[.!?]+(?:["'\u201d\u2019)]*)|[^.!?]+$/gu) ?? [];
+  let result = "";
+  for (const raw of sentences) {
+    const sentence = raw.trim();
+    if (!sentence || /\p{Decimal_Number}/u.test(sentence)) continue;
+    const next = result ? `${result} ${sentence}` : sentence;
+    if (next.length > DAY_SCENE_MAX_CHARACTERS) break;
+    result = next;
+  }
+  return result;
+}
 
-Strict rules. The description must contain:
-- no people's names, no initials, no relationships named ("my mother", "her boss"),
-- no identifiable faces; at most a distant, faceless, small figure seen from behind,
+const DAY_SCENE_SYSTEM_PROMPT = `You turn one day of someone's private journal into a description of a single painting
+that will be the cover for that day. A person looking at it later should recognise their day.
+
+Paint what the day was actually about. Pick the ONE moment or activity that carried the most
+weight in the entry and show it plainly, in general terms: what was being done, where in general
+(a kitchen, a coast road, an office at night, a hospital corridor, a park, a car on a motorway),
+the time of day, the light, and two or three dominant colours. If the day was mostly feeling or
+thinking rather than doing, paint the setting where that happened, as the entry describes it.
+Do not default to windows, curtains, or someone gazing out; use them only if the entry is about them.
+
+People: the narrator may appear as one small figure seen from a distance or from behind, never a
+face. Match the narrator's gender to the pronouns the entry uses for them ("he" means a man, "she"
+means a woman); if the entry gives no pronouns, keep the figure ungendered ("a figure"). Other
+people may appear only as small, faceless figures described generically ("a friend", "a child"),
+without relationships.
+
+Strict privacy rules. The description must contain:
+- no people's names, no initials, no named relationships ("my mother", "her boss"),
+- no faces or features that identify anyone,
 - no real place names, addresses, businesses, brands, landmarks, or schools,
-- no dates, numbers, written words, signs, screens, or text of any kind,
-- no medical, sexual, violent, legal, financial, or otherwise sensitive details,
-- nothing that would let a stranger work out who wrote the journal or what happened.
-If the day is painful, express it only through weather, light and colour, gently.
-Write 2 to 4 sentences of plain visual description, in English, present tense.
+- no dates, numbers or digits, written words, signs, screens, or text of any kind,
+- no medical, sexual, violent, legal, financial, or otherwise sensitive details; show such a day
+  only through its setting, weather, light and colour, gently,
+- nothing that would let a stranger work out who wrote the journal.
+Write 2 to 4 short sentences of plain visual description, in English, present tense, each ending
+with a full stop.
 Return JSON: {"scene": "..."}.`;
 
 function reflectionGuideSystemPrompt(): string {
