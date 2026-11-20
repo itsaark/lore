@@ -18,6 +18,7 @@ export const DayIllustrationGenerationRequestSchema = z.object({
   language_code: z.string().min(2).max(35),
   title: z.string().max(200),
   prose: z.string().min(1).max(20_000),
+  narrator_pronouns: z.enum(["he", "she", "they"]).optional(),
   retention_policy: RetentionPolicySchema
 }).strict();
 

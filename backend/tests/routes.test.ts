@@ -609,6 +609,44 @@ Portrait canvas.\n\nScene: ${dayScene}`,
     expect(provider).not.toHaveBeenCalled();
   });
 
+  it("passes the narrator's pronouns to the scene step only when the app sends them", async () => {
+    for (const narrator of ["he", undefined] as const) {
+      const harness = await authenticatedHarness();
+      const provider = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(daySceneCompletion(dayScene))
+        .mockResolvedValueOnce(Response.json({ data: [{ b64_json: "/9j/2Q==" }] }));
+      const body = { ...validDayIllustrationRequest(), ...(narrator ? { narrator_pronouns: narrator } : {}) };
+      const response = await handleDayIllustration(dayIllustrationRequest(harness.token, { body }), {
+        environment: dayIllustrationEnvironment,
+        fetch: provider,
+        auth: harness.auth
+      });
+
+      expect(response.status).toBe(200);
+      const sceneBody = JSON.parse(String(provider.mock.calls[0]![1]?.body));
+      const userMessage = sceneBody.messages.find((message: { role: string }) => message.role === "user").content;
+      if (narrator) {
+        expect(JSON.parse(userMessage).narrator_pronouns).toBe("he");
+      } else {
+        expect(userMessage).not.toContain("narrator_pronouns");
+      }
+    }
+  });
+
+  it("rejects an unknown narrator pronoun", async () => {
+    const harness = await authenticatedHarness();
+    const provider = vi.fn<typeof fetch>();
+    const body = { ...validDayIllustrationRequest(), narrator_pronouns: "xe" };
+    const response = await handleDayIllustration(dayIllustrationRequest(harness.token, { body }), {
+      environment: dayIllustrationEnvironment,
+      fetch: provider,
+      auth: harness.auth
+    });
+
+    expect(response.status).toBe(400);
+    expect(provider).not.toHaveBeenCalled();
+  });
+
   it("uses the Fireworks fallback and bounds the scene before sending it to OpenAI", async () => {
     const harness = await authenticatedHarness();
     const longScene = dayScene + " Soft gold.".repeat(80);

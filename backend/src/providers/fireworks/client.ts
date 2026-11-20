@@ -322,7 +322,11 @@ export class FireworksClient {
     request: DayIllustrationGenerationRequest,
     signal?: AbortSignal
   ): Promise<{ description: string; provenance: ProcessingProvenance }> {
-    const userPayload = JSON.stringify({ title: request.title, prose: request.prose });
+    const userPayload = JSON.stringify({
+      title: request.title,
+      prose: request.prose,
+      ...(request.narrator_pronouns ? { narrator_pronouns: request.narrator_pronouns } : {})
+    });
     const run = await this.runWithFallback(requestId, signal, async (model, modelSignal) => {
       const completion = await this.runWriterCompletion(requestId, {
         ...model,
@@ -525,25 +529,37 @@ const DAY_SCENE_SYSTEM_PROMPT = `You turn one day of someone's private journal i
 that will be the cover for that day. A person looking at it later should recognise their day.
 
 Paint what the day was actually about. Pick the ONE moment or activity that carried the most
-weight in the entry and show it plainly, in general terms: what was being done, where in general
+weight in the entry and show it plainly: what was being done, the setting in general terms
 (a kitchen, a coast road, an office at night, a hospital corridor, a park, a car on a motorway),
-the time of day, the light, and two or three dominant colours. If the day was mostly feeling or
-thinking rather than doing, paint the setting where that happened, as the entry describes it.
-Do not default to windows, curtains, or someone gazing out; use them only if the entry is about them.
+the time of day, the light, and two or three dominant colours. Include the occasion and cultural
+context when the entry gives it, in general terms: a festival, a ceremony or rite, a wedding, a
+birthday, the cuisine, traditional clothing, the style of a home (for example "an Indian family's
+rice-feeding ceremony for a baby", "a Diwali evening", "a Lunar New Year dinner"). If the day was
+mostly feeling or thinking rather than doing, paint the setting where that happened, as the entry
+describes it. Do not default to windows, curtains, or someone gazing out; use them only if the
+entry is about them.
 
-People: the narrator (the person whose journal this is) may appear as one small figure seen from a
-distance or from behind, never a face. Every adult in the scene must be named by gender: write "a man"
-or "a woman", never "a figure", "a person", "a parent", "someone" or "they". For the narrator, use the
-pronouns the entry uses for them; if it uses "they", no pronouns, or only their name, decide from their
-name and their own words whether they are most likely a man or a woman, and say so. Do not assume a
-woman because of the activity: a man can feed a child, cook, or clean. Leave the name out. Other people
-may appear only as small, faceless figures described generically ("a woman", "a small child"), without
-relationships.
+People: show who did what exactly as the entry says. If the entry says the narrator (the person
+whose journal this is) did the main action, the figure doing it IS the narrator; do not hand the
+action to someone else. The narrator may appear as one small figure seen from a distance or from
+behind, never a face. Every adult in the scene must be named by gender: write "a man" or "a woman",
+never "a figure", "a person", "a parent", "someone" or "they".
+The narrator's gender:
+- If narrator_pronouns is "he", the narrator is a man; if "she", a woman. This is authoritative and
+  overrides anything else.
+- If narrator_pronouns is "they", keep the narrator out of the picture and show the moment through
+  the other people, objects and setting.
+- If narrator_pronouns is absent, use the pronouns the entry uses for the narrator. If it uses
+  "they", none, or only a name, keep the narrator out of the picture as above. Never guess.
+Do not assume anyone is a woman because of the activity: a man can feed a child, cook, or clean.
+Other people may appear only as small, faceless figures described generically ("a woman", "an
+older man", "a small child"), without relationships or names.
 
 Strict privacy rules. The description must contain:
 - no people's names, no initials, no named relationships ("my mother", "her boss"),
 - no faces or features that identify anyone,
-- no real place names, addresses, businesses, brands, landmarks, or schools,
+- no real place names (countries, cities, streets), addresses, businesses, brands, landmarks, or
+  schools; a culture or tradition is fine, a named place is not,
 - no dates, numbers or digits, written words, signs, screens, or text of any kind,
 - no medical, sexual, violent, legal, financial, or otherwise sensitive details; show such a day
   only through its setting, weather, light and colour, gently,
